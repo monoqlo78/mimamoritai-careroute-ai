@@ -1,0 +1,361 @@
+@page "/"
+@rendermode InteractiveServer
+@using MimamoriTai.Core.Application
+@using MimamoriTai.Core.Domain
+@using MimamoriTai.Web.Services
+@using Microsoft.EntityFrameworkCore
+@using MimamoriTai.Infrastructure.Data
+@inject DashboardService Dashboard
+@inject AssistantOrchestrator Orchestrator
+@inject AppDbContext Db
+@inject IWebHostEnvironment Env
+
+<PageTitle>CareRoute AI / 見守り隊</PageTitle>
+
+<header class="hero">
+    <div>
+        <h1>CareRoute AI <span class="jp">見守り隊</span></h1>
+        <p class="tagline">離れていても、家族の“いつも”をAIがつなぐ。</p>
+    </div>
+    <div class="integrations">
+        @if (_model is not null)
+        {
+            <span class="chip @(_model.Integrations.DeviceProvider == "SwitchBot" ? "on" : "mock")">
+                Devices: @_model.Integrations.DeviceProvider
+            </span>
+            <span class="chip @(_model.Integrations.OrcaRouterConfigured ? "on" : "mock")">
+                OrcaRouter: @(_model.Integrations.OrcaRouterConfigured ? "Live" : "Mock")
+            </span>
+            <span class="chip @(_model.Integrations.FabricConfigured ? "on" : "mock")">
+                Fabric: @(_model.Integrations.FabricConfigured ? "Live" : "Local")
+            </span>
+            <span class="chip @(_model.Integrations.LineConfigured ? "on" : "mock")">
+                LINE: @(_model.Integrations.LineConfigured ? "Live" : "Mock")
+            </span>
+            <span class="chip neutral">DB: @_model.Integrations.Database</span>
+        }
+    </div>
+</header>
+
+@if (_model is null)
+{
+    <p class="loading">読み込み中…</p>
+}
+else
+{
+    <section class="grid">
+        <article class="card risk risk-@_model.Risk.Level.ToString().ToLowerInvariant()">
+            <h2>現在の見守りステータス</h2>
+            <p class="risk-level">@RiskLabel(_model.Risk.Level)</p>
+            <p class="risk-reason">@_model.Risk.Reason</p>
+            <p class="muted">スコア @_model.Risk.Score / 100 ・ ルールベース判定</p>
+        </article>
+
+        <article class="card">
+            <h2>家族メンバー</h2>
+            <ul class="people">
+                @foreach (var person in _model.People)
+                {
+                    <li><span class="role">@RoleLabel(person.Role)</span> @person.DisplayName</li>
+                }
+            </ul>
+            <h3>今日のサマリー</h3>
+            <p class="muted">
+                最初の活動: @(_model.Today.FirstActivityTime?.ToString("HH\\:mm") ?? "—") ／
+                最後の活動: @(_model.Today.LastActivityTime?.ToString("HH\\:mm") ?? "—") ／
+                利用回数: @_model.Today.DeviceUsageCount 回
+            </p>
+        </article>
+
+        <article class="card ai">
+            <h2>AIルーティング</h2>
+            <p class="model-name">@(_model.LastResolvedModel ?? "未使用")</p>
+            <p class="muted">OrcaRouter が解決した直近のモデル名</p>
+        </article>
+    </section>
+
+    <section class="devices">
+        <h2>デバイス</h2>
+        <div class="device-grid">
+            @foreach (var device in _model.Devices)
+            {
+                <div class="device-card @(device.IsOn ? "on" : "off")">
+                    <div class="device-head">
+                        <strong>@device.Name</strong>
+                        <span class="state">@(device.IsOn ? "ON" : "OFF")</span>
+                    </div>
+                    <p class="muted">@device.Room ・ @device.DeviceType ・ @device.Alias</p>
+                    <p class="muted">最終利用: @FormatLocal(device.LastUsedUtc)</p>
+                    <p class="muted">今日の利用: @device.TodayUsageCount 回</p>
+                    <p class="muted">遠隔操作: @(device.RemoteControlAllowed ? "許可" : "禁止") ・ @device.SafetyClass</p>
+                </div>
+            }
+        </div>
+    </section>
+
+    <section class="two-col">
+        <article class="card">
+            <h2>自然言語で操作・質問</h2>
+            <div class="chat-log">
+                @foreach (var line in _chatLog)
+                {
+                    <div class="chat-line @(line.IsAi ? "ai" : "user")">
+                        <span class="author">@line.Author</span>
+                        <span class="text">@line.Content</span>
+                    </div>
+                }
+            </div>
+            <div class="chat-input">
+                <input @bind="_input" @bind:event="oninput" @onkeydown="OnKeyDown"
+                       placeholder="例: リビングのライトつけて / 今日のお母さんどう？" disabled="@_busy" />
+                <button @onclick="SendAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_input))">送信</button>
+            </div>
+            <div class="quick">
+                @foreach (var sample in Samples)
+                {
+                    var text = sample;
+                    <button class="ghost" @onclick="@(() => SendSampleAsync(text))" disabled="@_busy">@text</button>
+                }
+            </div>
+        </article>
+
+        <article class="card">
+            <h2>LINE シミュレーター</h2>
+            <p class="muted">LINEの認証情報が無くても、グループLINEでの会話を再現できます。</p>
+            <div class="line-controls">
+                <select @bind="_lineSpeaker">
+                    @foreach (var person in _model.People)
+                    {
+                        <option value="@person.Id">@person.DisplayName</option>
+                    }
+                </select>
+                <input @bind="_lineInput" placeholder="例: 今日のお母さんどう？" disabled="@_busy" />
+                <button @onclick="SendLineAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_lineInput))">LINEで送る</button>
+            </div>
+
+            <h3>家族共有フィード</h3>
+            <div class="feed">
+                @foreach (var item in _model.Feed)
+                {
+                    <div class="feed-item @(item.IsAi ? "ai" : "")">
+                        <span class="author">@item.Author</span>
+                        <span class="time">@FormatLocal(item.OccurredAtUtc)</span>
+                        <p>@item.Content</p>
+                    </div>
+                }
+            </div>
+        </article>
+    </section>
+
+    <section class="two-col">
+        <article class="card">
+            <h2>生活イベント タイムライン</h2>
+            <ul class="timeline">
+                @foreach (var item in _model.Timeline)
+                {
+                    <li>
+                        <span class="time">@FormatLocal(item.OccurredAtUtc)</span>
+                        <span>@item.DeviceName</span>
+                        <span class="state @item.State">@item.State.ToUpperInvariant()</span>
+                    </li>
+                }
+            </ul>
+        </article>
+
+        <article class="card">
+            <h2>直近14日の活動</h2>
+            <ul class="history">
+                @foreach (var day in _model.Recent.Reverse())
+                {
+                    <li>
+                        <span class="date">@day.Date.ToString("M/d")</span>
+                        <span class="bar" style="width:@(Math.Min(day.DeviceUsageCount * 12, 120))px"></span>
+                        <span class="muted">@day.DeviceUsageCount 回 @(day.NightActivityCount > 0 ? $"／深夜{day.NightActivityCount}回" : "")</span>
+                    </li>
+                }
+            </ul>
+
+            @if (Env.IsDevelopment())
+            {
+                <h3>デモ用シミュレーション</h3>
+                <div class="quick">
+                    <button class="ghost" @onclick="@(() => SimulateAsync("normal_day"))" disabled="@_busy">通常の一日</button>
+                    <button class="ghost" @onclick="@(() => SimulateAsync("no_activity"))" disabled="@_busy">活動なし異常</button>
+                    <button class="ghost" @onclick="@(() => SimulateAsync("night_activity"))" disabled="@_busy">深夜活動異常</button>
+                </div>
+            }
+        </article>
+    </section>
+}
+
+@code {
+    private static readonly string[] Samples =
+    [
+        "リビングのライトつけて",
+        "リビングのライト消して",
+        "今日のお母さんどう？",
+        "今日最初に活動したのは何時？"
+    ];
+
+    private DashboardModel? _model;
+    private readonly List<FeedItem> _chatLog = [];
+    private string _input = string.Empty;
+    private string _lineInput = string.Empty;
+    private Guid? _lineSpeaker;
+    private bool _busy;
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    private async Task ReloadAsync()
+    {
+        var householdId = await Dashboard.GetDefaultHouseholdIdAsync();
+        if (householdId is null)
+        {
+            return;
+        }
+
+        _model = await Dashboard.LoadAsync(householdId.Value);
+        _lineSpeaker ??= _model?.People.FirstOrDefault(p => p.Role == PersonRole.Family)?.Id;
+    }
+
+    private async Task OnKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Enter")
+        {
+            await SendAsync();
+        }
+    }
+
+    private async Task SendSampleAsync(string text)
+    {
+        _input = text;
+        await SendAsync();
+    }
+
+    private Task SendAsync() => SendCoreAsync(_input, CommandSource.Web, null, () => _input = string.Empty);
+
+    private Task SendLineAsync() => SendCoreAsync(_lineInput, CommandSource.Line, _lineSpeaker, () => _lineInput = string.Empty);
+
+    private async Task SendCoreAsync(string message, CommandSource source, Guid? personId, Action clearInput)
+    {
+        if (_model is null || string.IsNullOrWhiteSpace(message) || _busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        var text = message.Trim();
+        clearInput();
+
+        var author = personId is { } id
+            ? _model.People.FirstOrDefault(p => p.Id == id)?.DisplayName ?? "家族"
+            : "あなた";
+
+        _chatLog.Add(new FeedItem(DateTimeOffset.UtcNow, author, text, false));
+        StateHasChanged();
+
+        try
+        {
+            var response = await Orchestrator.HandleAsync(
+                new AssistantRequest(_model.HouseholdId, personId, text, source));
+
+            _chatLog.Add(new FeedItem(DateTimeOffset.UtcNow, "見守りAI", response.Reply, true));
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task SimulateAsync(string scenario)
+    {
+        if (_model is null || _busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            var householdId = _model.HouseholdId;
+            var dayStart = HouseholdTime.StartOfLocalDayUtc(HouseholdTime.LocalDate(DateTimeOffset.UtcNow));
+            var devices = await Db.Devices.Where(d => d.HouseholdId == householdId).ToListAsync();
+
+            if (scenario is "no_activity" or "normal_day")
+            {
+                var existing = await Db.DeviceEvents
+                    .Where(e => e.HouseholdId == householdId && e.OccurredAtUtc >= dayStart)
+                    .ToListAsync();
+                Db.DeviceEvents.RemoveRange(existing);
+            }
+
+            if (scenario == "normal_day")
+            {
+                AddEvents(householdId, devices, dayStart,
+                    ("bedroom-light", "on", 7 * 60),
+                    ("bedroom-light", "off", 7 * 60 + 12),
+                    ("living-light", "on", 7 * 60 + 20),
+                    ("living-light", "off", 12 * 60),
+                    ("living-light", "on", 18 * 60));
+            }
+            else if (scenario == "night_activity")
+            {
+                AddEvents(householdId, devices, dayStart,
+                    ("living-light", "on", 2 * 60 + 10),
+                    ("living-light", "off", 2 * 60 + 45),
+                    ("bedroom-light", "on", 3 * 60 + 5),
+                    ("bedroom-light", "off", 3 * 60 + 25));
+            }
+
+            await Db.SaveChangesAsync();
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private void AddEvents(Guid householdId, List<Device> devices, DateTimeOffset dayStart,
+        params (string Alias, string State, int Minutes)[] items)
+    {
+        foreach (var (alias, state, minutes) in items)
+        {
+            var device = devices.FirstOrDefault(d => d.Alias == alias) ?? devices.FirstOrDefault();
+            if (device is null)
+            {
+                continue;
+            }
+
+            Db.DeviceEvents.Add(new DeviceEvent
+            {
+                HouseholdId = householdId,
+                DeviceId = device.Id,
+                EventType = "PowerState",
+                State = state,
+                PowerWatts = state == "on" ? 32.0 : 0.0,
+                Source = EventSource.Simulator,
+                OccurredAtUtc = dayStart.AddMinutes(minutes),
+                ReceivedAtUtc = dayStart.AddMinutes(minutes)
+            });
+        }
+    }
+
+    private static string RiskLabel(RiskLevel level) => level switch
+    {
+        RiskLevel.High => "要確認",
+        RiskLevel.Medium => "少し気になる",
+        _ => "いつもどおり"
+    };
+
+    private static string RoleLabel(PersonRole role) => role switch
+    {
+        PersonRole.Resident => "本人",
+        PersonRole.Family => "家族",
+        _ => "管理者"
+    };
+
+    private static string FormatLocal(DateTimeOffset? utc) =>
+        utc is null ? "—" : HouseholdTime.ToLocal(utc.Value).ToString("M/d HH:mm");
+}

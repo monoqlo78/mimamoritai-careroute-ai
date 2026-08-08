@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        run: dotnet restore MimamoriTai.slnx
+
+      - name: Build
+        run: dotnet build MimamoriTai.slnx --configuration Release --no-restore
+
+      # No secrets are configured, so every integration resolves to its mock.
+      # This is exactly the "zero-secret demo" path we promise in the README.
+      - name: Test (mock mode, no secrets)
+        run: dotnet test MimamoriTai.slnx --configuration Release --no-build --verbosity normal
+
+  secret-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Scan for committed secrets
+        shell: pwsh
+        run: ./scripts/check-secrets.ps1

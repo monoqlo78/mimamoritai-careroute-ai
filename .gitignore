@@ -1,0 +1,53 @@
+## .NET
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+artifacts/
+*.user
+*.suo
+*.userprefs
+project.lock.json
+project.fragment.lock.json
+
+## IDE
+.vs/
+.vscode/
+.idea/
+*.swp
+
+## Secrets - NEVER commit these
+.env
+.env.*
+!.env.example
+appsettings.Local.json
+appsettings.*.Local.json
+secrets.json
+*.pfx
+*.p12
+*.key
+*.pem
+*.cer
+*.publishsettings
+*.pubxml
+*.pubxml.user
+
+## Local demo database (regenerated on every run)
+*.db
+*.db-shm
+*.db-wal
+mimamoritai-demo.db*
+
+## Test / coverage output
+TestResults/
+coverage/
+*.trx
+*.coverage
+*.coverlet.json
+
+## OS
+.DS_Store
+Thumbs.db
+desktop.ini

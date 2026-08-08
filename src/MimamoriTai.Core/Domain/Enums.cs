@@ -1,0 +1,94 @@
+namespace MimamoriTai.Core.Domain;
+
+public enum PersonRole
+{
+    Resident = 0,
+    Family = 1,
+    Admin = 2
+}
+
+public enum DeviceType
+{
+    Unknown = 0,
+    Light = 1,
+    Fan = 2,
+    Plug = 3,
+    MotionSensor = 4,
+    ContactSensor = 5,
+    Heater = 6,
+    Kettle = 7,
+    Microwave = 8,
+    CookingDevice = 9,
+    DemoDevice = 10
+}
+
+/// <summary>
+/// Safety classification used by the natural language control guard rails.
+/// Only <see cref="Safe"/> devices may be switched on through an AI resolved intent.
+/// </summary>
+public enum SafetyClass
+{
+    Safe = 0,
+    Restricted = 1
+}
+
+public enum DeviceProviderKind
+{
+    Mock = 0,
+    SwitchBot = 1
+}
+
+public enum CommandSource
+{
+    Web = 0,
+    Line = 1,
+    System = 2
+}
+
+public enum DeviceAction
+{
+    TurnOn = 0,
+    TurnOff = 1,
+    Toggle = 2,
+    GetStatus = 3
+}
+
+public enum CommandStatus
+{
+    Pending = 0,
+    Succeeded = 1,
+    Failed = 2,
+    Rejected = 3
+}
+
+public enum RiskLevel
+{
+    Low = 0,
+    Medium = 1,
+    High = 2
+}
+
+public enum MessageType
+{
+    Text = 0,
+    AiReply = 1,
+    Notice = 2
+}
+
+public enum AssistantIntent
+{
+    Conversation = 0,
+    ControlDevice = 1,
+    DeviceStatus = 2,
+    QueryData = 3
+}
+
+public enum EventSource
+{
+    Mock = 0,
+    SwitchBotWebhook = 1,
+    SwitchBotPoll = 2,
+    AppCommand = 3,
+    Simulator = 4,
+    Seed = 5
+}

@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/MimamoriTai.Core/MimamoriTai.Core.csproj" />
+    <Project Path="src/MimamoriTai.Infrastructure/MimamoriTai.Infrastructure.csproj" />
+    <Project Path="src/MimamoriTai.Web/MimamoriTai.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/MimamoriTai.Tests/MimamoriTai.Tests.csproj" />
+  </Folder>
+</Solution>
