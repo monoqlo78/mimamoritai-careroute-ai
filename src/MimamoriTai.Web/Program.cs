@@ -11,6 +11,7 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
 builder.Services.AddMimamoriTaiInfrastructure(builder.Configuration);
+builder.Services.AddMimamoriTaiAuthentication(builder.Configuration);
 builder.Services.AddScoped<DashboardService>();
 builder.Services.AddOpenApi();
 builder.Services.AddHostedService<WatchAlertBackgroundService>();
@@ -28,6 +29,8 @@ else
     app.MapOpenApi();
 }
 
+app.UseMimamoriTaiForwardedHeaders();
+
 // Status code pages re-execute the pipeline, which would turn API/webhook error
 // codes into HTML responses. Restrict the friendly pages to browser navigation.
 app.UseWhen(
@@ -36,6 +39,8 @@ app.UseWhen(
         && !ctx.Request.Path.StartsWithSegments("/health"),
     branch => branch.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true));
 app.UseHttpsRedirection();
+app.UseAuthentication();
+app.UseAuthorization();
 app.UseAntiforgery();
 
 app.MapStaticAssets();
@@ -47,6 +52,7 @@ app.MapWebhookEndpoints();
 app.MapSimulatorEndpoints();
 app.MapAlertEndpoints();
 app.MapDeviceSyncEndpoints();
+app.MapAuthEndpoints();
 
 await InitializeDatabaseAsync(app);
 

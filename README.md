@@ -106,6 +106,7 @@ dotnet run --project src/MimamoriTai.Web
 - SwitchBot / OrcaRouter / Fabric / LINE のいずれも未設定なら、すべて Mock 実装（`MockDeviceProvider` / `MockAiRouterClient` / `MockFabricDataAgentClient` / `MockLineMessagingClient`）で動作します。
 - 起動時に `DemoDataSeeder` が14日分のデモデータを自動投入するので、初回起動直後からダッシュボードが賑わいます。
 - ログイン不要で固定のデモユーザー（`ICurrentUserAccessor` の既定実装 `DevCurrentUserAccessor`）として扱われ、ダッシュボード上部の「データソース」ドロップダウンでサンプル世帯（共有デモデータ）を選択した状態で表示されます。「本番データを開始」ボタンから自分専用の本番世帯を作成できます（詳細は下記「ユーザーとデータソースの切り替え」）。
+- `Auth:Enabled` は既定で `false` です。この状態ではログイン機能自体が一切配線されず、ダッシュボードは常に匿名（「デモモード（未認証）」チップ表示）で動作します。
 
 起動後は `https://localhost:xxxx/` （`launchSettings.json` 参照）でダッシュボードを開いてください。
 
@@ -117,6 +118,34 @@ dotnet run --project src/MimamoriTai.Web
 - **本番（Production）世帯**: ダッシュボードの「本番データを開始」ボタンから作成する、自分専用の世帯です。作成したユーザー（`HouseholdMember`, Role=Owner）以外には見えません。SwitchBotが設定されていれば実機データ、未設定でもモックで動作します（設定なしでも壊れません）。
 
 現在はログイン画面がなく、`ICurrentUserAccessor` の既定実装 `DevCurrentUserAccessor` が常に同じ固定デモユーザー（`AppUserId = 11111111-1111-1111-1111-111111111111`）を返します。**将来的にEntra External ID / LINE OIDCなどの実認証を追加する際は、この1箇所のDI登録（`ServiceCollectionExtensions.cs`）をクレームベースの実装に差し替えるだけで、`HouseholdAccessService` によるアクセス制御や世帯の分離ロジックはそのまま機能します。** 詳細は `docs/ARCHITECTURE.md` の「ユーザーとデータソースの切り替え」を参照。
+
+## 認証（OpenID Connect：Entra External ID / LINE Login）
+
+`Auth:Enabled=false`（appsettings.json の既定値）の間は、本節の機能は一切有効化されず、アプリはこれまで通り匿名のデモモードで動作します。秘密情報も設定も不要です。
+
+実際のログインを有効化する場合は、以下の4項目（`Auth:Enabled` を含む）を **User Secrets または環境変数** で設定してください（`ClientSecret` を絶対に `appsettings.json` にコミットしないこと）。
+
+```powershell
+cd src/MimamoriTai.Web
+dotnet user-secrets set "Auth:Enabled" "true"
+dotnet user-secrets set "Auth:Authority" "https://<subdomain>.ciamlogin.com/<tenantId>/v2.0"
+dotnet user-secrets set "Auth:ClientId" "<your-app-registration-client-id>"
+dotnet user-secrets set "Auth:ClientSecret" "<your-app-registration-client-secret>"
+```
+
+Azure App Service で運用する場合は、同じ4項目をアプリケーション設定（`Auth__Enabled` / `Auth__Authority` / `Auth__ClientId` / `Auth__ClientSecret`）として設定してください。
+
+| 設定キー | 既定値 | 説明 |
+|---|---|---|
+| `Auth__Enabled` | `false` | `true` にすると初めてCookie + OpenID Connect認証パイプラインが有効になる。 |
+| `Auth__Authority` | (空) | OIDCの発行者URL。Entra External IDの場合は `https://<subdomain>.ciamlogin.com/<tenantId>/v2.0`、LINE Loginを直接使う場合は `https://access.line.me`。 |
+| `Auth__ClientId` | (空) | アプリ登録のクライアントID。 |
+| `Auth__ClientSecret` | (空) | アプリ登録のクライアントシークレット。**必ずシークレットとして管理し、appsettings.jsonにはコミットしないこと。** |
+| `Auth__CallbackPath` | `/signin-oidc` | 通常は変更不要。 |
+| `Auth__SignedOutCallbackPath` | `/signout-callback-oidc` | 通常は変更不要。 |
+| `Auth__ProviderName` | `entra-external` | `CurrentUser.IdentityProvider` に使われる識別子（LINEを直接使う場合や `idp` クレームに `line` を含む場合は自動的に `"line"` になる）。 |
+
+サインイン/サインアウトは `/auth/login?returnUrl=/`・`/auth/logout` から行い、`/auth/me` で現在のサインイン状態をJSONで確認できます。いずれも `Auth:Enabled=false` の間は例外を投げず日本語の案内文を返します。詳細な認証フロー（Entra External IDの発行者検証の注意点、リバースプロキシ対応、LINE Loginとの両立方法）は `docs/ARCHITECTURE.md` の「実認証の実装」を参照。
 
 ## 実サービスに接続する（User Secrets）
 

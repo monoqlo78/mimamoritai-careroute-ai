@@ -6,6 +6,8 @@
 @using MimamoriTai.Web.Services
 @using Microsoft.EntityFrameworkCore
 @using MimamoriTai.Infrastructure.Data
+@using MimamoriTai.Infrastructure.Auth
+@using Microsoft.Extensions.Options
 @inject DashboardService Dashboard
 @inject AssistantOrchestrator Orchestrator
 @inject DeviceControlService Control
@@ -16,6 +18,8 @@
 @inject HouseholdAccessService HouseholdAccess
 @inject IDataSourceContext DataSourceContext
 @inject MimamoriTai.Core.Abstractions.IEventStreamPublisher StreamPublisher
+@inject ICurrentUserAccessor CurrentUserAccessor
+@inject IOptions<AuthOptions> AuthOptionsAccessor
 @inject IJSRuntime JS
 
 <PageTitle>CareRoute AI / 見守り隊</PageTitle>
@@ -24,6 +28,24 @@
     <div>
         <h1>CareRoute AI <span class="jp">見守り隊</span></h1>
         <p class="tagline">離れていても、家族の“いつも”をAIがつなぐ。</p>
+    </div>
+    <div class="account">
+        @if (AuthOptionsAccessor.Value.IsConfigured)
+        {
+            @if (CurrentUserAccessor.Current is { } user)
+            {
+                <span class="chip on">@user.DisplayName さん</span>
+                <a class="ghost small" href="/auth/logout">ログアウト</a>
+            }
+            else
+            {
+                <a class="ghost small" href="/auth/login?returnUrl=/">ログイン</a>
+            }
+        }
+        else
+        {
+            <span class="chip neutral">デモモード（未認証）</span>
+        }
     </div>
     <div class="integrations">
         @if (_model is not null)

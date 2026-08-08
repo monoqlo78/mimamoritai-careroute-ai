@@ -40,6 +40,7 @@ public static class ServiceCollectionExtensions
         services.Configure<FabricOptions>(configuration.GetSection(FabricOptions.SectionName));
         services.Configure<LineOptions>(configuration.GetSection(LineOptions.SectionName));
         services.Configure<EventhouseOptions>(configuration.GetSection(EventhouseOptions.SectionName));
+        services.Configure<AuthOptions>(configuration.GetSection(AuthOptions.SectionName));
 
         var connectionString = configuration.GetConnectionString("AppDb");
 

@@ -43,6 +43,20 @@ main { padding: 24px; max-width: 1400px; margin: 0 auto; }
 
 .integrations { display: flex; flex-wrap: wrap; gap: 8px; }
 
+.account { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.account a.ghost {
+    text-decoration: none;
+    display: inline-block;
+    background: transparent;
+    border: 1px solid #33415e;
+    color: var(--muted);
+    font-weight: 400;
+    font-size: 12px;
+    border-radius: 6px;
+    padding: 4px 10px;
+}
+.account a.ghost:hover { border-color: var(--accent); color: var(--accent); }
+
 .chip {
     font-size: 12px;
     padding: 4px 10px;

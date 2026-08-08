@@ -96,6 +96,19 @@ public interface ICurrentUserAccessor { CurrentUser? Current { get; } }
 
 現在のDI既定実装は `Infrastructure/Auth/DevCurrentUserAccessor.cs` で、**設定・ログイン一切不要**の固定デモユーザー（`AppUserId = 11111111-1111-1111-1111-111111111111`, `IdentityProvider = "dev"`, `IsAuthenticated = false`）を常に返す。**将来の実認証タスクがやるべきことは、`ServiceCollectionExtensions.cs` でこの1行のDI登録をクレームベースの実装（`HttpContext.User` から `CurrentUser` を組み立てるもの）に差し替えるだけ。** `HouseholdAccessService` や各エンドポイントの `CanAccessAsync` 呼び出しなど、それ以外のコードは一切変更不要で動作し続ける設計。
 
+### 実認証の実装: OpenID Connect（Entra External ID / LINE Login）
+
+上記の継ぎ目に実装した認証機能。`Auth:Enabled=false`（既定値）の場合は本節の内容は一切有効化されず、アプリは今まで通り匿名のデモモードで動く。
+
+- **設定**: `Infrastructure/Auth/AuthOptions.cs`（`Auth:*` セクション）。`Enabled`/`Authority`/`ClientId`/`ClientSecret` の4つが揃って初めて `IsConfigured = true` になる。`Authority` が `https://access.line.me` の場合は `IsLineAuthority = true` となり、LINE Login固有の分岐（後述）が有効になる。
+- **DI配線**: `Web/Services/AuthenticationExtensions.cs` の `AddMimamoriTaiAuthentication` が唯一の追加ポイント。`IsConfigured` が false の間は `AddAuthentication()`/`AddAuthorization()` を引数なしで登録するだけ（`Program.cs` が無条件に呼ぶ `UseAuthentication`/`UseAuthorization` がスキームなしでも動作するため）で、Cookie/OIDCスキームは一切追加されず `ICurrentUserAccessor` も `DevCurrentUserAccessor` のまま。`IsConfigured` が true になって初めて Cookie（既定スキーム）+ OpenID Connect（チャレンジスキーム）を追加し、DI登録を `Web/Services/ClaimsCurrentUserAccessor.cs` に差し替える。
+- **Entra External ID発行者検証の罠**: Entra External IDのディスカバリー文書が返す `issuer` は `https://<tenantId>.ciamlogin.com/<tenantId>/v2.0`（テナントIDサブドメイン）だが、`Authority` に設定するのはカスタムサブドメイン形式（`https://<subdomain>.ciamlogin.com/<tenantId>/v2.0`）であることが多い。両方を `TokenValidationParameters.ValidIssuers` に含めないと `IDX10205`（発行者不一致）でサインインが失敗する。
+- **リバースプロキシ対応**: Azure App Service配下ではTLS終端がプロキシ側で行われるため、`X-Forwarded-Proto`/`X-Forwarded-For` を信頼しないと `redirect_uri` が `http://` になりOIDCが失敗する。`UseMimamoriTaiForwardedHeaders()`（`UseAuthentication` より前に呼び出し）が `ForwardedHeadersOptions.KnownIPNetworks`/`KnownProxies` をクリアして全プロキシを信頼する設定にしている。
+- **AppUserの初回サインイン時プロビジョニング**: `ICurrentUserAccessor.Current` は同期プロパティなので、その中でDBのupsertを非同期に行うことはできない。代わりにOIDCの `OnTokenValidated` イベント（`CurrentUserAccessorFactory`）で `HouseholdAccessService.EnsureUserAsync` を1回だけ呼び、生成/更新された `AppUser.Id` を `mimamori:uid` というカスタムクレームとしてプリンシパルに追加する。`ClaimsCurrentUserAccessor` はこのクレームを読むだけなので同期的に動作できる。本番世帯（`EnsureProductionHouseholdAsync`）はここでは自動作成しない — 既存の「本番データを開始」ボタンによる明示的なオプトインのまま。
+- **LINE Loginを直接使う場合**: `Auth:Authority` に `https://access.line.me` を設定するだけで、同じOIDCパイプラインで動作する。LINEは `offline_access` スコープをサポートしないため、`IsLineAuthority` が true の間はこのスコープをリクエストしない。`idp` クレームに `line` を含む場合、またはLINEを直接使う場合は `CurrentUser.IdentityProvider` が `"line"` として報告され、`AppUser.LineUserId` にも `sub` クレームの値が保存される。認証パイプライン自体は1本のままで、Entra External ID経由でLINEを連携させる構成・LINEに直接向ける構成の両方をコード変更なしにサポートする。
+- **エンドポイント**（`Web/Endpoints/AuthEndpoints.cs`）: `GET /auth/login?returnUrl=`（OIDCチャレンジ）、`GET /auth/logout`（Cookie/OIDC両スキームからサインアウト）、`GET /auth/me`（`{ authenticated, displayName, provider, appUserId }` のJSON、動作確認用）。いずれも `Auth:Enabled=false` の間は例外を投げず日本語の案内文を返す。
+- **UI**: `Home.razor` のヘッダーに `.account` ブロックを追加。`Auth:Enabled` が false なら「デモモード（未認証）」の中立チップ、true かつ未認証なら「ログイン」リンク、true かつ認証済みならユーザー名チップ＋「ログアウト」リンクを表示する（既存の `.chip`/`.ghost` 規約を踏襲）。`[Authorize]` はアプリ全体には付けておらず、`Auth:Enabled=false` の間はダッシュボードは常に匿名でレンダリングされる。
+
 ### 世帯アクセス制御: `HouseholdAccessService`
 
 `Core/Application/HouseholdAccessService.cs`（スコープドサービス）が全ての可否判定・世帯作成の中心：

@@ -118,6 +118,30 @@ public class HouseholdAccessTests
     }
 
     [Fact]
+    public async Task EnsureUserAsync_CreatesOnce_ThenUpdatesOnSecondCall()
+    {
+        using var testDb = new TestDb();
+        await testDb.SeedAsync();
+
+        var appUserId = Guid.NewGuid();
+        var user = new CurrentUser(appUserId, "初回の名前", "entra-external", "external-sub-1", IsAuthenticated: true);
+        var service = Service(testDb, user);
+
+        var created = await service.EnsureUserAsync(user);
+        Assert.Equal(appUserId, created.Id);
+        Assert.Equal("初回の名前", created.DisplayName);
+
+        var updatedUser = user with { DisplayName = "更新後の名前" };
+        var updated = await service.EnsureUserAsync(updatedUser);
+
+        Assert.Equal(created.Id, updated.Id);
+        Assert.Equal("更新後の名前", updated.DisplayName);
+
+        var count = testDb.Context.AppUsers.Count(u => u.IdentityProvider == "entra-external" && u.ExternalSubject == "external-sub-1");
+        Assert.Equal(1, count);
+    }
+
+    [Fact]
     public void DeviceProviderFactory_Sample_ReturnsMockProvider()
     {
         var mock = new MockDeviceProvider();
