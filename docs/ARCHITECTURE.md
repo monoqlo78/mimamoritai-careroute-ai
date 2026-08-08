@@ -17,7 +17,7 @@ MimamoriTai.Web  ──depends on──>  MimamoriTai.Infrastructure  ──depe
   - `Devices/`: `ISwitchBotClient` の実装 `SwitchBotClient`、`IDeviceProvider` の実装 `SwitchBotDeviceProvider` と `MockDeviceProvider`、`IDeviceProviderFactory` の実装 `DeviceProviderFactory`、両者を束ねて `IDataSourceContext.Mode` に応じて実体を選択する `DataSourceAwareDeviceProvider`（`IDeviceProvider` として登録される実体はこれ）。
   - `Auth/`: `ICurrentUserAccessor` の既定実装 `DevCurrentUserAccessor`（固定デモユーザーを返す。詳細は下記）。
   - `Ai/`: `IAiRouterClient` の実装 `OrcaRouterClient` と `MockAiRouterClient`。
-  - `Fabric/`: `IFabricDataAgentClient` の実装 `MockFabricDataAgentClient`（実MCPクライアントは未実装）。`IEventStreamPublisher` の実装 `EventhouseStreamPublisher`（Fabric Eventhouseへのストリーミング取り込み）と `MockEventStreamPublisher`。
+  - `Fabric/`: `IFabricDataAgentClient` の実装として `MockFabricDataAgentClient`（未設定時、常に `IsConfigured = false`）と `FabricDataAgentMcpClient`（実MCPクライアント。JSON-RPC 2.0でFabric Data AgentのMCPエンドポイントに `initialize` → `notifications/initialized` → `tools/list` → `tools/call` の順で問い合わせ、`application/json`/SSE(`text/event-stream`)どちらのレスポンスも解釈する。認証は`Azure.Identity`の`TokenCredential`を`EventhouseStreamPublisher`と共用）。`IEventStreamPublisher` の実装 `EventhouseStreamPublisher`（Fabric Eventhouseへのストリーミング取り込み）と `MockEventStreamPublisher`。
   - `Line/`: `ILineMessagingClient` の実装 `LineMessagingClient` と `MockLineMessagingClient`、および共有の `LineSignature`（HMAC検証）。
   - `ServiceCollectionExtensions.cs`: **すべての実装／モックの選択ロジックがここに集約されている**唯一の場所。
 
@@ -37,7 +37,7 @@ MimamoriTai.Web  ──depends on──>  MimamoriTai.Infrastructure  ──depe
 |---|---|---|
 | `IDeviceProvider` | `MockDeviceProvider`（`SwitchBotOptions.IsConfigured` が false の時に登録） | `SwitchBotDeviceProvider`（`SwitchBotOptions.IsConfigured` が true の時のみ登録） |
 | `IAiRouterClient` | `MockAiRouterClient` | `OrcaRouterClient`（`OrcaRouterOptions.IsConfigured` が true の時のみ登録） |
-| `IFabricDataAgentClient` | `MockFabricDataAgentClient`（常に登録。実MCPクライアントは未実装） | — |
+| `IFabricDataAgentClient` | `MockFabricDataAgentClient`（`FabricOptions.IsConfigured` が false の時に登録） | `FabricDataAgentMcpClient`（`FabricOptions.IsConfigured` が true の時のみ登録。MCP/JSON-RPC経由でFabric Data Agentに接続） |
 | `IEventStreamPublisher` | `MockEventStreamPublisher`（`EventhouseOptions.IsConfigured` が false の時に登録） | `EventhouseStreamPublisher`（`EventhouseOptions.IsConfigured` が true の時のみ登録） |
 | `ILineMessagingClient` | `MockLineMessagingClient` | `LineMessagingClient`（`LineOptions.IsConfigured` が true の時のみ登録） |
 | `IAppDbContext` (`AppDbContext`) | SQLite ファイル (`mimamoritai-demo.db`) | 接続文字列があれば SQL Server |

@@ -3,6 +3,7 @@ using Azure.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using MimamoriTai.Core.Abstractions;
 using MimamoriTai.Core.Application;
@@ -100,7 +101,20 @@ public static class ServiceCollectionExtensions
         // --- Fabric Data Agent -----------------------------------------------
         // The MCP-backed client is registered only once Fabric is configured; until
         // then the mock reports IsConfigured = false and the orchestrator uses local data.
-        services.AddSingleton<IFabricDataAgentClient, MockFabricDataAgentClient>();
+        var fabric = configuration.GetSection(FabricOptions.SectionName).Get<FabricOptions>() ?? new FabricOptions();
+
+        if (fabric.IsConfigured)
+        {
+            services.TryAddSingleton<TokenCredential>(new DefaultAzureCredential());
+            services.AddHttpClient<IFabricDataAgentClient, FabricDataAgentMcpClient>(client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(120);
+            });
+        }
+        else
+        {
+            services.AddSingleton<IFabricDataAgentClient, MockFabricDataAgentClient>();
+        }
 
         // --- LINE ------------------------------------------------------------
         var line = configuration.GetSection(LineOptions.SectionName).Get<LineOptions>() ?? new LineOptions();
@@ -122,7 +136,7 @@ public static class ServiceCollectionExtensions
 
         if (eventhouse.IsConfigured)
         {
-            services.AddSingleton<TokenCredential>(new DefaultAzureCredential());
+            services.TryAddSingleton<TokenCredential>(new DefaultAzureCredential());
             services.AddHttpClient<IEventStreamPublisher, EventhouseStreamPublisher>(client =>
             {
                 client.BaseAddress = new Uri(eventhouse.ClusterUri.TrimEnd('/') + "/");

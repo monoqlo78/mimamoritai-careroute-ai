@@ -4,9 +4,14 @@
 
 ## 現状の実装状況
 
-- 現在DIに登録されているのは `MockFabricDataAgentClient` のみで、常に `IsConfigured = false` を返します。**実際にFabric Data Agent(MCP)へ接続するクライアントは未実装**です。
-- `FabricOptions`（`src/MimamoriTai.Infrastructure/Fabric/FabricOptions.cs`）には `Enabled`, `WorkspaceId`, `DataAgentId`, `McpUrl`, `Scope` が定義済みで、認証は `Azure.Identity`（`DefaultAzureCredential` / ローカルでは Azure CLI ログイン、Azure上ではManaged Identity）を使う設計コメントがありますが、**実装コード自体はまだありません**（要確認: 実装予定のクラス名等は未決定）。
-- 実装する際は `src/MimamoriTai.Infrastructure/Fabric/` に `FabricDataAgentClient : IFabricDataAgentClient` を追加し、`ServiceCollectionExtensions.cs` の Fabric セクションで `FabricOptions.IsConfigured` の分岐を追加してください（現状はモック固定登録）。
+- `src/MimamoriTai.Infrastructure/Fabric/FabricDataAgentMcpClient.cs` が `IFabricDataAgentClient` の実クライアントです。MCP（Model Context Protocol）のJSON-RPC 2.0メッセージ（`initialize` → `notifications/initialized` → `tools/list` → `tools/call`）をHTTP経由で送受信し、レスポンスが `application/json` / `text/event-stream`（SSEの`data:`行）のどちらで返っても解釈します。認証は `EventhouseStreamPublisher` と同じ `Azure.Identity` の `TokenCredential`（`DefaultAzureCredential`）を使い、スコープ `https://api.fabric.microsoft.com/.default` のトークンをキャッシュして再利用します。
+- `ServiceCollectionExtensions.cs` は `FabricOptions.IsConfigured` が true の場合のみ `FabricDataAgentMcpClient` を登録し、それ以外は `MockFabricDataAgentClient`（常に `IsConfigured = false`）を登録します。Fabricへの呼び出しが失敗した場合（未接続・容量停止中・不正なレスポンス等）も例外は投げず、`FabricAnswer(Success:false)` を返して `AssistantOrchestrator` が `LocalDataQuestionService` にフォールバックします。
+- **実際にデプロイ済みのFabric Data Agent**（ワークスペースID・Data AgentIDはシークレットではないため下記に記載。実際の接続にはApp Serviceのアプリ設定で `Fabric:Enabled=true` にする必要があります）:
+  - Workspace ID: `e2a48a60-0b5f-421f-91bb-51a33fe528bc`
+  - Data Agent ID: `bd915a90-2bc1-4a4f-bcae-749622366f97`
+  - MCP endpoint: `https://api.fabric.microsoft.com/v1/mcp/workspaces/e2a48a60-0b5f-421f-91bb-51a33fe528bc/dataagents/bd915a90-2bc1-4a4f-bcae-749622366f97/agent`
+  - データソース: Kusto/KQLデータベース `MimamoriEventhouse` のテーブル `DeviceEvents`（列: EventId, HouseholdId, DeviceId, DeviceName, Room, DeviceType, EventType, State, PowerWatts, Source, OccurredAtUtc）。
+  - `appsettings.json` にはこれらのGUIDをハードコードしていません（`WorkspaceId`/`DataAgentId`/`McpUrl` は空文字のまま）。環境ごとにApp Serviceのアプリ設定または `dotnet user-secrets` で注入してください。
 - ※未検証：以下の「1. ワークスペースの作成」〜「3. Data Agent の作成」の手順・画面名は、実際のFabricポータルで操作を確認したものではなく一般的な知識をもとに記載しています。Fabricの機能・UIは頻繁に更新されるため、実施前に必ず最新のFabricポータル・公式ドキュメント（`docs/REFERENCES.md`）で確認してください。
 
 ## 1. ワークスペースの作成
@@ -60,7 +65,7 @@ People テーブル（世帯構成員）を使って、家族からの生活リ�
 
 ## 実クライアントの接続先
 
-実装が完了したら、次の設定を行ってください（プレースホルダーのみ・実際の値は絶対にコミットしないこと）。
+実装が完了したら、次の設定を行ってください（プレースホルダーのみ・実際の値は絶対にコミットしないこと。ただしワークスペースID/Data AgentIDはシークレットではないため上記「現状の実装状況」に実値を記載済みです）。
 
 ```powershell
 cd src/MimamoriTai.Web
