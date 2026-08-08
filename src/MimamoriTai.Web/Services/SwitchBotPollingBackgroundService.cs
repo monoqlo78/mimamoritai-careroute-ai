@@ -4,6 +4,7 @@ using MimamoriTai.Core.Abstractions;
 using MimamoriTai.Core.Domain;
 using MimamoriTai.Infrastructure.Data;
 using MimamoriTai.Infrastructure.Devices;
+using MimamoriTai.Infrastructure.Fabric;
 
 namespace MimamoriTai.Web.Services;
 
@@ -77,9 +78,20 @@ public sealed class SwitchBotPollingBackgroundService(
                 .Where(d => d.Provider == DeviceProviderKind.SwitchBot && d.IsActive)
                 .ToListAsync(ct);
 
+            var changedEvents = new List<(DeviceEvent Event, Device Device)>();
+
             foreach (var device in devices)
             {
-                await PollDeviceAsync(db, provider, device, clock, ct);
+                var changed = await PollDeviceAsync(db, provider, device, clock, ct);
+                if (changed is not null)
+                {
+                    changedEvents.Add((changed, device));
+                }
+            }
+
+            if (changedEvents.Count > 0)
+            {
+                await PublishToStreamAsync(scope.ServiceProvider, changedEvents, ct);
             }
         }
         catch (OperationCanceledException)
@@ -92,13 +104,13 @@ public sealed class SwitchBotPollingBackgroundService(
         }
     }
 
-    private async Task PollDeviceAsync(
+    private async Task<DeviceEvent?> PollDeviceAsync(
         AppDbContext db, IDeviceProvider provider, Device device, TimeProvider clock, CancellationToken ct)
     {
         var status = await provider.GetStatusAsync(device.ExternalDeviceId, ct);
         if (status is null)
         {
-            return;
+            return null;
         }
 
         var lastEvent = await db.DeviceEvents
@@ -109,10 +121,10 @@ public sealed class SwitchBotPollingBackgroundService(
         // Never create a duplicate event when the observed state has not changed.
         if (lastEvent is not null && string.Equals(lastEvent.State, status.State, StringComparison.OrdinalIgnoreCase))
         {
-            return;
+            return null;
         }
 
-        db.DeviceEvents.Add(new DeviceEvent
+        var deviceEvent = new DeviceEvent
         {
             HouseholdId = device.HouseholdId,
             DeviceId = device.Id,
@@ -122,8 +134,54 @@ public sealed class SwitchBotPollingBackgroundService(
             Source = EventSource.SwitchBotPoll,
             OccurredAtUtc = status.ObservedAtUtc ?? clock.GetUtcNow(),
             ReceivedAtUtc = clock.GetUtcNow()
-        });
+        };
 
+        db.DeviceEvents.Add(deviceEvent);
         await db.SaveChangesAsync(ct);
+
+        return deviceEvent;
+    }
+
+    /// <summary>
+    /// Best-effort secondary write to Fabric Eventhouse for near-real-time analytics.
+    /// Azure SQL is already durable at this point; a Fabric publish failure must never
+    /// interrupt or fail the polling loop.
+    /// </summary>
+    private async Task PublishToStreamAsync(
+        IServiceProvider scopedProvider, List<(DeviceEvent Event, Device Device)> changedEvents, CancellationToken ct)
+    {
+        try
+        {
+            var publisher = scopedProvider.GetRequiredService<IEventStreamPublisher>();
+
+            var records = changedEvents.Select(x => new DeviceEventRecord(
+                x.Event.Id,
+                x.Event.HouseholdId,
+                x.Event.DeviceId,
+                x.Device.Name,
+                x.Device.Room,
+                x.Device.DeviceType.ToString(),
+                x.Event.EventType,
+                x.Event.State,
+                x.Event.PowerWatts,
+                x.Event.Source.ToString(),
+                x.Event.OccurredAtUtc.UtcDateTime)).ToList();
+
+            var result = await publisher.PublishAsync(records, ct);
+            if (!result.Success)
+            {
+                logger.LogWarning(
+                    "Eventhouse publish of {Count} device event(s) failed: {Error}",
+                    records.Count, result.Error);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected during shutdown.
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Eventhouse publish failed; SwitchBot polling continues normally.");
+        }
     }
 }

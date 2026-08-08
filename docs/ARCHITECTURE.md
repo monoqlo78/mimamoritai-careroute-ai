@@ -8,7 +8,7 @@ MimamoriTai.Web  ──depends on──>  MimamoriTai.Infrastructure  ──depe
 
 - **MimamoriTai.Core**（ドメイン層／アプリケーション層）
   - `Domain/Entities.cs`, `Domain/Enums.cs`: エンティティと列挙型。EF Coreに依存しない素のPOCO。
-  - `Abstractions/*.cs`: `IAiRouterClient`, `IDeviceProvider`, `IFabricDataAgentClient`, `ILineMessagingClient`, `ISwitchBotClient`, `IAppDbContext` などのインターフェース。**Core はどの外部サービスにも直接依存しない**。
+  - `Abstractions/*.cs`: `IAiRouterClient`, `IDeviceProvider`, `IFabricDataAgentClient`, `IEventStreamPublisher`, `ILineMessagingClient`, `ISwitchBotClient`, `IAppDbContext` などのインターフェース。**Core はどの外部サービスにも直接依存しない**。
   - `Application/*.cs`: `AssistantOrchestrator`, `DeviceControlService`, `DeviceSafetyPolicy`, `IntentParser`, `RiskAssessmentService`, `ActivityService`, `HouseholdTime`, `LocalDataQuestionService`, `WatchAlertService`（LINE見守りアラート、詳細は `docs/LINE_SETUP.md`）などのユースケース実装。I/Oは `Abstractions` 経由でのみ行う。
   - 依存先: `Microsoft.EntityFrameworkCore`（`DbSet<T>` の型としてのみ）。外部サービスSDKには依存しない。
 
@@ -16,16 +16,16 @@ MimamoriTai.Web  ──depends on──>  MimamoriTai.Infrastructure  ──depe
   - `Data/`: `AppDbContext`（`IAppDbContext` 実装）、`AppDbContextFactory`（デザインタイム用）、`DemoDataSeeder`。
   - `Devices/`: `ISwitchBotClient` の実装 `SwitchBotClient`、`IDeviceProvider` の実装 `SwitchBotDeviceProvider` と `MockDeviceProvider`。
   - `Ai/`: `IAiRouterClient` の実装 `OrcaRouterClient` と `MockAiRouterClient`。
-  - `Fabric/`: `IFabricDataAgentClient` の実装 `MockFabricDataAgentClient`（実MCPクライアントは未実装）。
+  - `Fabric/`: `IFabricDataAgentClient` の実装 `MockFabricDataAgentClient`（実MCPクライアントは未実装）。`IEventStreamPublisher` の実装 `EventhouseStreamPublisher`（Fabric Eventhouseへのストリーミング取り込み）と `MockEventStreamPublisher`。
   - `Line/`: `ILineMessagingClient` の実装 `LineMessagingClient` と `MockLineMessagingClient`、および共有の `LineSignature`（HMAC検証）。
   - `ServiceCollectionExtensions.cs`: **すべての実装／モックの選択ロジックがここに集約されている**唯一の場所。
 
 - **MimamoriTai.Web**（プレゼンテーション層）
-  - `Components/Pages/Home.razor`: ダッシュボードUI（Blazor Server, `@rendermode InteractiveServer`）。データがデモかSwitchBot実機かを示すチップと、「実機を同期」ボタン（`DeviceSyncService`呼び出し）を表示する。
+  - `Components/Pages/Home.razor`: ダッシュボードUI（Blazor Server, `@rendermode InteractiveServer`）。データがデモかSwitchBot実機かを示すチップ、ストリーム（実ストリーム／デモ）チップ、「実機を同期」ボタン（`DeviceSyncService`呼び出し）、「Fabricへ送信」ボタン（`IEventStreamPublisher`呼び出し）を表示する。
   - `Services/DashboardService.cs`: 画面表示用の読み取りモデル (`DashboardModel`) を組み立てる。
   - `Endpoints/ApiEndpoints.cs`, `WebhookEndpoints.cs`, `SimulatorEndpoints.cs`, `AlertEndpoints.cs`, `DeviceSyncEndpoints.cs`: Minimal API。
   - `Services/WatchAlertBackgroundService.cs`: `IHostedService`。既定世帯の見守りアラートを定期的に評価する。
-  - `Services/SwitchBotPollingBackgroundService.cs`: `IHostedService`。SwitchBotが設定されている場合のみ、実機のステータスを定期ポーリングしON/OFF・人感・開閉の状態変化を `DeviceEvent`（`Source=SwitchBotPoll`）として記録する。SwitchBot未設定時は即座に何もせず終了するため、デモ経路・既存テストへの影響はない。
+  - `Services/SwitchBotPollingBackgroundService.cs`: `IHostedService`。SwitchBotが設定されている場合のみ、実機のステータスを定期ポーリングしON/OFF・人感・開閉の状態変化を `DeviceEvent`（`Source=SwitchBotPoll`）としてAzure SQLに記録する。保存に成功したイベントは、続けて `IEventStreamPublisher` へ1回のバッチ呼び出しでも送信する（Fabric Eventhouseへのリアルタイム分析パス）。Fabricへの送信が失敗してもポーリングループは継続する（Azure SQLが正のデータストア）。SwitchBot未設定時は即座に何もせず終了するため、デモ経路・既存テストへの影響はない。
   - `Program.cs`: DI登録、DB初期化（マイグレーション or `EnsureCreatedAsync` + デモシード）。
 
 ## 抽象化とモック戦略
@@ -37,12 +37,41 @@ MimamoriTai.Web  ──depends on──>  MimamoriTai.Infrastructure  ──depe
 | `IDeviceProvider` | `MockDeviceProvider`（`SwitchBotOptions.IsConfigured` が false の時に登録） | `SwitchBotDeviceProvider`（`SwitchBotOptions.IsConfigured` が true の時のみ登録） |
 | `IAiRouterClient` | `MockAiRouterClient` | `OrcaRouterClient`（`OrcaRouterOptions.IsConfigured` が true の時のみ登録） |
 | `IFabricDataAgentClient` | `MockFabricDataAgentClient`（常に登録。実MCPクライアントは未実装） | — |
+| `IEventStreamPublisher` | `MockEventStreamPublisher`（`EventhouseOptions.IsConfigured` が false の時に登録） | `EventhouseStreamPublisher`（`EventhouseOptions.IsConfigured` が true の時のみ登録） |
 | `ILineMessagingClient` | `MockLineMessagingClient` | `LineMessagingClient`（`LineOptions.IsConfigured` が true の時のみ登録） |
 | `IAppDbContext` (`AppDbContext`) | SQLite ファイル (`mimamoritai-demo.db`) | 接続文字列があれば SQL Server |
 
 **実機（SwitchBot）への切り替え**: `SwitchBotDeviceProvider` はSwitchBot OpenAPI v1.1のレスポンス（`GET /v1.1/devices` の `deviceList`/`infraredRemoteList`、`GET /v1.1/devices/{id}/status` の機種別フィールド）を実装済みで、`statusCode` が100以外の場合や不正なJSONは例外を投げず失敗として扱う（詳細は `docs/SWITCHBOT_SETUP.md`）。`SwitchBot:Enabled=true`＋Token/Secretで有効化した後、`DeviceSyncService`（ダッシュボードの「実機を同期」ボタン、または `POST /api/devices/sync`）を実行して実機の機器一覧をDevicesテーブルへ反映する。反映済みの機器は `SwitchBotPollingBackgroundService` が定期的（既定5分、`SwitchBot:PollIntervalMinutes`）にステータスをポーリングし、ON/OFF・人感・開閉の変化を `DeviceEvent`（`Source=SwitchBotPoll`）として記録するため、リスク判定・アラートも実データに基づいて動作する。
 
 各モックは「設定が無ければ安全に倒れる」ことを目的としており、`IsConfigured` プロパティを通じて呼び出し側（`AssistantOrchestrator` や `DashboardService`）が実接続かどうかを判定できます。
+
+## リアルタイム分析パス（Fabric Eventhouse）
+
+SwitchBot実機のデータは、Azure SQL（`mimamori.DeviceEvents`、**正のデータストア**）に加えて、Microsoft Fabric Eventhouse（KQLデータベース）へもストリーミングされ、リアルタイム分析・可視化に利用できます。
+
+```
+SwitchBot Cloud →(5分ポーリング)→ Web App → Azure SQL (mimamori.DeviceEvents, 正)
+                                          └→ Fabric Eventhouse (KQL, リアルタイム分析)
+```
+
+- **これはポーリングであり、push通知ではありません。** `SwitchBotPollingBackgroundService` が既定5分間隔でSwitchBotのステータスAPIを呼び出し、前回の状態から変化があった場合のみ `DeviceEvent` を記録します。
+- Azure SQLへの保存が完了した後、同じバッチを1回のHTTP呼び出しで Fabric Eventhouse の `DeviceEvents` テーブルへストリーミング取り込み（`v1/rest/ingest/{database}/{table}?streamFormat=json&mappingName={mapping}`）します。認証は **`Azure.Identity` の `DefaultAzureCredential` によるパスワードレス**（Web Appのシステム割り当てマネージドIDに `ingestors` ロールを付与済み）。
+- Fabricへの送信に失敗してもポーリングループ自体は中断・失敗しません（警告ログのみ）。Azure SQLが常に正となります。
+- Eventstream **`MimamoriDeviceStream`**（CustomEndpoint → Eventhouse）も同じワークスペースに構築済みですが、現状のコードからは利用していません。将来、サードパーティのWebhook型push通知を受け取るための「表玄関」として温存しています。
+- 手動での動作確認用に `POST /api/stream/publish?take=N`（既定50件）を用意しており、直近のDeviceEventを再度Fabricへ送信して疎通を確認できます。ダッシュボードの「Fabricへ送信」ボタンからも同じ経路を呼び出せます。
+
+### 設定 (`Eventhouse:*`)
+
+| キー | 既定値 | 説明 |
+|---|---|---|
+| `Eventhouse:Enabled` | `false` | `true` にすると実Eventhouseへのストリーミングを有効化 |
+| `Eventhouse:ClusterUri` | `""` | EventhouseのエンジンURI（例: `https://<cluster>.z2.kusto.fabric.microsoft.com`。**`ingest-<cluster>` ホストではなくエンジンホストを指定すること** — ストリーミング取り込みは `ingest-` ホストでは404になる） |
+| `Eventhouse:DatabaseName` | `MimamoriEventhouse` | KQLデータベース名 |
+| `Eventhouse:TableName` | `DeviceEvents` | 取り込み先テーブル名 |
+| `Eventhouse:MappingName` | `DeviceEventsMapping` | JSON取り込みマッピング名 |
+| `Eventhouse:TimeoutSeconds` | `30` | HTTPタイムアウト（秒） |
+
+秘密情報は一切含みません（トークンは `DefaultAzureCredential` が都度取得し、有効期限の5分前になったらキャッシュを更新します）。
 
 ## データモデル
 

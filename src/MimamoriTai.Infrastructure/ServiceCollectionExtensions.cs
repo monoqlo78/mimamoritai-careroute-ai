@@ -1,3 +1,5 @@
+using Azure.Core;
+using Azure.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -20,6 +22,7 @@ public sealed record IntegrationStatus(
     bool OrcaRouterConfigured,
     bool FabricConfigured,
     bool LineConfigured,
+    bool EventhouseConfigured,
     string Database);
 
 public static class ServiceCollectionExtensions
@@ -35,6 +38,7 @@ public static class ServiceCollectionExtensions
         services.Configure<SwitchBotOptions>(configuration.GetSection(SwitchBotOptions.SectionName));
         services.Configure<FabricOptions>(configuration.GetSection(FabricOptions.SectionName));
         services.Configure<LineOptions>(configuration.GetSection(LineOptions.SectionName));
+        services.Configure<EventhouseOptions>(configuration.GetSection(EventhouseOptions.SectionName));
 
         var connectionString = configuration.GetConnectionString("AppDb");
 
@@ -113,6 +117,23 @@ public static class ServiceCollectionExtensions
             services.AddSingleton<ILineMessagingClient, MockLineMessagingClient>();
         }
 
+        // --- Fabric Eventhouse (real-time streaming ingestion) ---------------
+        var eventhouse = configuration.GetSection(EventhouseOptions.SectionName).Get<EventhouseOptions>() ?? new EventhouseOptions();
+
+        if (eventhouse.IsConfigured)
+        {
+            services.AddSingleton<TokenCredential>(new DefaultAzureCredential());
+            services.AddHttpClient<IEventStreamPublisher, EventhouseStreamPublisher>(client =>
+            {
+                client.BaseAddress = new Uri(eventhouse.ClusterUri.TrimEnd('/') + "/");
+                client.Timeout = TimeSpan.FromSeconds(eventhouse.TimeoutSeconds);
+            });
+        }
+        else
+        {
+            services.AddSingleton<IEventStreamPublisher, MockEventStreamPublisher>();
+        }
+
         // --- Application services --------------------------------------------
         services.AddScoped<ILocalDataQuestionService>(sp =>
             new LocalDataQuestionService(sp.GetRequiredService<IAppDbContext>(), sp.GetRequiredService<TimeProvider>()));
@@ -146,6 +167,7 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IAiRouterClient>().IsConfigured,
             sp.GetRequiredService<IFabricDataAgentClient>().IsConfigured,
             sp.GetRequiredService<ILineMessagingClient>().IsConfigured,
+            sp.GetRequiredService<IEventStreamPublisher>().IsConfigured,
             string.IsNullOrWhiteSpace(connectionString) ? "SQLite (demo fallback)" : "SQL Server"));
 
         return services;

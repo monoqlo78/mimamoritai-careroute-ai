@@ -12,6 +12,7 @@
 @inject IWebHostEnvironment Env
 @inject WatchAlertService AlertService
 @inject DeviceSyncService DeviceSync
+@inject MimamoriTai.Core.Abstractions.IEventStreamPublisher StreamPublisher
 
 <PageTitle>CareRoute AI / 見守り隊</PageTitle>
 
@@ -37,6 +38,9 @@
             </span>
             <span class="chip @(_model.Integrations.LineConfigured ? "on" : "mock")">
                 LINE: @(_model.Integrations.LineConfigured ? "Live" : "Mock")
+            </span>
+            <span class="chip @(_model.Integrations.EventhouseConfigured ? "on" : "mock")">
+                Stream: @(_model.Integrations.EventhouseConfigured ? "実ストリーム" : "デモ")
             </span>
             <span class="chip neutral">DB: @_model.Integrations.Database</span>
         }
@@ -283,6 +287,15 @@ else
                     <button class="ghost act" disabled>実機を同期（未設定）</button>
                 </div>
             }
+
+            <h3>Fabricへのストリーミング</h3>
+            <p class="muted">
+                直近のデバイスイベントをFabric Eventhouse（KQL）へ送信し、リアルタイム分析パスを確認します。
+                @(_model.Integrations.EventhouseConfigured ? "現在は実ストリームに接続されています。" : "現在は未設定のためデモ動作（送信をシミュレート）します。")
+            </p>
+            <div class="quick">
+                <button class="ghost act" @onclick="PublishToStreamAsync" disabled="@_busy">Fabricへ送信</button>
+            </div>
         </article>
     </section>
 }
@@ -513,6 +526,67 @@ else
             _noticeKind = "ok";
 
             await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    /// <summary>
+    /// Publishes the most recent DeviceEvent rows to the Fabric Eventhouse real-time
+    /// stream via IEventStreamPublisher, mirroring /api/stream/publish. Azure SQL
+    /// remains the source of truth; this is purely for proving the streaming path.
+    /// </summary>
+    private async Task PublishToStreamAsync()
+    {
+        if (_model is null || _busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        StateHasChanged();
+
+        try
+        {
+            var recent = await Db.DeviceEvents
+                .OrderByDescending(e => e.OccurredAtUtc)
+                .Take(50)
+                .ToListAsync();
+
+            var deviceIds = recent.Select(e => e.DeviceId).Distinct().ToList();
+            var devices = await Db.Devices.Where(d => deviceIds.Contains(d.Id)).ToDictionaryAsync(d => d.Id);
+
+            var records = recent.Select(e =>
+            {
+                devices.TryGetValue(e.DeviceId, out var device);
+                return new MimamoriTai.Core.Abstractions.DeviceEventRecord(
+                    e.Id,
+                    e.HouseholdId,
+                    e.DeviceId,
+                    device?.Name ?? string.Empty,
+                    device?.Room ?? string.Empty,
+                    device?.DeviceType.ToString() ?? string.Empty,
+                    e.EventType,
+                    e.State,
+                    e.PowerWatts,
+                    e.Source.ToString(),
+                    e.OccurredAtUtc.UtcDateTime);
+            }).ToList();
+
+            var result = await StreamPublisher.PublishAsync(records);
+
+            if (result.Success)
+            {
+                _notice = $"Fabricへの送信が完了しました（{result.PublishedCount} 件・{result.DurationMs}ms・{StreamPublisher.DisplayName}）。";
+                _noticeKind = "ok";
+            }
+            else
+            {
+                _notice = $"Fabricへの送信に失敗しました（{result.Error}）。";
+                _noticeKind = "warn";
+            }
         }
         finally
         {

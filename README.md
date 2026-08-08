@@ -126,6 +126,7 @@ dotnet user-secrets set "SwitchBot:PollIntervalMinutes" "5"
 dotnet user-secrets set "Fabric:WorkspaceId" "<your-fabric-workspace-id>"
 dotnet user-secrets set "Fabric:DataAgentId" "<your-fabric-data-agent-id>"
 dotnet user-secrets set "Fabric:McpUrl" "<your-fabric-data-agent-mcp-url>"
+dotnet user-secrets set "Eventhouse:ClusterUri" "<your-eventhouse-engine-uri>"
 ```
 
 `SwitchBot:Enabled` と `Line:Enabled` は `appsettings.json` 側の `bool` フィールドですが、appsettings には含まれていないため、有効化する場合は `appsettings.Development.json` や環境変数（`SwitchBot__Enabled=true` など）で設定してください。それぞれの設定手順の詳細は `docs/SWITCHBOT_SETUP.md` / `docs/LINE_SETUP.md` / `docs/FABRIC_SETUP.md` を参照。
@@ -138,6 +139,19 @@ dotnet user-secrets set "Fabric:McpUrl" "<your-fabric-data-agent-mcp-url>"
 | `SwitchBot__Token` | (空) | SwitchBotアプリの開発者向けオプションで取得したToken。 |
 | `SwitchBot__Secret` | (空) | 同じくSecret。 |
 | `SwitchBot__PollIntervalMinutes` | `5` | 実機ポーリング間隔（分）。`SwitchBotPollingBackgroundService` が使用し、SwitchBot未設定時は完全に無効化される。 |
+
+Fabric Eventhouse（KQL）へのリアルタイムストリーミングを有効化するために必要な環境変数は以下のとおりです。認証は秘密情報不要の **マネージドID（`DefaultAzureCredential`）** です。
+
+| 環境変数 | 既定値 | 説明 |
+|---|---|---|
+| `Eventhouse__Enabled` | `false` | `true` にすると `IEventStreamPublisher` の実装が `MockEventStreamPublisher` から `EventhouseStreamPublisher` に切り替わる（ClusterUriも必須）。 |
+| `Eventhouse__ClusterUri` | (空) | EventhouseのエンジンURI（`https://<cluster>.z2.kusto.fabric.microsoft.com`。**`ingest-` ホストではなくエンジンホスト**を指定すること）。 |
+| `Eventhouse__DatabaseName` | `MimamoriEventhouse` | KQLデータベース名。 |
+| `Eventhouse__TableName` | `DeviceEvents` | 取り込み先テーブル名。 |
+| `Eventhouse__MappingName` | `DeviceEventsMapping` | JSON取り込みマッピング名。 |
+| `Eventhouse__TimeoutSeconds` | `30` | HTTPタイムアウト（秒）。 |
+
+`SwitchBotPollingBackgroundService` は、Azure SQLへの `DeviceEvent` 保存に成功すると、同じバッチを `IEventStreamPublisher` 経由でFabric Eventhouseへも送信します（**ポーリング、pushではない**）。Fabricへの送信が失敗してもポーリング自体は継続し、Azure SQLが常に正のデータストアです。詳細は `docs/ARCHITECTURE.md` の「リアルタイム分析パス」を参照。
 
 ## プロジェクト構成
 
@@ -173,6 +187,7 @@ docs/
 | POST | `/webhooks/switchbot` | SwitchBot Webhook受信用プレースホルダー（ペイロード未実装） |
 | POST | `/api/simulator/events` | デモ用イベント注入（`Development`環境限定） |
 | POST | `/api/devices/sync` | 実機（SwitchBot）の機器一覧をDBへ同期（`DeviceSyncService`）。追加／更新／無効化件数を返す |
+| POST | `/api/stream/publish` | 直近N件（既定50、`?take=`）の`DeviceEvent`をFabric Eventhouseへ手動送信し、疎通確認する（`publisher`/`configured`/`published`/`durationMs`/`error`を返す） |
 
 ## テストの実行
 
@@ -189,5 +204,6 @@ dotnet test
 | SwitchBot | ✅ 設定すれば実接続 | `SwitchBotDeviceProvider` はOpenAPI v1.1のレスポンス（`deviceList`/`infraredRemoteList`、機種別のstatusフィールド）を実装済み。`SwitchBot:Enabled=true`＋Token/Secretで有効化。ダッシュボードの「実機を同期」ボタン（または`POST /api/devices/sync`）でDBへ反映し、`SwitchBotPollingBackgroundService`が実機の状態変化をイベントとして記録する。詳細は `docs/SWITCHBOT_SETUP.md`。 |
 | OrcaRouter | ✅ 設定すれば実接続 | `OrcaRouter:ApiKey` が空の間は `MockAiRouterClient` が固定応答を返す。 |
 | Microsoft Fabric Data Agent | 🟡 モック稼働 | `MockFabricDataAgentClient` は常に `IsConfigured = false` を返し、代わりに `LocalDataQuestionService` がDBから直接回答。実際のMCP接続クライアントは未実装（`docs/FABRIC_SETUP.md` 参照）。 |
+| Microsoft Fabric Eventhouse（リアルタイム分析） | ✅ 設定すれば実接続 | `Eventhouse:Enabled=true`＋`ClusterUri`で有効化（認証はマネージドID、秘密情報不要）。`SwitchBotPollingBackgroundService`がAzure SQL保存後に同じイベントをストリーミング取り込みし、`POST /api/stream/publish`／ダッシュボードの「Fabricへ送信」ボタンで手動疎通確認も可能。Eventstream `MimamoriDeviceStream`（Webhook型pushの将来の表玄関）は構築済みだがコードからは未使用。 |
 | LINE | ✅ 設定すれば実接続 | `Line:ChannelAccessToken`/`ChannelSecret` が空の間は `MockLineMessagingClient` がダッシュボードのLINEシミュレーターとして動作。署名検証ロジックはモックでも有効。 |
 | データベース | ✅ 両対応 | 接続文字列があれば SQL Server + マイグレーション、無ければ SQLite ファイルへ自動フォールバック。 |
