@@ -16,6 +16,7 @@ builder.Services.AddScoped<DashboardService>();
 builder.Services.AddOpenApi();
 builder.Services.AddHostedService<WatchAlertBackgroundService>();
 builder.Services.AddHostedService<SwitchBotPollingBackgroundService>();
+builder.Services.AddHostedService<DemoDataTopUpBackgroundService>();
 
 var app = builder.Build();
 
@@ -95,6 +96,7 @@ static async Task InitializeDatabaseAsync(WebApplication app)
         }
 
         await DemoDataSeeder.SeedAsync(db, clock);
+        await DemoDataSeeder.TopUpAsync(db, clock);
         logger.LogInformation("Database ready. Provider: {Provider}", db.Database.ProviderName);
     }
     catch (Exception ex)
