@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using MimamoriTai.Core.Abstractions;
 using MimamoriTai.Core.Application;
+using MimamoriTai.Core.Domain;
 using MimamoriTai.Infrastructure.Data;
 
 namespace MimamoriTai.Web.Endpoints;
@@ -18,18 +19,36 @@ public static class DeviceSyncEndpoints
         app.MapPost("/api/devices/sync", async (
             SyncDevicesRequest? request,
             AppDbContext db,
+            HouseholdAccessService householdAccess,
+            IDataSourceContext dataSourceContext,
             DeviceSyncService sync,
             CancellationToken ct) =>
         {
             var householdId = request?.HouseholdId
-                ?? await db.Households.OrderBy(h => h.CreatedAtUtc).Select(h => h.Id).FirstOrDefaultAsync(ct);
+                ?? await householdAccess.ResolveDefaultAsync(ct);
 
-            if (householdId == Guid.Empty)
+            if (householdId is null || householdId == Guid.Empty)
             {
                 return Results.NotFound(new { error = "No household is registered." });
             }
 
-            var result = await sync.SyncAsync(householdId, ct);
+            if (!await householdAccess.CanAccessAsync(householdId.Value, ct))
+            {
+                return Results.Json(new { error = "このご家庭のデータにアクセスする権限がありません。" }, statusCode: StatusCodes.Status403Forbidden);
+            }
+
+            var household = await db.Households.FirstOrDefaultAsync(h => h.Id == householdId.Value, ct);
+            if (household is null)
+            {
+                return Results.NotFound(new { error = "No household is registered." });
+            }
+
+            // Set the ambient data-source context so the IDeviceProvider decorator
+            // resolves the correct concrete provider for this household before syncing.
+            dataSourceContext.Mode = household.DataSourceMode;
+            dataSourceContext.HouseholdId = household.Id;
+
+            var result = await sync.SyncAsync(householdId.Value, ct);
 
             return Results.Ok(new
             {

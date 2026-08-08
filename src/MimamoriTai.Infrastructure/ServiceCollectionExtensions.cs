@@ -8,6 +8,7 @@ using MimamoriTai.Core.Abstractions;
 using MimamoriTai.Core.Application;
 using MimamoriTai.Core.Domain;
 using MimamoriTai.Infrastructure.Ai;
+using MimamoriTai.Infrastructure.Auth;
 using MimamoriTai.Infrastructure.Data;
 using MimamoriTai.Infrastructure.Devices;
 using MimamoriTai.Infrastructure.Fabric;
@@ -61,6 +62,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(TimeProvider.System);
 
         // --- Device provider -------------------------------------------------
+        // Both providers are always registered; selection between them happens per
+        // household at runtime via IDeviceProviderFactory + IDataSourceContext, not
+        // once at startup, so a single running app can serve Sample (mock) households
+        // and a user's Production (SwitchBot-backed, when configured) household side
+        // by side.
         var switchBot = configuration.GetSection(SwitchBotOptions.SectionName).Get<SwitchBotOptions>() ?? new SwitchBotOptions();
 
         services.AddHttpClient<ISwitchBotClient, SwitchBotClient>(client =>
@@ -69,17 +75,10 @@ public static class ServiceCollectionExtensions
         });
 
         services.AddSingleton<MockDeviceProvider>();
-
-        if (switchBot.IsConfigured)
-        {
-            // Real hardware path, opt-in via SwitchBot:Enabled = true (plus Token/Secret).
-            // Stays off for the mock demo, which never needs any secret.
-            services.AddScoped<IDeviceProvider, SwitchBotDeviceProvider>();
-        }
-        else
-        {
-            services.AddSingleton<IDeviceProvider>(sp => sp.GetRequiredService<MockDeviceProvider>());
-        }
+        services.AddScoped<SwitchBotDeviceProvider>();
+        services.AddScoped<IDeviceProviderFactory, DeviceProviderFactory>();
+        services.AddScoped<IDataSourceContext, DataSourceContext>();
+        services.AddScoped<IDeviceProvider, DataSourceAwareDeviceProvider>();
 
         // --- AI router -------------------------------------------------------
         var orca = configuration.GetSection(OrcaRouterOptions.SectionName).Get<OrcaRouterOptions>() ?? new OrcaRouterOptions();
@@ -143,6 +142,15 @@ public static class ServiceCollectionExtensions
         services.AddScoped<DeviceControlService>();
         services.AddScoped<AssistantOrchestrator>();
         services.AddScoped<DeviceSyncService>();
+
+        // --- Multi-user / household access -------------------------------------
+        // DevCurrentUserAccessor is the zero-configuration fallback: a single fixed
+        // demo user, no login required. A later task swaps this registration for a
+        // claims-based implementation (Entra External ID / LINE OIDC); nothing else
+        // in the app needs to change, since every caller depends only on
+        // ICurrentUserAccessor.
+        services.AddScoped<ICurrentUserAccessor, DevCurrentUserAccessor>();
+        services.AddScoped<HouseholdAccessService>();
 
         // --- Watch/risk alert (LINE push) -------------------------------------
         services.AddSingleton(sp =>

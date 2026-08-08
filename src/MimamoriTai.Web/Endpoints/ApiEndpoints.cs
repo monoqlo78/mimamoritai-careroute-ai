@@ -68,6 +68,7 @@ public static class ApiEndpoints
             AssistantMessageRequest request,
             AssistantOrchestrator orchestrator,
             AppDbContext db,
+            HouseholdAccessService householdAccess,
             CancellationToken ct) =>
         {
             if (string.IsNullOrWhiteSpace(request.Message))
@@ -76,11 +77,16 @@ public static class ApiEndpoints
             }
 
             var householdId = request.HouseholdId
-                ?? await db.Households.OrderBy(h => h.CreatedAtUtc).Select(h => h.Id).FirstOrDefaultAsync(ct);
+                ?? await householdAccess.ResolveDefaultAsync(ct);
 
-            if (householdId == Guid.Empty)
+            if (householdId is null || householdId == Guid.Empty)
             {
                 return Results.Problem("No household is registered.");
+            }
+
+            if (!await householdAccess.CanAccessAsync(householdId.Value, ct))
+            {
+                return Results.Json(new { error = "このご家庭のデータにアクセスする権限がありません。" }, statusCode: StatusCodes.Status403Forbidden);
             }
 
             var source = Enum.TryParse<CommandSource>(request.Source, ignoreCase: true, out var parsed)
@@ -88,36 +94,46 @@ public static class ApiEndpoints
                 : CommandSource.Web;
 
             var response = await orchestrator.HandleAsync(
-                new AssistantRequest(householdId, request.PersonId, request.Message, source), ct);
+                new AssistantRequest(householdId.Value, request.PersonId, request.Message, source), ct);
 
             return Results.Ok(response);
         }).WithName("PostAssistantMessage").DisableAntiforgery();
 
         app.MapGet("/api/activity/today", async (
-            Guid? householdId, AppDbContext db, TimeProvider clock, CancellationToken ct) =>
+            Guid? householdId, AppDbContext db, HouseholdAccessService householdAccess, TimeProvider clock, CancellationToken ct) =>
         {
-            var id = householdId ?? await db.Households.OrderBy(h => h.CreatedAtUtc).Select(h => h.Id).FirstOrDefaultAsync(ct);
-            if (id == Guid.Empty)
+            var id = householdId ?? await householdAccess.ResolveDefaultAsync(ct);
+            if (id is null || id == Guid.Empty)
             {
                 return Results.NotFound();
+            }
+
+            if (!await householdAccess.CanAccessAsync(id.Value, ct))
+            {
+                return Results.Json(new { error = "このご家庭のデータにアクセスする権限がありません。" }, statusCode: StatusCodes.Status403Forbidden);
             }
 
             var activity = new ActivityService(db);
             var today = HouseholdTime.LocalDate(clock.GetUtcNow());
-            return Results.Ok(await activity.GetDailyAsync(id, today, ct));
+            return Results.Ok(await activity.GetDailyAsync(id.Value, today, ct));
         }).WithName("GetTodayActivity");
 
         app.MapGet("/api/activity/recent", async (
-            Guid? householdId, int? days, AppDbContext db, CancellationToken ct) =>
+            Guid? householdId, int? days, AppDbContext db, HouseholdAccessService householdAccess, CancellationToken ct) =>
         {
-            var id = householdId ?? await db.Households.OrderBy(h => h.CreatedAtUtc).Select(h => h.Id).FirstOrDefaultAsync(ct);
-            if (id == Guid.Empty)
+            var id = householdId ?? await householdAccess.ResolveDefaultAsync(ct);
+            if (id is null || id == Guid.Empty)
             {
                 return Results.NotFound();
             }
 
+            if (!await householdAccess.CanAccessAsync(id.Value, ct))
+            {
+                return Results.Json(new { error = "このご家庭のデータにアクセスする権限がありません。" }, statusCode: StatusCodes.Status403Forbidden);
+            }
+
             var activity = new ActivityService(db);
-            return Results.Ok(await activity.GetRecentAsync(id, Math.Clamp(days ?? 14, 1, 60), ct));
+            return Results.Ok(await activity.GetRecentAsync(id.Value, Math.Clamp(days ?? 14, 1, 60), ct));
         }).WithName("GetRecentActivity");
 
         return app;

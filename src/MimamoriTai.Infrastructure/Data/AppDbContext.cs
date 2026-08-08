@@ -23,6 +23,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<DailyActivitySummary> DailyActivitySummaries => Set<DailyActivitySummary>();
     public DbSet<AiRequestLog> AiRequestLogs => Set<AiRequestLog>();
     public DbSet<WatchAlert> WatchAlerts => Set<WatchAlert>();
+    public DbSet<AppUser> AppUsers => Set<AppUser>();
+    public DbSet<HouseholdMember> HouseholdMembers => Set<HouseholdMember>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -54,6 +56,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         b.Entity<Household>(e =>
         {
             e.Property(x => x.Name).HasMaxLength(128).IsRequired();
+            e.Property(x => x.DataSourceMode).HasConversion<string>().HasMaxLength(32);
         });
 
         b.Entity<Person>(e =>
@@ -138,6 +141,25 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.RiskLevel).HasConversion<string>().HasMaxLength(32);
             // Dedup lookup: latest alert for a person at a given risk level within the cooldown window.
             e.HasIndex(x => new { x.PersonId, x.RiskLevel, x.SentAtUtc });
+        });
+
+        b.Entity<AppUser>(e =>
+        {
+            e.Property(x => x.IdentityProvider).HasMaxLength(32).IsRequired();
+            e.Property(x => x.ExternalSubject).HasMaxLength(256).IsRequired();
+            e.Property(x => x.LineUserId).HasMaxLength(64);
+            e.Property(x => x.DisplayName).HasMaxLength(128).IsRequired();
+            e.Property(x => x.Email).HasMaxLength(256);
+            e.HasIndex(x => new { x.IdentityProvider, x.ExternalSubject }).IsUnique();
+            e.HasIndex(x => x.LineUserId);
+        });
+
+        b.Entity<HouseholdMember>(e =>
+        {
+            e.Property(x => x.Role).HasConversion<string>().HasMaxLength(32);
+            e.HasIndex(x => new { x.HouseholdId, x.AppUserId }).IsUnique();
+            e.HasOne(x => x.Household).WithMany().HasForeignKey(x => x.HouseholdId).OnDelete(DeleteBehavior.Cascade);
+            e.HasOne(x => x.AppUser).WithMany().HasForeignKey(x => x.AppUserId).OnDelete(DeleteBehavior.Cascade);
         });
 
         base.OnModelCreating(b);

@@ -1,5 +1,6 @@
 @page "/"
 @rendermode InteractiveServer
+@using MimamoriTai.Core.Abstractions
 @using MimamoriTai.Core.Application
 @using MimamoriTai.Core.Domain
 @using MimamoriTai.Web.Services
@@ -12,7 +13,10 @@
 @inject IWebHostEnvironment Env
 @inject WatchAlertService AlertService
 @inject DeviceSyncService DeviceSync
+@inject HouseholdAccessService HouseholdAccess
+@inject IDataSourceContext DataSourceContext
 @inject MimamoriTai.Core.Abstractions.IEventStreamPublisher StreamPublisher
+@inject IJSRuntime JS
 
 <PageTitle>CareRoute AI / 見守り隊</PageTitle>
 
@@ -45,6 +49,29 @@
             <span class="chip neutral">DB: @_model.Integrations.Database</span>
         }
     </div>
+    @if (_model is not null)
+    {
+        <div class="datasource">
+            <select class="datasource-select" @onchange="OnHouseholdSelectedAsync" disabled="@_busy">
+                @foreach (var h in _households)
+                {
+                    <option value="@h.Id" selected="@(h.Id == _model.HouseholdId)">
+                        @(h.DataSourceMode == DataSourceMode.Sample ? $"サンプル: {h.Name}" : $"本番: {h.Name}")
+                    </option>
+                }
+            </select>
+            <span class="chip @(_model.DataSourceMode == DataSourceMode.Sample ? "neutral" : "on")">
+                @(_model.DataSourceMode == DataSourceMode.Sample ? "サンプルデータ" : "本番データ")
+            </span>
+            @if (!_households.Any(h => h.DataSourceMode == DataSourceMode.Production))
+            {
+                <button class="ghost small" title="実際のSwitchBot機器を使った本番データのご家庭を作成し、同期します"
+                        @onclick="StartProductionAsync" disabled="@_busy">
+                    本番データを開始
+                </button>
+            }
+        </div>
+    }
 </header>
 
 @if (_model is null)
@@ -339,19 +366,130 @@ else
     private bool _busy;
     private string? _notice;
     private string _noticeKind = "ok";
+    private IReadOnlyList<HouseholdSummary> _households = [];
+    private const string SelectedHouseholdCookieName = "mimamori_household";
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
 
-    private async Task ReloadAsync()
+    /// <summary>
+    /// Restores the last-selected household from a cookie once the interactive circuit
+    /// is up. This intentionally runs only after the first render (never during static
+    /// prerendering), so JS interop is always available here and no exception can occur.
+    /// </summary>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        var householdId = await Dashboard.GetDefaultHouseholdIdAsync();
-        if (householdId is null)
+        if (!firstRender)
         {
             return;
         }
 
-        _model = await Dashboard.LoadAsync(householdId.Value);
+        string? cookieValue = null;
+        try
+        {
+            cookieValue = await JS.InvokeAsync<string?>("mimamoriUi.getCookie", SelectedHouseholdCookieName);
+        }
+        catch (JSException)
+        {
+            // JS interop can be transiently unavailable (e.g. circuit still negotiating);
+            // fall back to the server-resolved default household silently.
+        }
+
+        if (Guid.TryParse(cookieValue, out var householdId) && householdId != _model?.HouseholdId)
+        {
+            await ReloadAsync(householdId);
+            StateHasChanged();
+        }
+    }
+
+    private async Task ReloadAsync(Guid? householdId = null)
+    {
+        _households = await HouseholdAccess.ListAccessibleAsync();
+
+        var targetId = householdId ?? _model?.HouseholdId ?? await Dashboard.GetDefaultHouseholdIdAsync();
+        if (targetId is null)
+        {
+            return;
+        }
+
+        var model = await Dashboard.LoadAsync(targetId.Value);
+        if (model is null)
+        {
+            // Access denied (e.g. stale cookie pointing at someone else's household) or the
+            // household no longer exists; fall back to the caller's own accessible default.
+            targetId = await Dashboard.GetDefaultHouseholdIdAsync();
+            model = targetId is null ? null : await Dashboard.LoadAsync(targetId.Value);
+        }
+
+        _model = model;
         _lineSpeaker ??= _model?.People.FirstOrDefault(p => p.Role == PersonRole.Family)?.Id;
+    }
+
+    private async Task OnHouseholdSelectedAsync(ChangeEventArgs e)
+    {
+        if (_busy || !Guid.TryParse(e.Value?.ToString(), out var householdId))
+        {
+            return;
+        }
+
+        _busy = true;
+        StateHasChanged();
+
+        try
+        {
+            await ReloadAsync(householdId);
+            await PersistSelectedHouseholdAsync(householdId);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    /// <summary>
+    /// Provisions (or reuses) the caller's own Production household, then immediately
+    /// runs the existing device-sync path so real SwitchBot devices are imported right away.
+    /// </summary>
+    private async Task StartProductionAsync()
+    {
+        if (_busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        StateHasChanged();
+
+        try
+        {
+            var householdId = await HouseholdAccess.EnsureProductionHouseholdAsync("わが家", CancellationToken.None);
+
+            DataSourceContext.Mode = DataSourceMode.Production;
+            DataSourceContext.HouseholdId = householdId;
+            var result = await DeviceSync.SyncAsync(householdId);
+
+            _notice = $"本番データを開始しました（追加 {result.Added}／更新 {result.Updated}／無効化 {result.Deactivated}）。";
+            _noticeKind = "ok";
+
+            await ReloadAsync(householdId);
+            await PersistSelectedHouseholdAsync(householdId);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task PersistSelectedHouseholdAsync(Guid householdId)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("mimamoriUi.setCookie", SelectedHouseholdCookieName, householdId.ToString());
+        }
+        catch (JSException)
+        {
+            // Best-effort only: the dropdown still works for the rest of this session
+            // even if persisting the cookie failed.
+        }
     }
 
     private async Task OnKeyDown(KeyboardEventArgs args)

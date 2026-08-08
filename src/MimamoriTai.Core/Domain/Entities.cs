@@ -6,6 +6,12 @@ public class Household
     public string Name { get; set; } = string.Empty;
     public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 
+    /// <summary>
+    /// Whether this household is the shared demo dataset (visible to every user) or
+    /// a real user's production data (visible only to its <see cref="HouseholdMember"/>s).
+    /// </summary>
+    public DataSourceMode DataSourceMode { get; set; } = DataSourceMode.Sample;
+
     public List<Person> People { get; set; } = [];
     public List<Device> Devices { get; set; } = [];
 }
@@ -158,4 +164,43 @@ public class AiRequestLog
     public long DurationMs { get; set; }
     public bool Success { get; set; }
     public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// A signed-in (or, today, the single dev/demo) user. Identity is keyed by
+/// (<see cref="IdentityProvider"/>, <see cref="ExternalSubject"/>) so a later switch to
+/// real Entra External ID / LINE OIDC authentication only needs to upsert this row,
+/// never change its shape. <see cref="ICurrentUserAccessor"/> is the only coupling
+/// point between the auth layer and the rest of the app.
+/// </summary>
+public class AppUser
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+
+    /// <summary>e.g. "dev", "entra-external", "line".</summary>
+    public string IdentityProvider { get; set; } = string.Empty;
+
+    /// <summary>The stable subject/oid claim from the IdP.</summary>
+    public string ExternalSubject { get; set; } = string.Empty;
+
+    /// <summary>LINE `sub` / userId when known.</summary>
+    public string? LineUserId { get; set; }
+
+    public string DisplayName { get; set; } = string.Empty;
+    public string? Email { get; set; }
+    public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset LastLoginAtUtc { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>Membership of an <see cref="AppUser"/> in a <see cref="Household"/>, with a role.</summary>
+public class HouseholdMember
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid HouseholdId { get; set; }
+    public Guid AppUserId { get; set; }
+    public HouseholdMemberRole Role { get; set; }
+    public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+
+    public Household? Household { get; set; }
+    public AppUser? AppUser { get; set; }
 }

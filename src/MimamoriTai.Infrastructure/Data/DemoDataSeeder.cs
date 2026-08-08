@@ -1,6 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using MimamoriTai.Core.Application;
 using MimamoriTai.Core.Domain;
+using MimamoriTai.Infrastructure.Auth;
 using MimamoriTai.Infrastructure.Devices;
 
 namespace MimamoriTai.Infrastructure.Data;
@@ -27,15 +28,33 @@ public static class DemoDataSeeder
 
     public static async Task<Guid> SeedAsync(AppDbContext db, TimeProvider clock, CancellationToken ct = default)
     {
+        var now = clock.GetUtcNow();
+
+        // Ensure the fixed dev/demo AppUser row exists so HouseholdAccessService and
+        // ownership checks work out of the box with zero login.
+        var demoUser = await db.AppUsers.FirstOrDefaultAsync(
+            u => u.IdentityProvider == "dev" && u.ExternalSubject == "demo", ct);
+        if (demoUser is null)
+        {
+            db.AppUsers.Add(new AppUser
+            {
+                Id = DevCurrentUserAccessor.DemoUserId,
+                IdentityProvider = "dev",
+                ExternalSubject = "demo",
+                DisplayName = "デモユーザー",
+                CreatedAtUtc = now,
+                LastLoginAtUtc = now
+            });
+        }
+
         var existing = await db.Households.FirstOrDefaultAsync(h => h.Name == DemoHouseholdName, ct);
         if (existing is not null)
         {
+            await db.SaveChangesAsync(ct);
             return existing.Id;
         }
 
-        var now = clock.GetUtcNow();
-
-        var household = new Household { Name = DemoHouseholdName, CreatedAtUtc = now };
+        var household = new Household { Name = DemoHouseholdName, DataSourceMode = DataSourceMode.Sample, CreatedAtUtc = now };
         db.Households.Add(household);
 
         var resident = new Person { HouseholdId = household.Id, DisplayName = "お母さん", Role = PersonRole.Resident, CreatedAtUtc = now };

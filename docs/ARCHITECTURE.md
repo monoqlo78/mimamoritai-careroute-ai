@@ -8,24 +8,25 @@ MimamoriTai.Web  ──depends on──>  MimamoriTai.Infrastructure  ──depe
 
 - **MimamoriTai.Core**（ドメイン層／アプリケーション層）
   - `Domain/Entities.cs`, `Domain/Enums.cs`: エンティティと列挙型。EF Coreに依存しない素のPOCO。
-  - `Abstractions/*.cs`: `IAiRouterClient`, `IDeviceProvider`, `IFabricDataAgentClient`, `IEventStreamPublisher`, `ILineMessagingClient`, `ISwitchBotClient`, `IAppDbContext` などのインターフェース。**Core はどの外部サービスにも直接依存しない**。
-  - `Application/*.cs`: `AssistantOrchestrator`, `DeviceControlService`, `DeviceSafetyPolicy`, `IntentParser`, `RiskAssessmentService`, `ActivityService`, `HouseholdTime`, `LocalDataQuestionService`, `WatchAlertService`（LINE見守りアラート、詳細は `docs/LINE_SETUP.md`）などのユースケース実装。I/Oは `Abstractions` 経由でのみ行う。
+  - `Abstractions/*.cs`: `IAiRouterClient`, `IDeviceProvider`, `IDeviceProviderFactory`, `IDataSourceContext`, `IFabricDataAgentClient`, `IEventStreamPublisher`, `ILineMessagingClient`, `ISwitchBotClient`, `ICurrentUserAccessor`, `IAppDbContext` などのインターフェース。**Core はどの外部サービスにも直接依存しない**。
+  - `Application/*.cs`: `AssistantOrchestrator`, `DeviceControlService`, `DeviceSafetyPolicy`, `IntentParser`, `RiskAssessmentService`, `ActivityService`, `HouseholdTime`, `LocalDataQuestionService`, `WatchAlertService`（LINE見守りアラート、詳細は `docs/LINE_SETUP.md`）、`HouseholdAccessService`（ユーザー・世帯のアクセス制御、詳細は下記「ユーザーとデータソースの切り替え」）などのユースケース実装。I/Oは `Abstractions` 経由でのみ行う。
   - 依存先: `Microsoft.EntityFrameworkCore`（`DbSet<T>` の型としてのみ）。外部サービスSDKには依存しない。
 
 - **MimamoriTai.Infrastructure**（実装層）
   - `Data/`: `AppDbContext`（`IAppDbContext` 実装）、`AppDbContextFactory`（デザインタイム用）、`DemoDataSeeder`。
-  - `Devices/`: `ISwitchBotClient` の実装 `SwitchBotClient`、`IDeviceProvider` の実装 `SwitchBotDeviceProvider` と `MockDeviceProvider`。
+  - `Devices/`: `ISwitchBotClient` の実装 `SwitchBotClient`、`IDeviceProvider` の実装 `SwitchBotDeviceProvider` と `MockDeviceProvider`、`IDeviceProviderFactory` の実装 `DeviceProviderFactory`、両者を束ねて `IDataSourceContext.Mode` に応じて実体を選択する `DataSourceAwareDeviceProvider`（`IDeviceProvider` として登録される実体はこれ）。
+  - `Auth/`: `ICurrentUserAccessor` の既定実装 `DevCurrentUserAccessor`（固定デモユーザーを返す。詳細は下記）。
   - `Ai/`: `IAiRouterClient` の実装 `OrcaRouterClient` と `MockAiRouterClient`。
   - `Fabric/`: `IFabricDataAgentClient` の実装 `MockFabricDataAgentClient`（実MCPクライアントは未実装）。`IEventStreamPublisher` の実装 `EventhouseStreamPublisher`（Fabric Eventhouseへのストリーミング取り込み）と `MockEventStreamPublisher`。
   - `Line/`: `ILineMessagingClient` の実装 `LineMessagingClient` と `MockLineMessagingClient`、および共有の `LineSignature`（HMAC検証）。
   - `ServiceCollectionExtensions.cs`: **すべての実装／モックの選択ロジックがここに集約されている**唯一の場所。
 
 - **MimamoriTai.Web**（プレゼンテーション層）
-  - `Components/Pages/Home.razor`: ダッシュボードUI（Blazor Server, `@rendermode InteractiveServer`）。データがデモかSwitchBot実機かを示すチップ、ストリーム（実ストリーム／デモ）チップ、「実機を同期」ボタン（`DeviceSyncService`呼び出し）、「Fabricへ送信」ボタン（`IEventStreamPublisher`呼び出し）を表示する。
-  - `Services/DashboardService.cs`: 画面表示用の読み取りモデル (`DashboardModel`) を組み立てる。
-  - `Endpoints/ApiEndpoints.cs`, `WebhookEndpoints.cs`, `SimulatorEndpoints.cs`, `AlertEndpoints.cs`, `DeviceSyncEndpoints.cs`: Minimal API。
+  - `Components/Pages/Home.razor`: ダッシュボードUI（Blazor Server, `@rendermode InteractiveServer`）。データソース切り替えの「データソース」ドロップダウン（アクセス可能な世帯を「サンプル: ○○」「本番: ○○」として一覧表示）、サンプル／本番データのバッジチップ、本番世帯が未作成の場合に表示される「本番データを開始」ボタン（`HouseholdAccessService.EnsureProductionHouseholdAsync` → `DeviceSyncService` を実行）、「実機を同期」ボタン（`DeviceSyncService`呼び出し）、「Fabricへ送信」ボタン（`IEventStreamPublisher`呼び出し）を表示する。選択中の世帯IDは `wwwroot/ui.js` のCookieヘルパー経由で永続化され、再読み込み後も復元される（プリレンダー中はJS interopを一切呼ばないため例外は発生しない）。
+  - `Services/DashboardService.cs`: 画面表示用の読み取りモデル (`DashboardModel`) を組み立てる。`LoadAsync` は必ず `HouseholdAccessService.CanAccessAsync` でアクセス権を検証してから読み込み、`IDataSourceContext` を対象世帯のモードに設定した上で `IDeviceProviderFactory` からプロバイダを解決する。
+  - `Endpoints/ApiEndpoints.cs`, `WebhookEndpoints.cs`, `SimulatorEndpoints.cs`, `AlertEndpoints.cs`, `DeviceSyncEndpoints.cs`: Minimal API。世帯IDを扱うすべてのエンドポイントは `HouseholdAccessService.CanAccessAsync` を通し、権限が無ければ403を返す（LINE Webhookは匿名のシステムコールバックのため例外。詳細は下記）。`SimulatorEndpoints` はサンプル世帯以外では400を返す。
   - `Services/WatchAlertBackgroundService.cs`: `IHostedService`。既定世帯の見守りアラートを定期的に評価する。
-  - `Services/SwitchBotPollingBackgroundService.cs`: `IHostedService`。SwitchBotが設定されている場合のみ、実機のステータスを定期ポーリングしON/OFF・人感・開閉の状態変化を `DeviceEvent`（`Source=SwitchBotPoll`）としてAzure SQLに記録する。保存に成功したイベントは、続けて `IEventStreamPublisher` へ1回のバッチ呼び出しでも送信する（Fabric Eventhouseへのリアルタイム分析パス）。Fabricへの送信が失敗してもポーリングループは継続する（Azure SQLが正のデータストア）。SwitchBot未設定時は即座に何もせず終了するため、デモ経路・既存テストへの影響はない。
+  - `Services/SwitchBotPollingBackgroundService.cs`: `IHostedService`。**本番（Production）データソースの世帯のみ**を対象に、`IDeviceProviderFactory.Get(DataSourceMode.Production)` で解決したプロバイダを使い実機のステータスを定期ポーリングしON/OFF・人感・開閉の状態変化を `DeviceEvent`（`Source=SwitchBotPoll`）としてAzure SQLに記録する。保存に成功したイベントは、続けて `IEventStreamPublisher` へ1回のバッチ呼び出しでも送信する（Fabric Eventhouseへのリアルタイム分析パス）。Fabricへの送信が失敗してもポーリングループは継続する（Azure SQLが正のデータストア）。本番世帯が1件も存在しない場合はDebugログを1行出すだけで即座に終了するため、デモ経路・既存テストへの影響はない。
   - `Program.cs`: DI登録、DB初期化（マイグレーション or `EnsureCreatedAsync` + デモシード）。
 
 ## 抽象化とモック戦略
@@ -73,12 +74,61 @@ SwitchBot Cloud →(5分ポーリング)→ Web App → Azure SQL (mimamori.Devi
 
 秘密情報は一切含みません（トークンは `DefaultAzureCredential` が都度取得し、有効期限の5分前になったらキャッシュを更新します）。
 
+## ユーザーとデータソースの切り替え（マルチユーザー分離）
+
+複数ユーザーが同じアプリを使っても互いのデータが見えないようにするための土台を実装している。**この節は将来のEntra External ID / LINE OIDC認証タスクが接続する「継ぎ目（seam）」を明示するためのものでもある。**
+
+### ユーザーモデル
+
+| エンティティ | 目的 | 主なフィールド |
+|---|---|---|
+| `AppUser` | アプリ内のユーザー（IdPに依存しない共通表現） | `IdentityProvider`（`"dev"`/`"entra-external"`/`"line"`など）, `ExternalSubject`（IdPの安定した`sub`/`oid`）, `LineUserId`（任意）, `DisplayName`, `Email`, `CreatedAtUtc`, `LastLoginAtUtc`。`(IdentityProvider, ExternalSubject)` にユニークインデックス。 |
+| `HouseholdMember` | ユーザーと世帯の関連（役割付き） | `HouseholdId`, `AppUserId`, `Role`（`HouseholdMemberRole`: `Owner`/`Member`/`Viewer`）, `CreatedAtUtc`。`(HouseholdId, AppUserId)` にユニークインデックス。 |
+
+### 認証の継ぎ目: `ICurrentUserAccessor`
+
+`Core/Abstractions/ICurrentUserAccessor.cs` が「今誰がリクエストしているか」を表す唯一のインターフェース。
+
+```csharp
+public sealed record CurrentUser(Guid AppUserId, string DisplayName, string IdentityProvider, string ExternalSubject, bool IsAuthenticated);
+public interface ICurrentUserAccessor { CurrentUser? Current { get; } }
+```
+
+現在のDI既定実装は `Infrastructure/Auth/DevCurrentUserAccessor.cs` で、**設定・ログイン一切不要**の固定デモユーザー（`AppUserId = 11111111-1111-1111-1111-111111111111`, `IdentityProvider = "dev"`, `IsAuthenticated = false`）を常に返す。**将来の実認証タスクがやるべきことは、`ServiceCollectionExtensions.cs` でこの1行のDI登録をクレームベースの実装（`HttpContext.User` から `CurrentUser` を組み立てるもの）に差し替えるだけ。** `HouseholdAccessService` や各エンドポイントの `CanAccessAsync` 呼び出しなど、それ以外のコードは一切変更不要で動作し続ける設計。
+
+### 世帯アクセス制御: `HouseholdAccessService`
+
+`Core/Application/HouseholdAccessService.cs`（スコープドサービス）が全ての可否判定・世帯作成の中心：
+
+- `EnsureUserAsync(CurrentUser, ct)`: `(IdentityProvider, ExternalSubject)` で `AppUser` をupsertし、`DisplayName`/`Email`/`LineUserId`/`LastLoginAtUtc` を更新する。
+- `ListAccessibleAsync(ct)` / `CanAccessAsync(householdId, ct)`: **サンプル（Sample）世帯は全ユーザーが閲覧可能**（共有デモデータのため）。**本番（Production）世帯は `HouseholdMember` レコードを持つユーザーのみ**アクセス可能。
+- `EnsureProductionHouseholdAsync(name, ct)`: 現在のユーザー用の本番世帯（`DataSourceMode.Production`）と `HouseholdMember`（Owner）、`Person`（`PersonRole.Resident`）を作成する。**冪等**（既に本番世帯を所有していればそれを返す）。内部で `EnsureUserAsync` を先に呼ぶため、未シードのDBに対しても安全に呼び出せる（自己修復）。
+- `ResolveDefaultAsync(ct)`: ユーザー自身の本番世帯があればそれを、無ければ最も古いサンプル世帯を返す。
+
+`DashboardService.LoadAsync` と `Endpoints/*.cs` の世帯IDを扱う全エンドポイントは、必ず `CanAccessAsync` を最初に呼び、拒否された場合は `LoadAsync` は `null`、エンドポイントは `403 Forbidden`（日本語メッセージ）を返す。これにより、あるユーザーが他ユーザーの本番データを閲覧・操作することは構造的に不可能になっている。
+
+例外: `WebhookEndpoints.cs` のLINE Webhookはサインイン済みユーザーのコンテキストを持たない匿名のシステムコールバックであるため、`CanAccessAsync` は呼ばず `ResolveDefaultAsync` のみで世帯を解決する（署名検証は既存の `LineSignature` によるHMAC検証で担保）。
+
+### データソース切り替え: `DataSourceMode` / `IDeviceProviderFactory` / `IDataSourceContext`
+
+`Household.DataSourceMode`（`Sample` / `Production`）が世帯ごとのデータソースを表す。`Sample`＝共有デモデータ、`Production`＝ユーザー自身の実データ（実SwitchBot機器など）。
+
+- `IDeviceProviderFactory.Get(DataSourceMode)`: `Sample` は常に `MockDeviceProvider`。`Production` は `SwitchBotOptions.IsConfigured` なら `SwitchBotDeviceProvider`、未設定なら **例外を投げず** `MockDeviceProvider` にフォールバックする（本番世帯を作っても未設定なら引き続きデモとして動く）。
+- `IDataSourceContext`（スコープド, `Mode`/`HouseholdId` を保持）: `IDeviceProvider` として実際にDIへ登録されるのは `DataSourceAwareDeviceProvider`（デコレーター）で、呼び出しの都度 `IDataSourceContext.Mode` を読んで `IDeviceProviderFactory` から実体を解決する。そのため `DeviceControlService`／`DeviceSyncService`／`AssistantOrchestrator`／`DashboardService` など既存の呼び出し側は変更不要でコンパイルが通るが、**各処理の入口（`DashboardService.LoadAsync`、`DeviceSyncEndpoints`、バックグラウンドサービス）が明示的に `IDataSourceContext.Mode`/`HouseholdId` を設定してから使う**必要がある。
+- `SwitchBotPollingBackgroundService` は本番世帯のみをポーリング対象とし（上記参照）、`SimulatorEndpoints` はサンプル世帯以外では400を返す（本番データを偽イベントで汚染しないため）。
+
+### UI
+
+`Home.razor` のヘッダーに「データソース」ドロップダウン（`サンプル: ○○` / `本番: ○○`）と、選択中データソースを示すバッジ（「サンプルデータ」＝ミュート色 / 「本番データ」＝アクセントカラー、既存の`.chip`規約を踏襲）を追加。本番世帯が無いユーザーには「本番データを開始」ボタンを表示し、押下すると `EnsureProductionHouseholdAsync` → `DeviceSyncService.SyncAsync`（実SwitchBot機器の取り込み）を実行してからその世帯に切り替える。選択中の世帯IDは `wwwroot/ui.js` の単純なCookieヘルパー経由で永続化し、`OnAfterRenderAsync`（プリレンダー完了後にのみ呼ばれる）から復元するため、プリレンダー中にJS interopが呼ばれることはない。
+
 ## データモデル
 
 | エンティティ | 目的 | 主なフィールド |
 |---|---|---|
-| `Household` | 見守り対象の世帯 | `Name`, `People`, `Devices` |
+| `Household` | 見守り対象の世帯 | `Name`, `People`, `Devices`, `DataSourceMode`（`Sample`/`Production`） |
 | `Person` | 世帯の構成員（本人／家族／管理者） | `DisplayName`, `Role`（`PersonRole`） |
+| `AppUser` | アプリ内のユーザー（上記「ユーザーとデータソースの切り替え」参照） | `IdentityProvider`, `ExternalSubject`, `LineUserId`, `DisplayName`, `Email` |
+| `HouseholdMember` | ユーザーと世帯の関連（役割付き） | `HouseholdId`, `AppUserId`, `Role`（`HouseholdMemberRole`） |
 | `Device` | 家電機器 | `ExternalDeviceId`, `Alias`, `DeviceType`, `Provider`, `RemoteControlAllowed`, `SafetyClass`, `IsActive`（プロバイダから消えた機器を削除せず無効化するためのフラグ） |
 | `DeviceEvent` | 家電の状態変化イベント（ON/OFF等） | `State`, `PowerWatts`, `Source`（`EventSource`: `Seed`/`Mock`/`Simulator`/`AppCommand`/`SwitchBotWebhook`/`SwitchBotPoll`）, `OccurredAtUtc` |
 | `DeviceCommand` | 自然言語／API経由の操作要求（**成功・失敗・拒否すべて記録**） | `Action`, `Status`（`CommandStatus`）, `FailureReason`, `AiResolvedModel` |

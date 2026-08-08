@@ -105,8 +105,18 @@ dotnet run --project src/MimamoriTai.Web
 - 接続文字列 `ConnectionStrings:AppDb` が空の場合、自動的に SQLite ファイル `mimamoritai-demo.db`（アプリのベースディレクトリ配下）を使用し `EnsureCreatedAsync()` でスキーマを作成します。
 - SwitchBot / OrcaRouter / Fabric / LINE のいずれも未設定なら、すべて Mock 実装（`MockDeviceProvider` / `MockAiRouterClient` / `MockFabricDataAgentClient` / `MockLineMessagingClient`）で動作します。
 - 起動時に `DemoDataSeeder` が14日分のデモデータを自動投入するので、初回起動直後からダッシュボードが賑わいます。
+- ログイン不要で固定のデモユーザー（`ICurrentUserAccessor` の既定実装 `DevCurrentUserAccessor`）として扱われ、ダッシュボード上部の「データソース」ドロップダウンでサンプル世帯（共有デモデータ）を選択した状態で表示されます。「本番データを開始」ボタンから自分専用の本番世帯を作成できます（詳細は下記「ユーザーとデータソースの切り替え」）。
 
 起動後は `https://localhost:xxxx/` （`launchSettings.json` 参照）でダッシュボードを開いてください。
+
+## ユーザーとデータソースの切り替え
+
+このアプリは複数ユーザーが同時に使っても互いのデータが見えない設計になっています。
+
+- **サンプル（Sample）世帯**: 共有のデモデータで、誰でも閲覧できます（初回起動時に自動投入される世帯はすべてこれ）。
+- **本番（Production）世帯**: ダッシュボードの「本番データを開始」ボタンから作成する、自分専用の世帯です。作成したユーザー（`HouseholdMember`, Role=Owner）以外には見えません。SwitchBotが設定されていれば実機データ、未設定でもモックで動作します（設定なしでも壊れません）。
+
+現在はログイン画面がなく、`ICurrentUserAccessor` の既定実装 `DevCurrentUserAccessor` が常に同じ固定デモユーザー（`AppUserId = 11111111-1111-1111-1111-111111111111`）を返します。**将来的にEntra External ID / LINE OIDCなどの実認証を追加する際は、この1箇所のDI登録（`ServiceCollectionExtensions.cs`）をクレームベースの実装に差し替えるだけで、`HouseholdAccessService` によるアクセス制御や世帯の分離ロジックはそのまま機能します。** 詳細は `docs/ARCHITECTURE.md` の「ユーザーとデータソースの切り替え」を参照。
 
 ## 実サービスに接続する（User Secrets）
 
@@ -174,6 +184,8 @@ docs/
 ```
 
 ## API エンドポイント一覧
+
+世帯IDを扱うエンドポイントはすべて `HouseholdAccessService.CanAccessAsync` によるアクセス制御を通ります。アクセス権が無い場合は `403 Forbidden`（日本語メッセージ）を返します。`POST /api/simulator/events` はサンプル世帯以外では `400 Bad Request` を返します。
 
 | メソッド | パス | 説明 |
 |---|---|---|

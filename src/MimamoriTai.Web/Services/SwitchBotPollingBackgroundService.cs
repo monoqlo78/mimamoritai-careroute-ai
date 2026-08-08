@@ -66,16 +66,30 @@ public sealed class SwitchBotPollingBackgroundService(
         {
             using var scope = scopeFactory.CreateScope();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var provider = scope.ServiceProvider.GetRequiredService<IDeviceProvider>();
+            var providerFactory = scope.ServiceProvider.GetRequiredService<IDeviceProviderFactory>();
             var clock = scope.ServiceProvider.GetRequiredService<TimeProvider>();
 
+            // This service only ever polls real (Production) households; Sample/demo
+            // households are simulated locally and must never be touched here.
+            var provider = providerFactory.Get(DataSourceMode.Production);
             if (provider.Kind != DeviceProviderKind.SwitchBot || !provider.IsConfigured)
             {
                 return;
             }
 
+            var productionHouseholdIds = await db.Households
+                .Where(h => h.DataSourceMode == DataSourceMode.Production)
+                .Select(h => h.Id)
+                .ToListAsync(ct);
+
+            if (productionHouseholdIds.Count == 0)
+            {
+                logger.LogDebug("SwitchBot polling skipped: no Production household exists yet.");
+                return;
+            }
+
             var devices = await db.Devices
-                .Where(d => d.Provider == DeviceProviderKind.SwitchBot && d.IsActive)
+                .Where(d => productionHouseholdIds.Contains(d.HouseholdId) && d.Provider == DeviceProviderKind.SwitchBot && d.IsActive)
                 .ToListAsync(ct);
 
             var changedEvents = new List<(DeviceEvent Event, Device Device)>();

@@ -26,6 +26,7 @@ public sealed record FeedItem(DateTimeOffset OccurredAtUtc, string Author, strin
 public sealed record DashboardModel(
     Guid HouseholdId,
     string HouseholdName,
+    DataSourceMode DataSourceMode,
     string ResidentName,
     RiskResult Risk,
     IReadOnlyList<Person> People,
@@ -40,20 +41,33 @@ public sealed record DashboardModel(
 /// <summary>Read model builder for the Blazor dashboard.</summary>
 public sealed class DashboardService(
     AppDbContext db,
-    IDeviceProvider deviceProvider,
+    IDeviceProviderFactory deviceProviderFactory,
+    IDataSourceContext dataSourceContext,
+    HouseholdAccessService householdAccess,
     IntegrationStatus integrations,
     TimeProvider clock)
 {
     public async Task<Guid?> GetDefaultHouseholdIdAsync(CancellationToken ct = default) =>
-        await db.Households.OrderBy(h => h.CreatedAtUtc).Select(h => (Guid?)h.Id).FirstOrDefaultAsync(ct);
+        await householdAccess.ResolveDefaultAsync(ct);
 
     public async Task<DashboardModel?> LoadAsync(Guid householdId, CancellationToken ct = default)
     {
+        if (!await householdAccess.CanAccessAsync(householdId, ct))
+        {
+            return null;
+        }
+
         var household = await db.Households.FirstOrDefaultAsync(h => h.Id == householdId, ct);
         if (household is null)
         {
             return null;
         }
+
+        // Every unit of work must set the ambient data-source context explicitly so the
+        // IDeviceProvider decorator resolves the correct concrete provider for THIS household.
+        dataSourceContext.Mode = household.DataSourceMode;
+        dataSourceContext.HouseholdId = household.Id;
+        var deviceProvider = deviceProviderFactory.Get(household.DataSourceMode);
 
         var people = await db.People.Where(p => p.HouseholdId == householdId).OrderBy(p => p.Role).ToListAsync(ct);
         var devices = await db.Devices.Where(d => d.HouseholdId == householdId).OrderBy(d => d.Name).ToListAsync(ct);
@@ -139,6 +153,7 @@ public sealed class DashboardService(
         return new DashboardModel(
             household.Id,
             household.Name,
+            household.DataSourceMode,
             resident,
             risk,
             people,

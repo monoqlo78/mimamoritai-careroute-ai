@@ -17,6 +17,7 @@ public static class WebhookEndpoints
             ILineMessagingClient line,
             AssistantOrchestrator orchestrator,
             AppDbContext db,
+            HouseholdAccessService householdAccess,
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
@@ -37,8 +38,10 @@ public static class WebhookEndpoints
                 return Results.StatusCode(StatusCodes.Status401Unauthorized);
             }
 
-            var householdId = await db.Households.OrderBy(h => h.CreatedAtUtc).Select(h => h.Id).FirstOrDefaultAsync(ct);
-            if (householdId == Guid.Empty)
+            // The LINE platform calls this endpoint directly (no signed-in web user),
+            // so it resolves the default household rather than doing a per-user access check.
+            var householdId = await householdAccess.ResolveDefaultAsync(ct);
+            if (householdId is null || householdId == Guid.Empty)
             {
                 return Results.Ok();
             }
@@ -46,7 +49,7 @@ public static class WebhookEndpoints
             foreach (var (replyToken, text) in ParseTextEvents(rawBody))
             {
                 var response = await orchestrator.HandleAsync(
-                    new AssistantRequest(householdId, null, text, CommandSource.Line), ct);
+                    new AssistantRequest(householdId.Value, null, text, CommandSource.Line), ct);
 
                 if (!string.IsNullOrWhiteSpace(replyToken))
                 {

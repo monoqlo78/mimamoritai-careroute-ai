@@ -39,3 +39,14 @@ public interface IDeviceProvider
     Task<ProviderResult> TurnOffAsync(string externalDeviceId, CancellationToken ct = default);
     Task<ProviderResult> ToggleAsync(string externalDeviceId, CancellationToken ct = default);
 }
+
+/// <summary>
+/// Resolves the <see cref="IDeviceProvider"/> that backs a given <see cref="DataSourceMode"/>.
+/// Sample always resolves to the mock provider; Production resolves to the real
+/// SwitchBot provider when configured, and otherwise falls back to the mock provider
+/// so the app never throws for an unconfigured production household.
+/// </summary>
+public interface IDeviceProviderFactory
+{
+    IDeviceProvider Get(DataSourceMode mode);
+}

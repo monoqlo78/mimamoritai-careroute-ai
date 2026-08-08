@@ -92,3 +92,23 @@ public enum EventSource
     Simulator = 4,
     Seed = 5
 }
+
+/// <summary>
+/// Whether a household's data is the shared demo dataset or a real user's
+/// production data. Drives both device-provider selection and per-user access
+/// control (Sample households are visible to everyone; Production households are
+/// only visible to their <see cref="HouseholdMember"/>s).
+/// </summary>
+public enum DataSourceMode
+{
+    Sample = 0,
+    Production = 1
+}
+
+/// <summary>Role of an <see cref="AppUser"/> within a <see cref="Household"/>.</summary>
+public enum HouseholdMemberRole
+{
+    Owner = 0,
+    Member = 1,
+    Viewer = 2
+}

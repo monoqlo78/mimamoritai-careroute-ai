@@ -18,18 +18,24 @@ public static class AlertEndpoints
         app.MapPost("/api/alerts/evaluate", async (
             EvaluateAlertRequest? request,
             AppDbContext db,
+            HouseholdAccessService householdAccess,
             WatchAlertService alerts,
             CancellationToken ct) =>
         {
             var householdId = request?.HouseholdId
-                ?? await db.Households.OrderBy(h => h.CreatedAtUtc).Select(h => h.Id).FirstOrDefaultAsync(ct);
+                ?? await householdAccess.ResolveDefaultAsync(ct);
 
-            if (householdId == Guid.Empty)
+            if (householdId is null || householdId == Guid.Empty)
             {
                 return Results.NotFound(new { error = "No household is registered." });
             }
 
-            var outcome = await alerts.EvaluateAsync(householdId, ct);
+            if (!await householdAccess.CanAccessAsync(householdId.Value, ct))
+            {
+                return Results.Json(new { error = "このご家庭のデータにアクセスする権限がありません。" }, statusCode: StatusCodes.Status403Forbidden);
+            }
+
+            var outcome = await alerts.EvaluateAsync(householdId.Value, ct);
 
             return Results.Ok(new
             {

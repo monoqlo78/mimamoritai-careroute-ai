@@ -28,25 +28,43 @@ public static class SimulatorEndpoints
         app.MapPost("/api/simulator/events", async (
             SimulatorRequest request,
             AppDbContext db,
-            IDeviceProvider provider,
+            IDeviceProviderFactory providerFactory,
+            HouseholdAccessService householdAccess,
             TimeProvider clock,
             CancellationToken ct) =>
         {
             var householdId = request.HouseholdId
-                ?? await db.Households.OrderBy(h => h.CreatedAtUtc).Select(h => h.Id).FirstOrDefaultAsync(ct);
+                ?? await householdAccess.ResolveDefaultAsync(ct);
 
-            if (householdId == Guid.Empty)
+            if (householdId is null || householdId == Guid.Empty)
             {
                 return Results.NotFound(new { error = "No household is registered." });
             }
 
-            var devices = await db.Devices.Where(d => d.HouseholdId == householdId).ToListAsync(ct);
+            if (!await householdAccess.CanAccessAsync(householdId.Value, ct))
+            {
+                return Results.Json(new { error = "このご家庭のデータにアクセスする権限がありません。" }, statusCode: StatusCodes.Status403Forbidden);
+            }
+
+            var household = await db.Households.FirstOrDefaultAsync(h => h.Id == householdId.Value, ct);
+            if (household is null)
+            {
+                return Results.NotFound(new { error = "No household is registered." });
+            }
+
+            if (household.DataSourceMode != DataSourceMode.Sample)
+            {
+                return Results.BadRequest(new { error = "本番データのご家庭ではシミュレーターを使用できません。" });
+            }
+
+            var devices = await db.Devices.Where(d => d.HouseholdId == householdId.Value).ToListAsync(ct);
             if (devices.Count == 0)
             {
                 return Results.NotFound(new { error = "No devices are registered." });
             }
 
-            var created = await ApplyScenarioAsync(request, db, provider, clock, householdId, devices, ct);
+            var provider = providerFactory.Get(DataSourceMode.Sample);
+            var created = await ApplyScenarioAsync(request, db, provider, clock, householdId.Value, devices, ct);
 
             return created < 0
                 ? Results.BadRequest(new { error = $"Unknown scenario. Allowed: {string.Join(", ", Scenarios)}" })

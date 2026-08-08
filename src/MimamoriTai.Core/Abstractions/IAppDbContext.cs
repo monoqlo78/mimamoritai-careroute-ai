@@ -16,6 +16,8 @@ public interface IAppDbContext
     DbSet<DailyActivitySummary> DailyActivitySummaries { get; }
     DbSet<AiRequestLog> AiRequestLogs { get; }
     DbSet<WatchAlert> WatchAlerts { get; }
+    DbSet<AppUser> AppUsers { get; }
+    DbSet<HouseholdMember> HouseholdMembers { get; }
 
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }
