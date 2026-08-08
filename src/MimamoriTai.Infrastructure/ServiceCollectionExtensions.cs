@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using MimamoriTai.Core.Abstractions;
 using MimamoriTai.Core.Application;
+using MimamoriTai.Core.Domain;
 using MimamoriTai.Infrastructure.Ai;
 using MimamoriTai.Infrastructure.Data;
 using MimamoriTai.Infrastructure.Devices;
@@ -41,7 +42,8 @@ public static class ServiceCollectionExtensions
         {
             if (!string.IsNullOrWhiteSpace(connectionString))
             {
-                options.UseSqlServer(connectionString);
+                options.UseSqlServer(connectionString, sql =>
+                    sql.MigrationsHistoryTable("__EFMigrationsHistory", AppDbContext.DefaultSchema));
             }
             else
             {
@@ -120,6 +122,23 @@ public static class ServiceCollectionExtensions
         services.AddScoped<RiskAssessmentService>();
         services.AddScoped<DeviceControlService>();
         services.AddScoped<AssistantOrchestrator>();
+
+        // --- Watch/risk alert (LINE push) -------------------------------------
+        services.AddSingleton(sp =>
+        {
+            var options = sp.GetRequiredService<IOptions<LineOptions>>().Value;
+            var threshold = Enum.TryParse<RiskLevel>(options.AlertRiskThreshold, ignoreCase: true, out var parsed)
+                ? parsed
+                : RiskLevel.Medium;
+
+            return new WatchAlertSettings
+            {
+                ToId = options.AlertToId,
+                Threshold = threshold,
+                Cooldown = TimeSpan.FromHours(Math.Max(options.AlertCooldownHours, 0))
+            };
+        });
+        services.AddScoped<WatchAlertService>();
 
         services.AddScoped(sp => new IntegrationStatus(
             sp.GetRequiredService<IDeviceProvider>().Kind.ToString(),

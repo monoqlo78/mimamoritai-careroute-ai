@@ -20,7 +20,9 @@ public sealed class AppDbContextFactory : IDesignTimeDbContextFactory<AppDbConte
             ?? "Server=(localdb)\\MSSQLLocalDB;Database=MimamoriTai;Trusted_Connection=True;TrustServerCertificate=True";
 
         var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseSqlServer(connection, sql => sql.MigrationsAssembly(typeof(AppDbContext).Assembly.FullName))
+            .UseSqlServer(connection, sql => sql
+                .MigrationsAssembly(typeof(AppDbContext).Assembly.FullName)
+                .MigrationsHistoryTable("__EFMigrationsHistory", AppDbContext.DefaultSchema))
             .Options;
 
         return new AppDbContext(options);

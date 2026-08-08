@@ -120,6 +120,25 @@ public class DailyActivitySummary
     public RiskLevel RiskLevel { get; set; }
 }
 
+/// <summary>
+/// Records a LINE push notification sent (or attempted) because a watch/risk anomaly
+/// was detected. Used to deduplicate repeat alerts for the same person + risk level
+/// within a cooldown window.
+/// </summary>
+public class WatchAlert
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid HouseholdId { get; set; }
+    public Guid PersonId { get; set; }
+    public RiskLevel RiskLevel { get; set; }
+    public int Score { get; set; }
+    public string Reason { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+    public DateTimeOffset SentAtUtc { get; set; } = DateTimeOffset.UtcNow;
+    public bool Success { get; set; }
+    public string? Error { get; set; }
+}
+
 public class AiRequestLog
 {
     public Guid Id { get; set; } = Guid.NewGuid();

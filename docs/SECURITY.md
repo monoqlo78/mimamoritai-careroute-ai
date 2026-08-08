@@ -3,7 +3,7 @@
 ## 秘密情報の取り扱い
 
 - **すべての秘密情報（APIキー、トークン、接続文字列）は `dotnet user-secrets` またはホスティング環境の環境変数／シークレットストアからのみ供給します。**
-- `src/MimamoriTai.Web/appsettings.json` および `appsettings.Development.json` には、対象キー（`ConnectionStrings:AppDb`, `OrcaRouter:ApiKey`, `Line:ChannelAccessToken`, `Line:ChannelSecret`, `SwitchBot:Token`, `SwitchBot:Secret`, `Fabric:WorkspaceId`, `Fabric:DataAgentId`, `Fabric:McpUrl`）は**空文字列のプレースホルダーとしてのみ**存在し、実際の値をコミットしてはいけません。
+- `src/MimamoriTai.Web/appsettings.json` および `appsettings.Development.json` には、対象キー（`ConnectionStrings:AppDb`, `OrcaRouter:ApiKey`, `Line:ChannelAccessToken`, `Line:ChannelSecret`, `Line:AlertToId`, `SwitchBot:Token`, `SwitchBot:Secret`, `Fabric:WorkspaceId`, `Fabric:DataAgentId`, `Fabric:McpUrl`）は**空文字列のプレースホルダーとしてのみ**存在し、実際の値をコミットしてはいけません。
 - 各オプションクラス（`OrcaRouterOptions`, `SwitchBotOptions`, `LineOptions`, `FabricOptions`）は `IsConfigured` プロパティを持ち、必須項目が埋まっていない場合は自動的にモック実装へフォールバックします（`ServiceCollectionExtensions.cs`）。これにより、秘密情報が無い状態で誤って実サービスへ接続しようとすることを防いでいます。
 - Microsoft Fabricの認証は、コード内に静的なシークレットを置かず `Azure.Identity`（`DefaultAzureCredential`）を利用する設計です（実装は `docs/FABRIC_SETUP.md` 参照、現状は未実装）。
 

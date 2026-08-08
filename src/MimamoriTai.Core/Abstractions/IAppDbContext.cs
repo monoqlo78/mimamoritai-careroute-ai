@@ -15,6 +15,7 @@ public interface IAppDbContext
     DbSet<RiskAssessment> RiskAssessments { get; }
     DbSet<DailyActivitySummary> DailyActivitySummaries { get; }
     DbSet<AiRequestLog> AiRequestLogs { get; }
+    DbSet<WatchAlert> WatchAlerts { get; }
 
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

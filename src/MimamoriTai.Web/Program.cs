@@ -13,6 +13,7 @@ builder.Services.AddRazorComponents()
 builder.Services.AddMimamoriTaiInfrastructure(builder.Configuration);
 builder.Services.AddScoped<DashboardService>();
 builder.Services.AddOpenApi();
+builder.Services.AddHostedService<WatchAlertBackgroundService>();
 
 var app = builder.Build();
 
@@ -43,6 +44,7 @@ app.MapRazorComponents<App>()
 app.MapApiEndpoints();
 app.MapWebhookEndpoints();
 app.MapSimulatorEndpoints();
+app.MapAlertEndpoints();
 
 await InitializeDatabaseAsync(app);
 
@@ -68,6 +70,20 @@ static async Task InitializeDatabaseAsync(WebApplication app)
         else
         {
             await db.Database.EnsureCreatedAsync();
+
+            // EnsureCreated never upgrades an existing file, so a demo database
+            // created before a model change is missing the new tables and every
+            // query against them throws at runtime. The SQLite database is a
+            // disposable demo artifact, so recreate it when it is out of date.
+            var missing = await GetMissingSqliteTablesAsync(db);
+            if (missing.Count > 0)
+            {
+                logger.LogWarning(
+                    "Demo database is out of date (missing: {Missing}). Recreating it.",
+                    string.Join(", ", missing));
+                await db.Database.EnsureDeletedAsync();
+                await db.Database.EnsureCreatedAsync();
+            }
         }
 
         await DemoDataSeeder.SeedAsync(db, clock);
@@ -77,6 +93,37 @@ static async Task InitializeDatabaseAsync(WebApplication app)
     {
         logger.LogError("Database initialization failed: {Type}. The app starts but data features are unavailable.", ex.GetType().Name);
     }
+}
+
+/// <summary>
+/// Table names that the model expects but the SQLite demo file does not contain.
+/// </summary>
+static async Task<List<string>> GetMissingSqliteTablesAsync(AppDbContext db)
+{
+    var expected = db.Model.GetEntityTypes()
+        .Select(t => t.GetTableName())
+        .Where(n => !string.IsNullOrEmpty(n))
+        .Distinct(StringComparer.Ordinal)
+        .ToList();
+
+    var actual = new HashSet<string>(StringComparer.Ordinal);
+    await using var command = db.Database.GetDbConnection().CreateCommand();
+    command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table'";
+    await db.Database.OpenConnectionAsync();
+    try
+    {
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            actual.Add(reader.GetString(0));
+        }
+    }
+    finally
+    {
+        await db.Database.CloseConnectionAsync();
+    }
+
+    return expected.Where(name => !actual.Contains(name!)).Select(n => n!).ToList();
 }
 
 /// <summary>Exposed so tests can reference the generated entry point assembly.</summary>

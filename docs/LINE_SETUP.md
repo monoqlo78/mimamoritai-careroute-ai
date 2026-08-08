@@ -55,3 +55,29 @@ Webhookエンドポイント（`WebhookEndpoints.MapWebhookEndpoints`）は、�
 ## 認証情報なしでデモしたい場合
 
 ダッシュボード（`Home.razor`）の「LINE シミュレーター」セクションから、任意の家族メンバーとしてメッセージを送信できます。これは `MockLineMessagingClient` を通じて `AssistantOrchestrator` を呼び出すため、実際のLINE Webhookと同じ処理経路（意図解析→安全ガードレール→応答生成）を体験できます。
+
+## 見守りアラート（LINE Push通知）
+
+Webhookによる「家族→LINE→アプリ」の応答経路とは別に、「異常を検知したらアプリからLINEへPush通知する」経路を `WatchAlertService`（`src/MimamoriTai.Core/Application/WatchAlertService.cs`）が担います。
+
+- **判定**: `RiskAssessmentService.Evaluate` と同じルールベースのロジックで、本人（`PersonRole.Resident`）の当日リスクを評価します。
+- **送信条件**: リスクレベルが `Line:AlertRiskThreshold`（既定 `Medium`）以上になったときのみ、`Line:AlertToId` 宛に `ILineMessagingClient.PushAsync` で通知します。
+- **重複防止（必須）**: 同じ人物・同じリスクレベルのアラートは `Line:AlertCooldownHours`（既定 6 時間）以内は再送しません。送信結果（成功・失敗）は `WatchAlert` テーブルに永続化され、クールダウン判定にはこの履歴を使います。
+- **未設定時の挙動**: `Line:AlertToId` が空、または LINE 自体が未設定（`Line:Enabled=false` などで `MockLineMessagingClient` が使われている）場合でも、判定自体は必ず実行され、`WatchAlert` に「送信しようとした内容」が記録されます（`Success=false`）。例外は投げません。
+- **自動実行**: `MimamoriTai.Web` の `WatchAlertBackgroundService`（`IHostedService`）が `Line:AlertPollIntervalMinutes`（既定 5 分）ごとに、既定世帯（作成日時が最も古い世帯）を評価します。起動後20秒程度で最初の評価が走るため、デモでも待たずに確認できます。
+- **手動実行**: `POST /api/alerts/evaluate`（ボディは省略可、または `{ "householdId": "<guid>" }`）を呼ぶと、その場で同じ判定・送信ロジックが実行され、結果がJSONで返ります。ダッシュボードの「現在の見守りステータス」カードの「見守りアラートを確認」ボタンからも同じ処理を実行できます。
+
+### 設定キー（`Line` セクション）
+
+```jsonc
+{
+  "Line": {
+    "AlertToId": "",              // Push先のLINEグループID／ユーザーID（空 = 未設定。実際の値はコミットしない）
+    "AlertRiskThreshold": "Medium", // "Low" | "Medium" | "High"
+    "AlertCooldownHours": 6,
+    "AlertPollIntervalMinutes": 5
+  }
+}
+```
+
+`AlertToId` は他の秘密情報と同様、`dotnet user-secrets set "Line:AlertToId" "<group-or-user-id>"` またはホスティング環境の環境変数で設定してください。`appsettings.json` には空文字列のプレースホルダーのみを置きます。

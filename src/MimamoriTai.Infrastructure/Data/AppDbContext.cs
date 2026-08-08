@@ -7,6 +7,12 @@ namespace MimamoriTai.Infrastructure.Data;
 
 public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(options), IAppDbContext
 {
+    /// <summary>
+    /// SQL Server schema that isolates this application's objects from the other
+    /// applications sharing the same Azure SQL database.
+    /// </summary>
+    public const string DefaultSchema = "mimamori";
+
     public DbSet<Household> Households => Set<Household>();
     public DbSet<Person> People => Set<Person>();
     public DbSet<Device> Devices => Set<Device>();
@@ -16,9 +22,18 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<RiskAssessment> RiskAssessments => Set<RiskAssessment>();
     public DbSet<DailyActivitySummary> DailyActivitySummaries => Set<DailyActivitySummary>();
     public DbSet<AiRequestLog> AiRequestLogs => Set<AiRequestLog>();
+    public DbSet<WatchAlert> WatchAlerts => Set<WatchAlert>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
+        // The production database is shared with other applications, so every table,
+        // view and the migrations history live in a dedicated `mimamori` schema.
+        // SQLite has no schema concept, so the demo fallback stays unqualified.
+        if (Database.IsSqlServer())
+        {
+            b.HasDefaultSchema(DefaultSchema);
+        }
+
         // SQLite has no native DateTimeOffset type, so EF cannot translate comparisons
         // such as `e.OccurredAtUtc >= from`. Storing the value in an order-preserving
         // binary form keeps the demo fallback fully queryable. SQL Server is untouched.
@@ -113,6 +128,16 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.Router).HasMaxLength(64);
             e.Property(x => x.ResolvedModel).HasMaxLength(128);
             e.HasIndex(x => x.CreatedAtUtc);
+        });
+
+        b.Entity<WatchAlert>(e =>
+        {
+            e.Property(x => x.Reason).HasMaxLength(512);
+            e.Property(x => x.Message).HasMaxLength(1024);
+            e.Property(x => x.Error).HasMaxLength(512);
+            e.Property(x => x.RiskLevel).HasConversion<string>().HasMaxLength(32);
+            // Dedup lookup: latest alert for a person at a given risk level within the cooldown window.
+            e.HasIndex(x => new { x.PersonId, x.RiskLevel, x.SentAtUtc });
         });
 
         base.OnModelCreating(b);

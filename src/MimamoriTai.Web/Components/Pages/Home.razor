@@ -10,6 +10,7 @@
 @inject DeviceControlService Control
 @inject AppDbContext Db
 @inject IWebHostEnvironment Env
+@inject WatchAlertService AlertService
 
 <PageTitle>CareRoute AI / 見守り隊</PageTitle>
 
@@ -64,6 +65,10 @@ else
             <p class="risk-level">@RiskLabel(_model.Risk.Level)</p>
             <p class="risk-reason">@_model.Risk.Reason</p>
             <p class="muted">スコア @_model.Risk.Score / 100 ・ ルールベース判定</p>
+            <button class="ghost small" title="現在のリスクを評価し、必要であればLINEにアラートを送信します"
+                    @onclick="EvaluateAlertAsync" disabled="@_busy">
+                見守りアラートを確認
+            </button>
         </article>
 
         <article class="card">
@@ -415,6 +420,48 @@ else
                 new AssistantRequest(_model.HouseholdId, personId, text, source));
 
             _chatLog.Add(new FeedItem(DateTimeOffset.UtcNow, "見守りAI", response.Reply, true));
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    /// <summary>
+    /// Runs the same WatchAlertService the background poller and the /api/alerts/evaluate
+    /// endpoint use, so the demo button shows a real dedup/cooldown decision, not a canned one.
+    /// </summary>
+    private async Task EvaluateAlertAsync()
+    {
+        if (_model is null || _busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        StateHasChanged();
+
+        try
+        {
+            var outcome = await AlertService.EvaluateAsync(_model.HouseholdId);
+
+            _notice = outcome.Status switch
+            {
+                WatchAlertStatus.Sent => $"アラートを送信しました：{outcome.Message}",
+                WatchAlertStatus.SendFailed =>
+                    $"アラートの送信に失敗しました（{outcome.SendResult?.Error ?? "不明なエラー"}）。内容: {outcome.Message}",
+                _ => outcome.Message
+            };
+
+            _noticeKind = outcome.Status switch
+            {
+                WatchAlertStatus.Sent => "ok",
+                WatchAlertStatus.SendFailed => "blocked",
+                WatchAlertStatus.SuppressedByCooldown => "warn",
+                _ => "ok"
+            };
+
             await ReloadAsync();
         }
         finally

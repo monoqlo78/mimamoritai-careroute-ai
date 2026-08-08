@@ -15,7 +15,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
         protected override void Up(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.Sql("""
-                CREATE OR ALTER VIEW vw_CurrentDeviceStatus AS
+                CREATE OR ALTER VIEW mimamori.vw_CurrentDeviceStatus AS
                 SELECT
                     d.Id                  AS DeviceId,
                     d.HouseholdId         AS HouseholdId,
@@ -27,10 +27,10 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                     d.SafetyClass         AS SafetyClass,
                     latest.State          AS CurrentState,
                     latest.OccurredAtUtc  AS LastEventAtUtc
-                FROM Devices d
+                FROM mimamori.Devices d
                 OUTER APPLY (
                     SELECT TOP 1 e.State, e.OccurredAtUtc
-                    FROM DeviceEvents e
+                    FROM mimamori.DeviceEvents e
                     WHERE e.DeviceId = d.Id
                     ORDER BY e.OccurredAtUtc DESC
                 ) latest
@@ -38,7 +38,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                 """);
 
             migrationBuilder.Sql("""
-                CREATE OR ALTER VIEW vw_DailyActivity AS
+                CREATE OR ALTER VIEW mimamori.vw_DailyActivity AS
                 SELECT
                     s.HouseholdId         AS HouseholdId,
                     s.PersonId            AS PersonId,
@@ -51,12 +51,12 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                     s.NightActivityCount  AS NightActivityCount,
                     s.RiskScore           AS RiskScore,
                     s.RiskLevel           AS RiskLevel
-                FROM DailyActivitySummaries s
-                LEFT JOIN People p ON p.Id = s.PersonId;
+                FROM mimamori.DailyActivitySummaries s
+                LEFT JOIN mimamori.People p ON p.Id = s.PersonId;
                 """);
 
             migrationBuilder.Sql("""
-                CREATE OR ALTER VIEW vw_RecentDeviceActivity AS
+                CREATE OR ALTER VIEW mimamori.vw_RecentDeviceActivity AS
                 SELECT
                     e.Id                  AS EventId,
                     e.HouseholdId         AS HouseholdId,
@@ -69,17 +69,17 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                     e.PowerWatts          AS PowerWatts,
                     e.Source              AS EventSource,
                     e.OccurredAtUtc       AS OccurredAtUtc
-                FROM DeviceEvents e
-                INNER JOIN Devices d ON d.Id = e.DeviceId
+                FROM mimamori.DeviceEvents e
+                INNER JOIN mimamori.Devices d ON d.Id = e.DeviceId
                 WHERE e.OccurredAtUtc >= DATEADD(day, -30, SYSUTCDATETIME());
                 """);
         }
 
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.Sql("DROP VIEW IF EXISTS vw_RecentDeviceActivity;");
-            migrationBuilder.Sql("DROP VIEW IF EXISTS vw_DailyActivity;");
-            migrationBuilder.Sql("DROP VIEW IF EXISTS vw_CurrentDeviceStatus;");
+            migrationBuilder.Sql("DROP VIEW IF EXISTS mimamori.vw_RecentDeviceActivity;");
+            migrationBuilder.Sql("DROP VIEW IF EXISTS mimamori.vw_DailyActivity;");
+            migrationBuilder.Sql("DROP VIEW IF EXISTS mimamori.vw_CurrentDeviceStatus;");
         }
     }
 }

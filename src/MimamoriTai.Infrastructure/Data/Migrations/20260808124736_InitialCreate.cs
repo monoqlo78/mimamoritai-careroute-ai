@@ -11,8 +11,12 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.EnsureSchema(
+                name: "mimamori");
+
             migrationBuilder.CreateTable(
                 name: "AiRequestLogs",
+                schema: "mimamori",
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
@@ -31,6 +35,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
 
             migrationBuilder.CreateTable(
                 name: "DailyActivitySummaries",
+                schema: "mimamori",
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
@@ -52,6 +57,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
 
             migrationBuilder.CreateTable(
                 name: "Households",
+                schema: "mimamori",
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
@@ -65,6 +71,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
 
             migrationBuilder.CreateTable(
                 name: "RiskAssessments",
+                schema: "mimamori",
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
@@ -81,7 +88,29 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "WatchAlerts",
+                schema: "mimamori",
+                columns: table => new
+                {
+                    Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    HouseholdId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    PersonId = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
+                    RiskLevel = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
+                    Score = table.Column<int>(type: "int", nullable: false),
+                    Reason = table.Column<string>(type: "nvarchar(512)", maxLength: 512, nullable: false),
+                    Message = table.Column<string>(type: "nvarchar(1024)", maxLength: 1024, nullable: false),
+                    SentAtUtc = table.Column<DateTimeOffset>(type: "datetimeoffset", nullable: false),
+                    Success = table.Column<bool>(type: "bit", nullable: false),
+                    Error = table.Column<string>(type: "nvarchar(512)", maxLength: 512, nullable: true)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_WatchAlerts", x => x.Id);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "Devices",
+                schema: "mimamori",
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
@@ -103,6 +132,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                     table.ForeignKey(
                         name: "FK_Devices_Households_HouseholdId",
                         column: x => x.HouseholdId,
+                        principalSchema: "mimamori",
                         principalTable: "Households",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
@@ -110,6 +140,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
 
             migrationBuilder.CreateTable(
                 name: "People",
+                schema: "mimamori",
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
@@ -124,6 +155,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                     table.ForeignKey(
                         name: "FK_People_Households_HouseholdId",
                         column: x => x.HouseholdId,
+                        principalSchema: "mimamori",
                         principalTable: "Households",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
@@ -131,6 +163,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
 
             migrationBuilder.CreateTable(
                 name: "DeviceCommands",
+                schema: "mimamori",
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
@@ -152,6 +185,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                     table.ForeignKey(
                         name: "FK_DeviceCommands_Devices_DeviceId",
                         column: x => x.DeviceId,
+                        principalSchema: "mimamori",
                         principalTable: "Devices",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.SetNull);
@@ -159,6 +193,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
 
             migrationBuilder.CreateTable(
                 name: "DeviceEvents",
+                schema: "mimamori",
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
@@ -180,6 +215,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                     table.ForeignKey(
                         name: "FK_DeviceEvents_Devices_DeviceId",
                         column: x => x.DeviceId,
+                        principalSchema: "mimamori",
                         principalTable: "Devices",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.Cascade);
@@ -187,6 +223,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
 
             migrationBuilder.CreateTable(
                 name: "FamilyMessages",
+                schema: "mimamori",
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
@@ -203,6 +240,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                     table.ForeignKey(
                         name: "FK_FamilyMessages_People_PersonId",
                         column: x => x.PersonId,
+                        principalSchema: "mimamori",
                         principalTable: "People",
                         principalColumn: "Id",
                         onDelete: ReferentialAction.SetNull);
@@ -210,91 +248,121 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
 
             migrationBuilder.CreateIndex(
                 name: "IX_AiRequestLogs_CreatedAtUtc",
+                schema: "mimamori",
                 table: "AiRequestLogs",
                 column: "CreatedAtUtc");
 
             migrationBuilder.CreateIndex(
                 name: "IX_DailyActivitySummaries_HouseholdId_Date",
+                schema: "mimamori",
                 table: "DailyActivitySummaries",
                 columns: new[] { "HouseholdId", "Date" },
                 unique: true);
 
             migrationBuilder.CreateIndex(
                 name: "IX_DeviceCommands_DeviceId",
+                schema: "mimamori",
                 table: "DeviceCommands",
                 column: "DeviceId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_DeviceCommands_HouseholdId_RequestedAtUtc",
+                schema: "mimamori",
                 table: "DeviceCommands",
                 columns: new[] { "HouseholdId", "RequestedAtUtc" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_DeviceEvents_DeviceId_OccurredAtUtc",
+                schema: "mimamori",
                 table: "DeviceEvents",
                 columns: new[] { "DeviceId", "OccurredAtUtc" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_DeviceEvents_HouseholdId_OccurredAtUtc",
+                schema: "mimamori",
                 table: "DeviceEvents",
                 columns: new[] { "HouseholdId", "OccurredAtUtc" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_Devices_HouseholdId_Alias",
+                schema: "mimamori",
                 table: "Devices",
                 columns: new[] { "HouseholdId", "Alias" },
                 unique: true);
 
             migrationBuilder.CreateIndex(
                 name: "IX_FamilyMessages_HouseholdId_OccurredAtUtc",
+                schema: "mimamori",
                 table: "FamilyMessages",
                 columns: new[] { "HouseholdId", "OccurredAtUtc" });
 
             migrationBuilder.CreateIndex(
                 name: "IX_FamilyMessages_PersonId",
+                schema: "mimamori",
                 table: "FamilyMessages",
                 column: "PersonId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_People_HouseholdId",
+                schema: "mimamori",
                 table: "People",
                 column: "HouseholdId");
 
             migrationBuilder.CreateIndex(
                 name: "IX_RiskAssessments_HouseholdId_CreatedAtUtc",
+                schema: "mimamori",
                 table: "RiskAssessments",
                 columns: new[] { "HouseholdId", "CreatedAtUtc" });
+
+            migrationBuilder.CreateIndex(
+                name: "IX_WatchAlerts_PersonId_RiskLevel_SentAtUtc",
+                schema: "mimamori",
+                table: "WatchAlerts",
+                columns: new[] { "PersonId", "RiskLevel", "SentAtUtc" });
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(
-                name: "AiRequestLogs");
+                name: "AiRequestLogs",
+                schema: "mimamori");
 
             migrationBuilder.DropTable(
-                name: "DailyActivitySummaries");
+                name: "DailyActivitySummaries",
+                schema: "mimamori");
 
             migrationBuilder.DropTable(
-                name: "DeviceCommands");
+                name: "DeviceCommands",
+                schema: "mimamori");
 
             migrationBuilder.DropTable(
-                name: "DeviceEvents");
+                name: "DeviceEvents",
+                schema: "mimamori");
 
             migrationBuilder.DropTable(
-                name: "FamilyMessages");
+                name: "FamilyMessages",
+                schema: "mimamori");
 
             migrationBuilder.DropTable(
-                name: "RiskAssessments");
+                name: "RiskAssessments",
+                schema: "mimamori");
 
             migrationBuilder.DropTable(
-                name: "Devices");
+                name: "WatchAlerts",
+                schema: "mimamori");
 
             migrationBuilder.DropTable(
-                name: "People");
+                name: "Devices",
+                schema: "mimamori");
 
             migrationBuilder.DropTable(
-                name: "Households");
+                name: "People",
+                schema: "mimamori");
+
+            migrationBuilder.DropTable(
+                name: "Households",
+                schema: "mimamori");
         }
     }
 }

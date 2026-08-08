@@ -17,6 +17,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
+                .HasDefaultSchema("mimamori")
                 .HasAnnotation("ProductVersion", "10.0.10")
                 .HasAnnotation("Relational:MaxIdentifierLength", 128);
 
@@ -59,7 +60,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
 
                     b.HasIndex("CreatedAtUtc");
 
-                    b.ToTable("AiRequestLogs");
+                    b.ToTable("AiRequestLogs", "mimamori");
                 });
 
             modelBuilder.Entity("MimamoriTai.Core.Domain.DailyActivitySummary", b =>
@@ -105,7 +106,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                     b.HasIndex("HouseholdId", "Date")
                         .IsUnique();
 
-                    b.ToTable("DailyActivitySummaries");
+                    b.ToTable("DailyActivitySummaries", "mimamori");
                 });
 
             modelBuilder.Entity("MimamoriTai.Core.Domain.Device", b =>
@@ -166,7 +167,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                     b.HasIndex("HouseholdId", "Alias")
                         .IsUnique();
 
-                    b.ToTable("Devices");
+                    b.ToTable("Devices", "mimamori");
                 });
 
             modelBuilder.Entity("MimamoriTai.Core.Domain.DeviceCommand", b =>
@@ -224,7 +225,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
 
                     b.HasIndex("HouseholdId", "RequestedAtUtc");
 
-                    b.ToTable("DeviceCommands");
+                    b.ToTable("DeviceCommands", "mimamori");
                 });
 
             modelBuilder.Entity("MimamoriTai.Core.Domain.DeviceEvent", b =>
@@ -279,7 +280,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
 
                     b.HasIndex("HouseholdId", "OccurredAtUtc");
 
-                    b.ToTable("DeviceEvents");
+                    b.ToTable("DeviceEvents", "mimamori");
                 });
 
             modelBuilder.Entity("MimamoriTai.Core.Domain.FamilyMessage", b =>
@@ -318,7 +319,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
 
                     b.HasIndex("HouseholdId", "OccurredAtUtc");
 
-                    b.ToTable("FamilyMessages");
+                    b.ToTable("FamilyMessages", "mimamori");
                 });
 
             modelBuilder.Entity("MimamoriTai.Core.Domain.Household", b =>
@@ -337,7 +338,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
 
                     b.HasKey("Id");
 
-                    b.ToTable("Households");
+                    b.ToTable("Households", "mimamori");
                 });
 
             modelBuilder.Entity("MimamoriTai.Core.Domain.Person", b =>
@@ -366,7 +367,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
 
                     b.HasIndex("HouseholdId");
 
-                    b.ToTable("People");
+                    b.ToTable("People", "mimamori");
                 });
 
             modelBuilder.Entity("MimamoriTai.Core.Domain.RiskAssessment", b =>
@@ -401,7 +402,54 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
 
                     b.HasIndex("HouseholdId", "CreatedAtUtc");
 
-                    b.ToTable("RiskAssessments");
+                    b.ToTable("RiskAssessments", "mimamori");
+                });
+
+            modelBuilder.Entity("MimamoriTai.Core.Domain.WatchAlert", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Error")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
+                    b.Property<Guid>("HouseholdId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasMaxLength(1024)
+                        .HasColumnType("nvarchar(1024)");
+
+                    b.Property<Guid>("PersonId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
+                    b.Property<string>("RiskLevel")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<int>("Score")
+                        .HasColumnType("int");
+
+                    b.Property<DateTimeOffset>("SentAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<bool>("Success")
+                        .HasColumnType("bit");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PersonId", "RiskLevel", "SentAtUtc");
+
+                    b.ToTable("WatchAlerts", "mimamori");
                 });
 
             modelBuilder.Entity("MimamoriTai.Core.Domain.Device", b =>
