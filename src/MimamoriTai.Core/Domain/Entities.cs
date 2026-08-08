@@ -75,6 +75,14 @@ public class DeviceEvent
     public DateTimeOffset ReceivedAtUtc { get; set; } = DateTimeOffset.UtcNow;
     public string? RawPayloadJson { get; set; }
 
+    /// <summary>
+    /// When this row was last streamed to the Fabric Eventhouse, or null if it has
+    /// never been published. Drives the incremental publish background service:
+    /// only null rows are candidates, and stamping this on success (never on
+    /// failure) makes republishing idempotent and safely retryable.
+    /// </summary>
+    public DateTimeOffset? PublishedToStreamAtUtc { get; set; }
+
     public Device? Device { get; set; }
 }
 

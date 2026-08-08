@@ -41,6 +41,7 @@ public static class ServiceCollectionExtensions
         services.Configure<FabricOptions>(configuration.GetSection(FabricOptions.SectionName));
         services.Configure<LineOptions>(configuration.GetSection(LineOptions.SectionName));
         services.Configure<EventhouseOptions>(configuration.GetSection(EventhouseOptions.SectionName));
+        services.Configure<EventStreamOptions>(configuration.GetSection(EventStreamOptions.SectionName));
         services.Configure<AuthOptions>(configuration.GetSection(AuthOptions.SectionName));
 
         var connectionString = configuration.GetConnectionString("AppDb");
@@ -131,10 +132,18 @@ public static class ServiceCollectionExtensions
             services.AddSingleton<ILineMessagingClient, MockLineMessagingClient>();
         }
 
-        // --- Fabric Eventhouse (real-time streaming ingestion) ---------------
+        // --- Fabric Eventstream / Eventhouse (real-time streaming ingestion) --
+        // Preference order: EventStream (Event Hubs-protocol custom endpoint,
+        // the primary ingestion path) > Eventhouse (direct KQL REST ingestion)
+        // > Mock, so the app runs end to end with zero secrets either way.
+        var eventStream = configuration.GetSection(EventStreamOptions.SectionName).Get<EventStreamOptions>() ?? new EventStreamOptions();
         var eventhouse = configuration.GetSection(EventhouseOptions.SectionName).Get<EventhouseOptions>() ?? new EventhouseOptions();
 
-        if (eventhouse.IsConfigured)
+        if (eventStream.IsConfigured)
+        {
+            services.AddSingleton<IEventStreamPublisher, EventHubEventStreamPublisher>();
+        }
+        else if (eventhouse.IsConfigured)
         {
             services.TryAddSingleton<TokenCredential>(new DefaultAzureCredential());
             services.AddHttpClient<IEventStreamPublisher, EventhouseStreamPublisher>(client =>
@@ -157,6 +166,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<DeviceControlService>();
         services.AddScoped<AssistantOrchestrator>();
         services.AddScoped<DeviceSyncService>();
+        services.AddScoped<EventStreamPublishService>();
 
         // --- Multi-user / household access -------------------------------------
         // DevCurrentUserAccessor is the zero-configuration fallback: a single fixed

@@ -17,6 +17,7 @@ builder.Services.AddOpenApi();
 builder.Services.AddHostedService<WatchAlertBackgroundService>();
 builder.Services.AddHostedService<SwitchBotPollingBackgroundService>();
 builder.Services.AddHostedService<DemoDataTopUpBackgroundService>();
+builder.Services.AddHostedService<EventStreamPublishBackgroundService>();
 
 var app = builder.Build();
 

@@ -89,6 +89,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.Source).HasConversion<string>().HasMaxLength(32);
             e.HasIndex(x => new { x.HouseholdId, x.OccurredAtUtc });
             e.HasIndex(x => new { x.DeviceId, x.OccurredAtUtc });
+            // Supports the "unpublished rows, oldest first" query the Fabric stream
+            // publish background service runs every cycle.
+            e.HasIndex(x => x.PublishedToStreamAtUtc);
             e.HasOne(x => x.Device).WithMany().HasForeignKey(x => x.DeviceId).OnDelete(DeleteBehavior.Cascade);
         });
 

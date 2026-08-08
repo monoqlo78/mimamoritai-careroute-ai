@@ -63,6 +63,7 @@ public static class DeviceSyncEndpoints
             int? take,
             AppDbContext db,
             IEventStreamPublisher publisher,
+            EventStreamPublishService publishService,
             CancellationToken ct) =>
         {
             var count = Math.Clamp(take ?? 50, 1, 500);
@@ -72,27 +73,7 @@ public static class DeviceSyncEndpoints
                 .Take(count)
                 .ToListAsync(ct);
 
-            var deviceIds = recent.Select(e => e.DeviceId).Distinct().ToList();
-            var devices = await db.Devices
-                .Where(d => deviceIds.Contains(d.Id))
-                .ToDictionaryAsync(d => d.Id, ct);
-
-            var records = recent.Select(e =>
-            {
-                devices.TryGetValue(e.DeviceId, out var device);
-                return new DeviceEventRecord(
-                    e.Id,
-                    e.HouseholdId,
-                    e.DeviceId,
-                    device?.Name ?? string.Empty,
-                    device?.Room ?? string.Empty,
-                    device?.DeviceType.ToString() ?? string.Empty,
-                    e.EventType,
-                    e.State,
-                    e.PowerWatts,
-                    e.Source.ToString(),
-                    e.OccurredAtUtc.UtcDateTime);
-            }).ToList();
+            var records = await publishService.ProjectAsync(recent, ct);
 
             var result = await publisher.PublishAsync(records, ct);
 
