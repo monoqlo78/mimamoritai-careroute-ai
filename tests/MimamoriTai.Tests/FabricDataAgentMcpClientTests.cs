@@ -292,4 +292,26 @@ public class FabricDataAgentMcpClientTests
         Assert.False(result.Success);
         Assert.NotNull(result.Error);
     }
+
+    // --- Quality gating: apology / data-access failure detection ----------------
+
+    [Theory]
+    [InlineData("申し訳ありません、現在、データベースに接続できず、情報を取得できませんでした。")]
+    [InlineData("システムのエラーにより、ご質問の内容を取得できませんでした。")]
+    [InlineData("データベースに接続できませんでした。")]
+    [InlineData("I'm sorry, but I encountered an error while trying to retrieve the data.")]
+    public void LooksLikeFailureAnswer_Returns_True_For_Apology_Text(string answer)
+    {
+        Assert.True(FabricDataAgentMcpClient.LooksLikeFailureAnswer(answer));
+    }
+
+    [Theory]
+    [InlineData("DeviceEventsテーブルの行数は162行です。")]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void LooksLikeFailureAnswer_Returns_False_For_Good_Or_Empty_Text(string? answer)
+    {
+        Assert.False(FabricDataAgentMcpClient.LooksLikeFailureAnswer(answer));
+    }
 }

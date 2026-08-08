@@ -33,6 +33,29 @@ public sealed class FabricDataAgentMcpClient(
     private const string SessionHeaderName = "Mcp-Session-Id";
     private static readonly TimeSpan RefreshMargin = TimeSpan.FromMinutes(5);
 
+    /// <summary>
+    /// Substrings that indicate the Fabric Data Agent could not actually reach its
+    /// Kusto/Eventhouse datasource (a known failure mode when invoked by a managed
+    /// identity / service principal) and merely returned an apology as text content
+    /// with an HTTP 200. Any match means the answer must be rejected so the caller
+    /// falls back to <see cref="ILocalDataQuestionService"/>.
+    /// </summary>
+    private static readonly string[] FailurePhrases =
+    [
+        "データベースに接続できず",
+        "データベースに接続できませんでした",
+        "接続できませんでした",
+        "システムのエラー",
+        "システムエラー",
+        "エラーが発生し",
+        "取得できませんでした",
+        "unable to connect",
+        "failed to connect",
+        "an error occurred",
+        "could not retrieve",
+        "i'm sorry, but i encountered an error"
+    ];
+
     private readonly FabricOptions _options = options.Value;
     private readonly SemaphoreSlim _tokenLock = new(1, 1);
     private AccessToken? _cachedToken;
@@ -98,6 +121,12 @@ public sealed class FabricDataAgentMcpClient(
             {
                 logger.LogWarning("Fabric Data Agent MCP tools/call returned no text content.");
                 return Failure("Fabric Data Agent returned an empty answer.");
+            }
+
+            if (IsErrorResult(callResult) || LooksLikeFailureAnswer(answer))
+            {
+                logger.LogWarning("Fabric Data Agent returned a failure-shaped answer; falling back to local data.");
+                return Failure("Fabric Data Agent could not access its datasource.");
             }
 
             return new FabricAnswer(true, answer, SourceName);
@@ -328,6 +357,41 @@ public sealed class FabricDataAgentMcpClient(
         }
 
         return null;
+    }
+
+    /// <summary>Checks whether a tools/call result is flagged with <c>isError: true</c>.</summary>
+    public static bool IsErrorResult(JsonElement? result)
+    {
+        if (result is not { } r || r.ValueKind != JsonValueKind.Object)
+        {
+            return false;
+        }
+
+        return r.TryGetProperty("isError", out var isError)
+            && isError.ValueKind == JsonValueKind.True;
+    }
+
+    /// <summary>
+    /// Heuristically detects an apology/failure answer returned by the Fabric Data
+    /// Agent when it could not reach its Kusto/Eventhouse datasource (a known issue
+    /// when the agent is invoked by a managed identity / service principal).
+    /// </summary>
+    public static bool LooksLikeFailureAnswer(string? answer)
+    {
+        if (string.IsNullOrWhiteSpace(answer))
+        {
+            return false;
+        }
+
+        foreach (var phrase in FailurePhrases)
+        {
+            if (answer.Contains(phrase, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private async Task<AccessToken> GetTokenAsync(CancellationToken ct)
