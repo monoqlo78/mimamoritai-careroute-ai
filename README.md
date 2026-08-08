@@ -44,7 +44,7 @@ flowchart TB
 
     subgraph Infra["MimamoriTai.Infrastructure"]
         Ai["IAiRouterClient\nOrcaRouterClient / MockAiRouterClient"]
-        Device["IDeviceProvider\nSwitchBotDeviceProvider(未完成) / MockDeviceProvider"]
+        Device["IDeviceProvider\nSwitchBotDeviceProvider / MockDeviceProvider"]
         Fabric["IFabricDataAgentClient\nMockFabricDataAgentClient"]
         Line["ILineMessagingClient\nLineMessagingClient / MockLineMessagingClient"]
         Db[("AppDbContext\nSQL Server or SQLite")]
@@ -122,12 +122,22 @@ dotnet user-secrets set "Line:ChannelAccessToken" "<your-line-channel-access-tok
 dotnet user-secrets set "Line:ChannelSecret" "<your-line-channel-secret>"
 dotnet user-secrets set "SwitchBot:Token" "<your-switchbot-token>"
 dotnet user-secrets set "SwitchBot:Secret" "<your-switchbot-secret>"
+dotnet user-secrets set "SwitchBot:PollIntervalMinutes" "5"
 dotnet user-secrets set "Fabric:WorkspaceId" "<your-fabric-workspace-id>"
 dotnet user-secrets set "Fabric:DataAgentId" "<your-fabric-data-agent-id>"
 dotnet user-secrets set "Fabric:McpUrl" "<your-fabric-data-agent-mcp-url>"
 ```
 
 `SwitchBot:Enabled` と `Line:Enabled` は `appsettings.json` 側の `bool` フィールドですが、appsettings には含まれていないため、有効化する場合は `appsettings.Development.json` や環境変数（`SwitchBot__Enabled=true` など）で設定してください。それぞれの設定手順の詳細は `docs/SWITCHBOT_SETUP.md` / `docs/LINE_SETUP.md` / `docs/FABRIC_SETUP.md` を参照。
+
+実機（SwitchBot）へ切り替えるために必要な環境変数は以下のとおりです（`.env` ではなく環境変数または User Secrets として設定してください。プレースホルダー以外の実際の値をコミットしないこと）。
+
+| 環境変数 | 既定値 | 説明 |
+|---|---|---|
+| `SwitchBot__Enabled` | `false` | `true` にすると `IDeviceProvider` の実装が `MockDeviceProvider` から `SwitchBotDeviceProvider` に切り替わる（Token/Secretも必須）。 |
+| `SwitchBot__Token` | (空) | SwitchBotアプリの開発者向けオプションで取得したToken。 |
+| `SwitchBot__Secret` | (空) | 同じくSecret。 |
+| `SwitchBot__PollIntervalMinutes` | `5` | 実機ポーリング間隔（分）。`SwitchBotPollingBackgroundService` が使用し、SwitchBot未設定時は完全に無効化される。 |
 
 ## プロジェクト構成
 
@@ -143,7 +153,7 @@ docs/
   ARCHITECTURE.md              レイヤー構成・データモデル・処理フロー
   FABRIC_SETUP.md              Microsoft Fabric Data Agent のセットアップ手順
   LINE_SETUP.md                LINE Developers チャネルのセットアップ手順
-  SWITCHBOT_SETUP.md           SwitchBot トークン取得と実装状況(TODO)
+  SWITCHBOT_SETUP.md           SwitchBot トークン取得と実機切り替え手順
   SECURITY.md                  秘密情報の取り扱い・安全設計・監査ログ
   DEMO_SCENARIO.md              約5分のデモ台本
   REFERENCES.md                参考資料一覧
@@ -162,6 +172,7 @@ docs/
 | POST | `/webhooks/line` | LINE Messaging API のWebhook受信（署名検証あり） |
 | POST | `/webhooks/switchbot` | SwitchBot Webhook受信用プレースホルダー（ペイロード未実装） |
 | POST | `/api/simulator/events` | デモ用イベント注入（`Development`環境限定） |
+| POST | `/api/devices/sync` | 実機（SwitchBot）の機器一覧をDBへ同期（`DeviceSyncService`）。追加／更新／無効化件数を返す |
 
 ## テストの実行
 
@@ -175,7 +186,7 @@ dotnet test
 
 | 統合 | 状態 | 詳細 |
 |---|---|---|
-| SwitchBot | ⚠️ 未完成 | `SwitchBotClient` は認証・HTTP送受信まで実装済みだが、`SwitchBotDeviceProvider` のレスポンスDTOマッピングは**実機で仕様確認するまで未実装**（`NotImplementedReason` を返す）。詳細は `docs/SWITCHBOT_SETUP.md`。 |
+| SwitchBot | ✅ 設定すれば実接続 | `SwitchBotDeviceProvider` はOpenAPI v1.1のレスポンス（`deviceList`/`infraredRemoteList`、機種別のstatusフィールド）を実装済み。`SwitchBot:Enabled=true`＋Token/Secretで有効化。ダッシュボードの「実機を同期」ボタン（または`POST /api/devices/sync`）でDBへ反映し、`SwitchBotPollingBackgroundService`が実機の状態変化をイベントとして記録する。詳細は `docs/SWITCHBOT_SETUP.md`。 |
 | OrcaRouter | ✅ 設定すれば実接続 | `OrcaRouter:ApiKey` が空の間は `MockAiRouterClient` が固定応答を返す。 |
 | Microsoft Fabric Data Agent | 🟡 モック稼働 | `MockFabricDataAgentClient` は常に `IsConfigured = false` を返し、代わりに `LocalDataQuestionService` がDBから直接回答。実際のMCP接続クライアントは未実装（`docs/FABRIC_SETUP.md` 参照）。 |
 | LINE | ✅ 設定すれば実接続 | `Line:ChannelAccessToken`/`ChannelSecret` が空の間は `MockLineMessagingClient` がダッシュボードのLINEシミュレーターとして動作。署名検証ロジックはモックでも有効。 |

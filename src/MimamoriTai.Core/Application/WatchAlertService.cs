@@ -57,7 +57,12 @@ public sealed record WatchAlertOutcome(
 /// persisted as <see cref="WatchAlert"/> rows, so a demo (or an unattended poll) never
 /// spams the family group.
 /// </summary>
-public sealed class WatchAlertService(IAppDbContext db, ILineMessagingClient line, TimeProvider clock, WatchAlertSettings settings)
+public sealed class WatchAlertService(
+    IAppDbContext db,
+    ILineMessagingClient line,
+    TimeProvider clock,
+    WatchAlertSettings settings,
+    IAiRouterClient? ai = null)
 {
     public async Task<WatchAlertOutcome> EvaluateAsync(Guid householdId, CancellationToken ct = default)
     {
@@ -101,7 +106,7 @@ public sealed class WatchAlertService(IAppDbContext db, ILineMessagingClient lin
                     null);
             }
 
-            var text = BuildMessage(resident.DisplayName, risk);
+            var text = await BuildMessageAsync(resident.DisplayName, risk, ct);
             LineSendResult sendResult;
             try
             {
@@ -139,6 +144,57 @@ public sealed class WatchAlertService(IAppDbContext db, ILineMessagingClient lin
             // Defensive: this service is polled unattended by a background job and is
             // triggered manually from a demo endpoint. It must never throw.
             return new WatchAlertOutcome(WatchAlertStatus.SendFailed, null, $"アラート評価中にエラーが発生しました（{ex.GetType().Name}）。", new LineSendResult(false, ex.GetType().Name));
+        }
+    }
+
+    /// <summary>
+    /// Maximum length accepted from the model. LINE renders long pushes poorly and an
+    /// over-long reply is a signal the model ignored the instruction, so we fall back.
+    /// </summary>
+    private const int MaxAiMessageLength = 120;
+
+    /// <summary>
+    /// Produces the alert text. When OrcaRouter is configured the wording is generated so
+    /// it reads naturally for the family; the deterministic template is always used as the
+    /// fallback, so alerting never depends on the LLM being reachable.
+    /// </summary>
+    private async Task<string> BuildMessageAsync(string residentName, RiskResult risk, CancellationToken ct)
+    {
+        var fallback = BuildMessage(residentName, risk);
+
+        if (ai is not { IsConfigured: true })
+        {
+            return fallback;
+        }
+
+        try
+        {
+            var messages = new List<AiMessage>
+            {
+                new("system",
+                    "あなたは高齢者見守りサービスの通知文を書く日本語アシスタントです。" +
+                    "離れて暮らす家族に送るLINEメッセージを1通だけ書いてください。" +
+                    "条件: 60文字以内、1行、丁寧で落ち着いた口調、煽らない、断定しない、" +
+                    "絵文字と挨拶と前置きは不要、事実と次の行動の提案のみ。"),
+                new("user",
+                    $"対象: {residentName}\n" +
+                    $"リスク: {risk.Level}（スコア {risk.Score}/100）\n" +
+                    $"検知内容: {risk.Reason}")
+            };
+
+            var completion = await ai.CompleteAsync(messages, "alert-message", jsonMode: false, ct);
+            if (!completion.Success)
+            {
+                return fallback;
+            }
+
+            var text = completion.Content.ReplaceLineEndings(" ").Trim();
+            return string.IsNullOrWhiteSpace(text) || text.Length > MaxAiMessageLength ? fallback : text;
+        }
+        catch (Exception)
+        {
+            // An alert must go out even if the router misbehaves in an unexpected way.
+            return fallback;
         }
     }
 

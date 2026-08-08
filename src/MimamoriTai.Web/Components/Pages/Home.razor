@@ -11,6 +11,7 @@
 @inject AppDbContext Db
 @inject IWebHostEnvironment Env
 @inject WatchAlertService AlertService
+@inject DeviceSyncService DeviceSync
 
 <PageTitle>CareRoute AI / 見守り隊</PageTitle>
 
@@ -22,6 +23,9 @@
     <div class="integrations">
         @if (_model is not null)
         {
+            <span class="chip @(_model.Integrations.SwitchBotConfigured ? "on" : "mock")">
+                データ: @(_model.Integrations.SwitchBotConfigured ? "実機（SwitchBot）" : "デモ")
+            </span>
             <span class="chip @(_model.Integrations.DeviceProvider == "SwitchBot" ? "on" : "mock")">
                 Devices: @_model.Integrations.DeviceProvider
             </span>
@@ -263,6 +267,22 @@ else
                     <button class="ghost danger" @onclick="@(() => SimulateAsync("night_activity"))" disabled="@_busy">深夜活動異常</button>
                 </div>
             }
+
+            <h3>実機データの同期</h3>
+            @if (_model.Integrations.SwitchBotConfigured)
+            {
+                <p class="muted">SwitchBot実機の最新の機器一覧をデータベースに反映します。</p>
+                <div class="quick">
+                    <button class="ghost act" @onclick="SyncDevicesAsync" disabled="@_busy">実機を同期</button>
+                </div>
+            }
+            else
+            {
+                <p class="muted">現在はデモデータで動作しています。SwitchBotの接続情報（Token/Secret）を設定すると、実機を同期できます。</p>
+                <div class="quick">
+                    <button class="ghost act" disabled>実機を同期（未設定）</button>
+                </div>
+            }
         </article>
     </section>
 }
@@ -461,6 +481,36 @@ else
                 WatchAlertStatus.SuppressedByCooldown => "warn",
                 _ => "ok"
             };
+
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    /// <summary>
+    /// Syncs real provider devices (SwitchBot) into the Devices table via
+    /// DeviceSyncService, mirroring the /api/devices/sync endpoint. Only meaningful
+    /// when SwitchBot is configured; the button is disabled otherwise.
+    /// </summary>
+    private async Task SyncDevicesAsync()
+    {
+        if (_model is null || _busy || !_model.Integrations.SwitchBotConfigured)
+        {
+            return;
+        }
+
+        _busy = true;
+        StateHasChanged();
+
+        try
+        {
+            var result = await DeviceSync.SyncAsync(_model.HouseholdId);
+
+            _notice = $"実機の同期が完了しました（追加 {result.Added}／更新 {result.Updated}／無効化 {result.Deactivated}）。";
+            _noticeKind = "ok";
 
             await ReloadAsync();
         }

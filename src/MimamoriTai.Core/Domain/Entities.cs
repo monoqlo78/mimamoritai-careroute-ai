@@ -40,6 +40,15 @@ public class Device
     public bool IsEnabled { get; set; } = true;
     public bool RemoteControlAllowed { get; set; }
     public SafetyClass SafetyClass { get; set; }
+
+    /// <summary>
+    /// False when this device was previously synced from a provider (e.g. SwitchBot)
+    /// but no longer appears there. Deactivated devices are kept (never deleted) so
+    /// their historical DeviceEvent/DeviceCommand rows remain valid, but they are
+    /// excluded from the dashboard and from natural language resolution.
+    /// </summary>
+    public bool IsActive { get; set; } = true;
+
     public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 
     public Household? Household { get; set; }

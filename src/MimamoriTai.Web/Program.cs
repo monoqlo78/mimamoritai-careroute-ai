@@ -14,6 +14,7 @@ builder.Services.AddMimamoriTaiInfrastructure(builder.Configuration);
 builder.Services.AddScoped<DashboardService>();
 builder.Services.AddOpenApi();
 builder.Services.AddHostedService<WatchAlertBackgroundService>();
+builder.Services.AddHostedService<SwitchBotPollingBackgroundService>();
 
 var app = builder.Build();
 
@@ -45,6 +46,7 @@ app.MapApiEndpoints();
 app.MapWebhookEndpoints();
 app.MapSimulatorEndpoints();
 app.MapAlertEndpoints();
+app.MapDeviceSyncEndpoints();
 
 await InitializeDatabaseAsync(app);
 

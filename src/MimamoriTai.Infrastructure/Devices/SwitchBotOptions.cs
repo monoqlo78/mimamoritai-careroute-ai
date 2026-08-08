@@ -17,6 +17,13 @@ public sealed class SwitchBotOptions
 
     public string Secret { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Minutes between background polls of real device status once SwitchBot is the
+    /// active provider. Only used by SwitchBotPollingBackgroundService, which is a
+    /// no-op entirely when SwitchBot is not configured.
+    /// </summary>
+    public double PollIntervalMinutes { get; set; } = 5;
+
     public bool IsConfigured =>
         Enabled && !string.IsNullOrWhiteSpace(Token) && !string.IsNullOrWhiteSpace(Secret);
 }

@@ -68,9 +68,8 @@ public static class ServiceCollectionExtensions
 
         if (switchBot.IsConfigured)
         {
-            // Real hardware path. SwitchBotDeviceProvider's response mapping is still
-            // pending verification against the official OpenAPI v1.1 spec, so this branch
-            // is opt-in via SwitchBot:Enabled = true and stays off for the mock demo.
+            // Real hardware path, opt-in via SwitchBot:Enabled = true (plus Token/Secret).
+            // Stays off for the mock demo, which never needs any secret.
             services.AddScoped<IDeviceProvider, SwitchBotDeviceProvider>();
         }
         else
@@ -122,6 +121,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<RiskAssessmentService>();
         services.AddScoped<DeviceControlService>();
         services.AddScoped<AssistantOrchestrator>();
+        services.AddScoped<DeviceSyncService>();
 
         // --- Watch/risk alert (LINE push) -------------------------------------
         services.AddSingleton(sp =>
