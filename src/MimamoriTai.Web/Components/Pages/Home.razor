@@ -7,6 +7,7 @@
 @using MimamoriTai.Infrastructure.Data
 @inject DashboardService Dashboard
 @inject AssistantOrchestrator Orchestrator
+@inject DeviceControlService Control
 @inject AppDbContext Db
 @inject IWebHostEnvironment Env
 
@@ -43,6 +44,20 @@
 }
 else
 {
+    @if (_notice is not null)
+    {
+        <div class="notice notice-@_noticeKind" role="status" aria-live="polite">
+            <span class="notice-icon">@(_noticeKind == "ok" ? "✓" : _noticeKind == "blocked" ? "⛔" : "⚠")</span>
+            <span>@_notice</span>
+            <button class="notice-close" @onclick="() => _notice = null" aria-label="閉じる">✕</button>
+        </div>
+    }
+
+    @if (_busy)
+    {
+        <div class="busy-bar" role="status" aria-live="polite">処理中…</div>
+    }
+
     <section class="grid">
         <article class="card risk risk-@_model.Risk.Level.ToString().ToLowerInvariant()">
             <h2>現在の見守りステータス</h2>
@@ -75,19 +90,52 @@ else
     </section>
 
     <section class="devices">
-        <h2>デバイス</h2>
+        <div class="section-head">
+            <h2>デバイス</h2>
+            <span class="muted">ボタン操作も自然言語と同じ安全ガードレールを通ります</span>
+        </div>
         <div class="device-grid">
             @foreach (var device in _model.Devices)
             {
-                <div class="device-card @(device.IsOn ? "on" : "off")">
+                var d = device;
+                <div class="device-card @(d.IsOn ? "on" : "off") @(d.SafetyClass == "Restricted" ? "restricted" : "")">
                     <div class="device-head">
-                        <strong>@device.Name</strong>
-                        <span class="state">@(device.IsOn ? "ON" : "OFF")</span>
+                        <strong>@d.Name</strong>
+                        <span class="state">@(d.IsOn ? "ON" : "OFF")</span>
                     </div>
-                    <p class="muted">@device.Room ・ @device.DeviceType ・ @device.Alias</p>
-                    <p class="muted">最終利用: @FormatLocal(device.LastUsedUtc)</p>
-                    <p class="muted">今日の利用: @device.TodayUsageCount 回</p>
-                    <p class="muted">遠隔操作: @(device.RemoteControlAllowed ? "許可" : "禁止") ・ @device.SafetyClass</p>
+                    <p class="muted">@d.Room ・ @d.DeviceType ・ @d.Alias</p>
+                    <p class="muted">最終利用: @FormatLocal(d.LastUsedUtc)</p>
+                    <p class="muted">今日の利用: @d.TodayUsageCount 回</p>
+                    <p class="muted">
+                        遠隔操作: @(d.RemoteControlAllowed ? "許可" : "禁止") ・
+                        <span class="safety safety-@d.SafetyClass.ToLowerInvariant()">@d.SafetyClass</span>
+                    </p>
+
+                    <div class="device-actions">
+                        <button class="btn-on"
+                                title="@(d.SafetyClass == "Restricted" ? "危険機器のためONは拒否されます" : "ONにする")"
+                                @onclick="@(() => ControlAsync(d.Alias, DeviceAction.TurnOn))"
+                                disabled="@_busy">
+                            ON
+                        </button>
+                        <button class="btn-off"
+                                title="OFFにする"
+                                @onclick="@(() => ControlAsync(d.Alias, DeviceAction.TurnOff))"
+                                disabled="@_busy">
+                            OFF
+                        </button>
+                        <button class="ghost small"
+                                title="現在の状態を確認"
+                                @onclick="@(() => ControlAsync(d.Alias, DeviceAction.GetStatus))"
+                                disabled="@_busy">
+                            状態
+                        </button>
+                    </div>
+
+                    @if (d.SafetyClass == "Restricted")
+                    {
+                        <p class="restricted-note">危険機器：ONは拒否され、OFFのみ許可されます</p>
+                    }
                 </div>
             }
         </div>
@@ -95,8 +143,18 @@ else
 
     <section class="two-col">
         <article class="card">
-            <h2>自然言語で操作・質問</h2>
+            <div class="section-head">
+                <h2>自然言語で操作・質問</h2>
+                @if (_chatLog.Count > 0)
+                {
+                    <button class="ghost small" @onclick="() => _chatLog.Clear()" disabled="@_busy">クリア</button>
+                }
+            </div>
             <div class="chat-log">
+                @if (_chatLog.Count == 0)
+                {
+                    <p class="muted empty">下のボタンを押すか、自由に入力して話しかけてください。</p>
+                }
                 @foreach (var line in _chatLog)
                 {
                     <div class="chat-line @(line.IsAi ? "ai" : "user")">
@@ -110,27 +168,42 @@ else
                        placeholder="例: リビングのライトつけて / 今日のお母さんどう？" disabled="@_busy" />
                 <button @onclick="SendAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_input))">送信</button>
             </div>
-            <div class="quick">
-                @foreach (var sample in Samples)
-                {
-                    var text = sample;
-                    <button class="ghost" @onclick="@(() => SendSampleAsync(text))" disabled="@_busy">@text</button>
-                }
-            </div>
+
+            @foreach (var group in SampleGroups)
+            {
+                <div class="quick-group">
+                    <span class="quick-label">@group.Label</span>
+                    <div class="quick">
+                        @foreach (var sample in group.Samples)
+                        {
+                            var text = sample;
+                            <button class="ghost @(group.Kind)" @onclick="@(() => SendSampleAsync(text))" disabled="@_busy">@text</button>
+                        }
+                    </div>
+                </div>
+            }
         </article>
 
         <article class="card">
             <h2>LINE シミュレーター</h2>
             <p class="muted">LINEの認証情報が無くても、グループLINEでの会話を再現できます。</p>
             <div class="line-controls">
-                <select @bind="_lineSpeaker">
+                <select @bind="_lineSpeaker" disabled="@_busy">
                     @foreach (var person in _model.People)
                     {
                         <option value="@person.Id">@person.DisplayName</option>
                     }
                 </select>
-                <input @bind="_lineInput" placeholder="例: 今日のお母さんどう？" disabled="@_busy" />
+                <input @bind="_lineInput" @bind:event="oninput" @onkeydown="OnLineKeyDown"
+                       placeholder="例: 今日のお母さんどう？" disabled="@_busy" />
                 <button @onclick="SendLineAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_lineInput))">LINEで送る</button>
+            </div>
+            <div class="quick">
+                @foreach (var sample in LineSamples)
+                {
+                    var text = sample;
+                    <button class="ghost" @onclick="@(() => SendLineSampleAsync(text))" disabled="@_busy">@text</button>
+                }
             </div>
 
             <h3>家族共有フィード</h3>
@@ -178,10 +251,11 @@ else
             @if (Env.IsDevelopment())
             {
                 <h3>デモ用シミュレーション</h3>
+                <p class="muted">今日の生活イベントを差し替えて、リスク判定の変化を確認できます。</p>
                 <div class="quick">
-                    <button class="ghost" @onclick="@(() => SimulateAsync("normal_day"))" disabled="@_busy">通常の一日</button>
-                    <button class="ghost" @onclick="@(() => SimulateAsync("no_activity"))" disabled="@_busy">活動なし異常</button>
-                    <button class="ghost" @onclick="@(() => SimulateAsync("night_activity"))" disabled="@_busy">深夜活動異常</button>
+                    <button class="ghost act" @onclick="@(() => SimulateAsync("normal_day"))" disabled="@_busy">通常の一日</button>
+                    <button class="ghost danger" @onclick="@(() => SimulateAsync("no_activity"))" disabled="@_busy">活動なし異常</button>
+                    <button class="ghost danger" @onclick="@(() => SimulateAsync("night_activity"))" disabled="@_busy">深夜活動異常</button>
                 </div>
             }
         </article>
@@ -189,12 +263,34 @@ else
 }
 
 @code {
-    private static readonly string[] Samples =
+    private sealed record SampleGroup(string Label, string Kind, string[] Samples);
+
+    private static readonly SampleGroup[] SampleGroups =
     [
-        "リビングのライトつけて",
-        "リビングのライト消して",
+        new("家電を操作", "act",
+        [
+            "リビングのライトつけて",
+            "リビングのライト消して",
+            "扇風機つけて"
+        ]),
+        new("安全ガードレール（拒否デモ）", "danger",
+        [
+            "ストーブつけて",
+            "ストーブ消して"
+        ]),
+        new("生活データに質問", "ask",
+        [
+            "今日のお母さんどう？",
+            "今日最初に活動したのは何時？",
+            "リビングのライトは今ついてる？"
+        ])
+    ];
+
+    private static readonly string[] LineSamples =
+    [
         "今日のお母さんどう？",
-        "今日最初に活動したのは何時？"
+        "リビングのライトつけて",
+        "ストーブつけて"
     ];
 
     private DashboardModel? _model;
@@ -203,6 +299,8 @@ else
     private string _lineInput = string.Empty;
     private Guid? _lineSpeaker;
     private bool _busy;
+    private string? _notice;
+    private string _noticeKind = "ok";
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
 
@@ -226,10 +324,67 @@ else
         }
     }
 
+    private async Task OnLineKeyDown(KeyboardEventArgs args)
+    {
+        if (args.Key == "Enter")
+        {
+            await SendLineAsync();
+        }
+    }
+
     private async Task SendSampleAsync(string text)
     {
         _input = text;
         await SendAsync();
+    }
+
+    private async Task SendLineSampleAsync(string text)
+    {
+        _lineInput = text;
+        await SendLineAsync();
+    }
+
+    /// <summary>
+    /// Button presses go through the same DeviceControlService as chat commands, so the
+    /// safety policy and the DeviceCommand audit trail apply identically. The UI never
+    /// gets a privileged path around the guard rails.
+    /// </summary>
+    private async Task ControlAsync(string alias, DeviceAction action)
+    {
+        if (_model is null || _busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        StateHasChanged();
+
+        try
+        {
+            var outcome = await Control.ExecuteAsync(
+                _model.HouseholdId,
+                alias,
+                action,
+                confidence: 1.0,
+                originalText: $"[ボタン操作] {alias} / {action}",
+                source: CommandSource.Web,
+                requestedByPersonId: null,
+                aiResolvedModel: null);
+
+            _notice = outcome.Message;
+            _noticeKind = outcome.Status switch
+            {
+                CommandStatus.Succeeded => "ok",
+                CommandStatus.Rejected => "blocked",
+                _ => "warn"
+            };
+
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
     }
 
     private Task SendAsync() => SendCoreAsync(_input, CommandSource.Web, null, () => _input = string.Empty);
@@ -309,6 +464,13 @@ else
             }
 
             await Db.SaveChangesAsync();
+            _notice = scenario switch
+            {
+                "normal_day" => "通常の一日のデータに差し替えました。",
+                "no_activity" => "今日の活動データを削除しました（活動なし異常）。",
+                _ => "深夜帯の活動データを追加しました。"
+            };
+            _noticeKind = scenario == "normal_day" ? "ok" : "warn";
             await ReloadAsync();
         }
         finally
