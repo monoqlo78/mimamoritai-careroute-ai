@@ -168,6 +168,7 @@ public static class ServiceCollectionExtensions
                 Cooldown = TimeSpan.FromHours(Math.Max(options.AlertCooldownHours, 0))
             };
         });
+        services.AddScoped<ILineRecipientResolver, LineRecipientResolver>();
         services.AddScoped<WatchAlertService>();
 
         services.AddScoped(sp => new IntegrationStatus(

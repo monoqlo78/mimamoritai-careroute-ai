@@ -18,6 +18,7 @@ public interface IAppDbContext
     DbSet<WatchAlert> WatchAlerts { get; }
     DbSet<AppUser> AppUsers { get; }
     DbSet<HouseholdMember> HouseholdMembers { get; }
+    DbSet<LineRecipient> LineRecipients { get; }
 
     Task<int> SaveChangesAsync(CancellationToken ct = default);
 }

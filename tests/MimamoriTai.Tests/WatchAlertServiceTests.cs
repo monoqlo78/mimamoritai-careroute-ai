@@ -32,6 +32,16 @@ public sealed class FakeLineMessagingClient : ILineMessagingClient
     public bool VerifySignature(string rawBody, string? signatureHeader) => false;
 }
 
+/// <summary>Simple resolver test double: returns the configured ToId, or a fixed list of targets.</summary>
+public sealed class FakeLineRecipientResolver(IReadOnlyList<string> targets) : ILineRecipientResolver
+{
+    public static FakeLineRecipientResolver From(string toId) =>
+        new(string.IsNullOrWhiteSpace(toId) ? [] : [toId]);
+
+    public Task<IReadOnlyList<string>> ResolveAsync(Guid householdId, CancellationToken ct = default) =>
+        Task.FromResult(targets);
+}
+
 public class WatchAlertServiceTests
 {
     private static async Task<TestDb> SeedHighRiskHouseholdAsync()
@@ -44,13 +54,17 @@ public class WatchAlertServiceTests
     }
 
     private static WatchAlertService Create(
-        TestDb db, FakeTimeProvider clock, FakeLineMessagingClient line, WatchAlertSettings? settings = null) =>
-        new(db.Context, line, clock, settings ?? new WatchAlertSettings
+        TestDb db, FakeTimeProvider clock, FakeLineMessagingClient line, WatchAlertSettings? settings = null, ILineRecipientResolver? resolver = null)
+    {
+        settings ??= new WatchAlertSettings
         {
             ToId = "test-family-group",
             Threshold = RiskLevel.Medium,
             Cooldown = TimeSpan.FromHours(1)
-        });
+        };
+
+        return new(db.Context, line, clock, settings, resolver ?? FakeLineRecipientResolver.From(settings.ToId));
+    }
 
     /// <summary>11:00 JST == 02:00 UTC, past the 10:00 no-activity threshold.</summary>
     private static readonly DateTimeOffset NoActivityMorningUtc = new(2026, 1, 1, 2, 0, 0, TimeSpan.Zero);
@@ -154,5 +168,31 @@ public class WatchAlertServiceTests
         Assert.Equal(WatchAlertStatus.BelowThreshold, outcome.Status);
         Assert.Empty(line.Pushed);
         Assert.Empty(db.Context.WatchAlerts);
+    }
+
+    [Fact]
+    public async Task Alert_Pushes_To_Every_Recipient_And_Tolerates_A_Per_Recipient_Failure()
+    {
+        using var db = await SeedHighRiskHouseholdAsync();
+        var clock = new FakeTimeProvider(NoActivityMorningUtc);
+        var line = new FakeLineMessagingClient();
+        var resolver = new FakeLineRecipientResolver(["Utestuser0000000000000000000000001", "Utestuser0000000000000000000000002"]);
+        var service = Create(db, clock, line, new WatchAlertSettings
+        {
+            ToId = string.Empty, // config empty: multi-recipient DB path is exercised via the resolver
+            Threshold = RiskLevel.Medium,
+            Cooldown = TimeSpan.FromHours(1)
+        }, resolver);
+
+        // The first recipient's push fails; the second must still be attempted.
+        line.FailNext = true;
+
+        var outcome = await service.EvaluateAsync(db.HouseholdId);
+
+        Assert.True(outcome.Sent); // overall success, since at least one recipient received it
+        Assert.Equal(2, line.Pushed.Count);
+        Assert.Contains(line.Pushed, p => p.To == "Utestuser0000000000000000000000001");
+        Assert.Contains(line.Pushed, p => p.To == "Utestuser0000000000000000000000002");
+        Assert.True(db.Context.WatchAlerts.Single().Success);
     }
 }

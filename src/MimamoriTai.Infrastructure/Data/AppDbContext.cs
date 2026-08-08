@@ -25,6 +25,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<WatchAlert> WatchAlerts => Set<WatchAlert>();
     public DbSet<AppUser> AppUsers => Set<AppUser>();
     public DbSet<HouseholdMember> HouseholdMembers => Set<HouseholdMember>();
+    public DbSet<LineRecipient> LineRecipients => Set<LineRecipient>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -160,6 +161,14 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.HasIndex(x => new { x.HouseholdId, x.AppUserId }).IsUnique();
             e.HasOne(x => x.Household).WithMany().HasForeignKey(x => x.HouseholdId).OnDelete(DeleteBehavior.Cascade);
             e.HasOne(x => x.AppUser).WithMany().HasForeignKey(x => x.AppUserId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        b.Entity<LineRecipient>(e =>
+        {
+            e.Property(x => x.LineUserId).HasMaxLength(64).IsRequired();
+            e.Property(x => x.DisplayName).HasMaxLength(128);
+            e.HasIndex(x => new { x.HouseholdId, x.LineUserId }).IsUnique();
+            e.HasOne(x => x.Household).WithMany().HasForeignKey(x => x.HouseholdId).OnDelete(DeleteBehavior.Cascade);
         });
 
         base.OnModelCreating(b);

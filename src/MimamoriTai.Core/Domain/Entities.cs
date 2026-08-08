@@ -204,3 +204,28 @@ public class HouseholdMember
     public Household? Household { get; set; }
     public AppUser? AppUser { get; set; }
 }
+
+/// <summary>
+/// A LINE user (or group) that has added the bot as a friend / sent it a message, captured
+/// via the LINE webhook's `follow`/`message` events. Alert pushes target every active
+/// recipient of a household instead of a single hard-coded id, so onboarding a new family
+/// member is just "add the bot as a friend" with no manual copy/paste of LINE user ids.
+/// </summary>
+public class LineRecipient
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid HouseholdId { get; set; }
+
+    /// <summary>LINE `userId` (1:1 chat) or `groupId` (group chat) — both are valid `to` values for push.</summary>
+    public string LineUserId { get; set; } = string.Empty;
+
+    public string? DisplayName { get; set; }
+
+    /// <summary>False once the corresponding `unfollow` webhook event is received.</summary>
+    public bool IsActive { get; set; } = true;
+
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset LastSeenAt { get; set; } = DateTimeOffset.UtcNow;
+
+    public Household? Household { get; set; }
+}

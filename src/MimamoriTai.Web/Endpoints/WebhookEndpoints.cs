@@ -18,6 +18,7 @@ public static class WebhookEndpoints
             AssistantOrchestrator orchestrator,
             AppDbContext db,
             HouseholdAccessService householdAccess,
+            TimeProvider clock,
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
@@ -46,14 +47,33 @@ public static class WebhookEndpoints
                 return Results.Ok();
             }
 
-            foreach (var (replyToken, text) in ParseTextEvents(rawBody))
+            foreach (var evt in ParseEvents(rawBody))
             {
-                var response = await orchestrator.HandleAsync(
-                    new AssistantRequest(householdId.Value, null, text, CommandSource.Line), ct);
-
-                if (!string.IsNullOrWhiteSpace(replyToken))
+                switch (evt.Type)
                 {
-                    await line.ReplyAsync(replyToken, response.Reply, ct);
+                    case "follow":
+                        await UpsertRecipientAsync(db, householdId.Value, evt.SourceId, isActive: true, clock, ct);
+                        if (!string.IsNullOrWhiteSpace(evt.ReplyToken))
+                        {
+                            await line.ReplyAsync(evt.ReplyToken, "見守り隊へようこそ。今後、異常を検知した際にこちらへ通知します。", ct);
+                        }
+                        break;
+
+                    case "unfollow":
+                        await DeactivateRecipientAsync(db, householdId.Value, evt.SourceId, ct);
+                        break;
+
+                    case "message":
+                        await UpsertRecipientAsync(db, householdId.Value, evt.SourceId, isActive: true, clock, ct);
+
+                        var response = await orchestrator.HandleAsync(
+                            new AssistantRequest(householdId.Value, null, evt.Text ?? string.Empty, CommandSource.Line), ct);
+
+                        if (!string.IsNullOrWhiteSpace(evt.ReplyToken))
+                        {
+                            await line.ReplyAsync(evt.ReplyToken, response.Reply, ct);
+                        }
+                        break;
                 }
             }
 
@@ -77,10 +97,74 @@ public static class WebhookEndpoints
         return app;
     }
 
-    /// <summary>Extracts (replyToken, text) pairs from a LINE webhook body, ignoring anything malformed.</summary>
-    internal static List<(string? ReplyToken, string Text)> ParseTextEvents(string rawBody)
+    /// <summary>Creates or refreshes a <see cref="LineRecipient"/> row for the given source id.</summary>
+    private static async Task UpsertRecipientAsync(
+        AppDbContext db, Guid householdId, string? lineUserId, bool isActive, TimeProvider clock, CancellationToken ct)
     {
-        var result = new List<(string?, string)>();
+        if (string.IsNullOrWhiteSpace(lineUserId))
+        {
+            return;
+        }
+
+        var now = clock.GetUtcNow();
+        var existing = await db.LineRecipients
+            .FirstOrDefaultAsync(r => r.HouseholdId == householdId && r.LineUserId == lineUserId, ct);
+
+        if (existing is null)
+        {
+            db.LineRecipients.Add(new LineRecipient
+            {
+                HouseholdId = householdId,
+                LineUserId = lineUserId,
+                IsActive = isActive,
+                CreatedAt = now,
+                LastSeenAt = now
+            });
+        }
+        else
+        {
+            existing.IsActive = isActive;
+            existing.LastSeenAt = now;
+        }
+
+        await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>Marks a recipient inactive after an `unfollow` event. A no-op if it was never registered.</summary>
+    private static async Task DeactivateRecipientAsync(AppDbContext db, Guid householdId, string? lineUserId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(lineUserId))
+        {
+            return;
+        }
+
+        var existing = await db.LineRecipients
+            .FirstOrDefaultAsync(r => r.HouseholdId == householdId && r.LineUserId == lineUserId, ct);
+
+        if (existing is not null)
+        {
+            existing.IsActive = false;
+            await db.SaveChangesAsync(ct);
+        }
+    }
+
+    /// <summary>A single LINE webhook event, normalized for both message handling and recipient capture.</summary>
+    internal sealed record LineWebhookEvent(string Type, string? ReplyToken, string? Text, string? SourceId, string? SourceType);
+
+    /// <summary>Extracts (replyToken, text) pairs from a LINE webhook body. Kept for backward compatibility.</summary>
+    internal static List<(string? ReplyToken, string Text)> ParseTextEvents(string rawBody) =>
+        ParseEvents(rawBody)
+            .Where(e => e.Type == "message" && !string.IsNullOrWhiteSpace(e.Text))
+            .Select(e => (e.ReplyToken, e.Text!))
+            .ToList();
+
+    /// <summary>
+    /// Parses every event in a LINE webhook body into a small, defensive representation.
+    /// Malformed JSON (or any unexpected shape) never throws; it just yields no events.
+    /// </summary>
+    internal static List<LineWebhookEvent> ParseEvents(string rawBody)
+    {
+        var result = new List<LineWebhookEvent>();
 
         try
         {
@@ -92,26 +176,31 @@ public static class WebhookEndpoints
 
             foreach (var evt in events.EnumerateArray())
             {
-                if (!evt.TryGetProperty("type", out var type) || type.GetString() != "message")
-                {
-                    continue;
-                }
-
-                if (!evt.TryGetProperty("message", out var message)
-                    || !message.TryGetProperty("type", out var messageType)
-                    || messageType.GetString() != "text")
-                {
-                    continue;
-                }
-
-                var text = message.TryGetProperty("text", out var textElement) ? textElement.GetString() : null;
-                if (string.IsNullOrWhiteSpace(text))
+                if (!evt.TryGetProperty("type", out var typeElement) || typeElement.GetString() is not { } type)
                 {
                     continue;
                 }
 
                 var replyToken = evt.TryGetProperty("replyToken", out var tokenElement) ? tokenElement.GetString() : null;
-                result.Add((replyToken, text));
+                var (sourceId, sourceType) = ExtractSource(evt);
+
+                string? text = null;
+                if (type == "message"
+                    && evt.TryGetProperty("message", out var message)
+                    && message.TryGetProperty("type", out var messageType)
+                    && messageType.GetString() == "text"
+                    && message.TryGetProperty("text", out var textElement))
+                {
+                    text = textElement.GetString();
+                }
+
+                // Only "message" events require text; "follow"/"unfollow" carry no message body.
+                if (type == "message" && string.IsNullOrWhiteSpace(text))
+                {
+                    continue;
+                }
+
+                result.Add(new LineWebhookEvent(type, replyToken, text, sourceId, sourceType));
             }
         }
         catch (JsonException)
@@ -120,5 +209,31 @@ public static class WebhookEndpoints
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Resolves the id used as the LINE push `to` value: `userId` for 1:1 chats, or `groupId`
+    /// (source.type == "group") for group chats. `userId` is preferred when both are present.
+    /// </summary>
+    private static (string? SourceId, string? SourceType) ExtractSource(JsonElement evt)
+    {
+        if (!evt.TryGetProperty("source", out var source) || source.ValueKind != JsonValueKind.Object)
+        {
+            return (null, null);
+        }
+
+        var sourceType = source.TryGetProperty("type", out var typeElement) ? typeElement.GetString() : null;
+
+        if (source.TryGetProperty("userId", out var userIdElement) && userIdElement.GetString() is { } userId)
+        {
+            return (userId, sourceType);
+        }
+
+        if (source.TryGetProperty("groupId", out var groupIdElement) && groupIdElement.GetString() is { } groupId)
+        {
+            return (groupId, sourceType);
+        }
+
+        return (null, sourceType);
     }
 }

@@ -62,6 +62,7 @@ public sealed class WatchAlertService(
     ILineMessagingClient line,
     TimeProvider clock,
     WatchAlertSettings settings,
+    ILineRecipientResolver recipientResolver,
     IAiRouterClient? ai = null)
 {
     public async Task<WatchAlertOutcome> EvaluateAsync(Guid householdId, CancellationToken ct = default)
@@ -107,19 +108,8 @@ public sealed class WatchAlertService(
             }
 
             var text = await BuildMessageAsync(resident.DisplayName, risk, ct);
-            LineSendResult sendResult;
-            try
-            {
-                sendResult = string.IsNullOrWhiteSpace(settings.ToId)
-                    ? new LineSendResult(false, "AlertToId が未設定です。")
-                    : await line.PushAsync(settings.ToId, text, ct);
-            }
-            catch (Exception ex)
-            {
-                // PushAsync/LineMessagingClient already catches its own network errors, but
-                // this is a last-resort guard: an alert must never crash the caller.
-                sendResult = new LineSendResult(false, ex.GetType().Name);
-            }
+            var recipients = await recipientResolver.ResolveAsync(householdId, ct);
+            var aggregateResult = await PushToAllAsync(recipients, text, ct);
 
             db.WatchAlerts.Add(new WatchAlert
             {
@@ -130,14 +120,14 @@ public sealed class WatchAlertService(
                 Reason = risk.Reason,
                 Message = text,
                 SentAtUtc = now,
-                Success = sendResult.Success,
-                Error = sendResult.Error
+                Success = aggregateResult.Success,
+                Error = aggregateResult.Error
             });
             await db.SaveChangesAsync(ct);
 
-            return sendResult.Success
-                ? new WatchAlertOutcome(WatchAlertStatus.Sent, risk, text, sendResult)
-                : new WatchAlertOutcome(WatchAlertStatus.SendFailed, risk, text, sendResult);
+            return aggregateResult.Success
+                ? new WatchAlertOutcome(WatchAlertStatus.Sent, risk, text, aggregateResult)
+                : new WatchAlertOutcome(WatchAlertStatus.SendFailed, risk, text, aggregateResult);
         }
         catch (Exception ex)
         {
@@ -145,6 +135,46 @@ public sealed class WatchAlertService(
             // triggered manually from a demo endpoint. It must never throw.
             return new WatchAlertOutcome(WatchAlertStatus.SendFailed, null, $"アラート評価中にエラーが発生しました（{ex.GetType().Name}）。", new LineSendResult(false, ex.GetType().Name));
         }
+    }
+
+    /// <summary>
+    /// Pushes the alert text to every resolved recipient. A failure for one recipient must
+    /// never prevent the push to the others; the aggregate is a success if at least one
+    /// recipient received it, so a single stale/unfollowed target doesn't mask the alert.
+    /// </summary>
+    private async Task<LineSendResult> PushToAllAsync(IReadOnlyList<string> recipients, string text, CancellationToken ct)
+    {
+        if (recipients.Count == 0)
+        {
+            return new LineSendResult(false, "LINE 通知先が設定されていません。");
+        }
+
+        var errors = new List<string>();
+        var anySucceeded = false;
+
+        foreach (var to in recipients)
+        {
+            try
+            {
+                var result = await line.PushAsync(to, text, ct);
+                if (result.Success)
+                {
+                    anySucceeded = true;
+                }
+                else if (!string.IsNullOrWhiteSpace(result.Error))
+                {
+                    errors.Add(result.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                // PushAsync/LineMessagingClient already catches its own network errors, but
+                // this is a last-resort guard: one bad recipient must never crash the loop.
+                errors.Add(ex.GetType().Name);
+            }
+        }
+
+        return new LineSendResult(anySucceeded, errors.Count == 0 ? null : string.Join("; ", errors));
     }
 
     /// <summary>
