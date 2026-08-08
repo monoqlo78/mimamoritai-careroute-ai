@@ -180,6 +180,34 @@ public class FabricDataAgentMcpClientTests
     }
 
     [Fact]
+    public void ExtractFirstToolArgumentName_Uses_Required_From_InputSchema()
+    {
+        var json = JsonDocument.Parse(
+            """{"tools":[{"name":"DataAgent_X","inputSchema":{"type":"object","properties":{"userQuestion":{"type":"string"}},"required":["userQuestion"]}}]}""")
+            .RootElement;
+
+        Assert.Equal("userQuestion", FabricDataAgentMcpClient.ExtractFirstToolArgumentName(json));
+    }
+
+    [Fact]
+    public void ExtractFirstToolArgumentName_Falls_Back_To_First_Property()
+    {
+        var json = JsonDocument.Parse(
+            """{"tools":[{"name":"DataAgent_X","inputSchema":{"type":"object","properties":{"query":{"type":"string"}}}}]}""")
+            .RootElement;
+
+        Assert.Equal("query", FabricDataAgentMcpClient.ExtractFirstToolArgumentName(json));
+    }
+
+    [Fact]
+    public void ExtractFirstToolArgumentName_Defaults_When_Schema_Missing()
+    {
+        var json = JsonDocument.Parse("""{"tools":[{"name":"DataAgent_X"}]}""").RootElement;
+
+        Assert.Equal("userQuestion", FabricDataAgentMcpClient.ExtractFirstToolArgumentName(json));
+    }
+
+    [Fact]
     public void ExtractAnswerText_Returns_First_Text_Block()
     {
         var json = JsonDocument.Parse("""{"content":[{"type":"text","text":"answer text"}]}""").RootElement;

@@ -85,10 +85,12 @@ public sealed class FabricDataAgentMcpClient(
                 return Failure("Fabric Data Agent published no callable tool.");
             }
 
+            var argumentName = ExtractFirstToolArgumentName(toolsResult);
+
             var callResult = await SendAsync(url, token, "tools/call", new
             {
                 name = toolName,
-                arguments = new { question }
+                arguments = new Dictionary<string, string> { [argumentName] = question }
             }, ct);
 
             var answer = ExtractAnswerText(callResult);
@@ -255,6 +257,51 @@ public sealed class FabricDataAgentMcpClient(
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Reads the first required property name from the first tool's inputSchema.
+    /// Fabric publishes <c>userQuestion</c>, but the name is schema-driven so it is
+    /// discovered at runtime rather than hard-coded.
+    /// </summary>
+    public static string ExtractFirstToolArgumentName(JsonElement? result)
+    {
+        const string fallback = "userQuestion";
+
+        if (result is not { } r || r.ValueKind != JsonValueKind.Object
+            || !r.TryGetProperty("tools", out var tools) || tools.ValueKind != JsonValueKind.Array)
+        {
+            return fallback;
+        }
+
+        foreach (var tool in tools.EnumerateArray())
+        {
+            if (!tool.TryGetProperty("inputSchema", out var schema) || schema.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            if (schema.TryGetProperty("required", out var required) && required.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in required.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.String && item.GetString() is { Length: > 0 } name)
+                    {
+                        return name;
+                    }
+                }
+            }
+
+            if (schema.TryGetProperty("properties", out var props) && props.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var prop in props.EnumerateObject())
+                {
+                    return prop.Name;
+                }
+            }
+        }
+
+        return fallback;
     }
 
     /// <summary>Reads the first text content block out of a tools/call result payload.</summary>
