@@ -15,8 +15,12 @@ namespace MimamoriTai.Infrastructure.Fabric;
 /// Data Agent MCP endpoint expects: initialize -&gt; notifications/initialized -&gt;
 /// tools/list -&gt; tools/call.
 ///
-/// Authenticated passwordlessly the same way as <see cref="EventhouseStreamPublisher"/>
-/// (Azure.Identity <see cref="TokenCredential"/>, scope https://api.fabric.microsoft.com/.default).
+/// Authenticated the same way as <see cref="EventhouseStreamPublisher"/> via an
+/// Azure.Identity <see cref="TokenCredential"/> (scope https://api.fabric.microsoft.com/.default):
+/// a normal Entra service principal (client credentials) when one is configured -
+/// required because Fabric Data Agent query auth does not support managed identities -
+/// otherwise DefaultAzureCredential for local dev / fallback. See
+/// <see cref="ServiceCollectionExtensions.CreateFabricTokenCredential"/>.
 ///
 /// Must never throw out to the UI: any failure (auth, network, malformed response,
 /// JSON-RPC error) is logged as a warning and reported as an unsuccessful
@@ -35,10 +39,11 @@ public sealed class FabricDataAgentMcpClient(
 
     /// <summary>
     /// Substrings that indicate the Fabric Data Agent could not actually reach its
-    /// Kusto/Eventhouse datasource (a known failure mode when invoked by a managed
-    /// identity / service principal) and merely returned an apology as text content
-    /// with an HTTP 200. Any match means the answer must be rejected so the caller
-    /// falls back to <see cref="ILocalDataQuestionService"/>.
+    /// datasource and merely returned an apology as text content with an HTTP 200
+    /// (e.g. because the underlying datasource has not yet been migrated to a
+    /// service-principal-compatible source such as a Lakehouse). Any match means the
+    /// answer must be rejected so the caller falls back to
+    /// <see cref="ILocalDataQuestionService"/>.
     /// </summary>
     private static readonly string[] FailurePhrases =
     [
@@ -373,8 +378,7 @@ public sealed class FabricDataAgentMcpClient(
 
     /// <summary>
     /// Heuristically detects an apology/failure answer returned by the Fabric Data
-    /// Agent when it could not reach its Kusto/Eventhouse datasource (a known issue
-    /// when the agent is invoked by a managed identity / service principal).
+    /// Agent when it could not reach its datasource.
     /// </summary>
     public static bool LooksLikeFailureAnswer(string? answer)
     {

@@ -2,8 +2,11 @@ namespace MimamoriTai.Infrastructure.Fabric;
 
 /// <summary>
 /// Microsoft Fabric Data Agent settings.
-/// No secrets here: authentication uses Azure.Identity (DefaultAzureCredential /
-/// Azure CLI login locally, Managed Identity in Azure).
+/// Authentication: when <see cref="TenantId"/>, <see cref="ClientId"/>, and
+/// <see cref="ClientSecret"/> are all supplied (see <see cref="HasServicePrincipalCredentials"/>),
+/// a normal Entra service principal (client credentials) is used, because Fabric Data
+/// Agent query auth does not support managed identities. Otherwise DefaultAzureCredential
+/// is used (Azure CLI login locally, Managed Identity in Azure) for local dev / fallback.
 /// </summary>
 public sealed class FabricOptions
 {
@@ -22,6 +25,35 @@ public sealed class FabricOptions
     public string McpUrl { get; set; } = string.Empty;
 
     public string Scope { get; set; } = DefaultScope;
+
+    /// <summary>
+    /// Entra tenant id for the service principal used to authenticate Fabric Data Agent
+    /// queries. Optional: leave blank to fall back to DefaultAzureCredential.
+    /// </summary>
+    public string? TenantId { get; set; }
+
+    /// <summary>
+    /// Entra application (client) id for the service principal used to authenticate
+    /// Fabric Data Agent queries. Optional: leave blank to fall back to DefaultAzureCredential.
+    /// </summary>
+    public string? ClientId { get; set; }
+
+    /// <summary>
+    /// Entra client secret for the service principal used to authenticate Fabric Data
+    /// Agent queries. Optional: leave blank to fall back to DefaultAzureCredential.
+    /// Store this in user-secrets or an environment variable, never in appsettings.json.
+    /// </summary>
+    public string? ClientSecret { get; set; }
+
+    /// <summary>
+    /// True only when <see cref="TenantId"/>, <see cref="ClientId"/>, and
+    /// <see cref="ClientSecret"/> are all non-blank, in which case a
+    /// <c>ClientSecretCredential</c> is used instead of DefaultAzureCredential.
+    /// </summary>
+    public bool HasServicePrincipalCredentials =>
+        !string.IsNullOrWhiteSpace(TenantId)
+        && !string.IsNullOrWhiteSpace(ClientId)
+        && !string.IsNullOrWhiteSpace(ClientSecret);
 
     public bool IsConfigured =>
         Enabled

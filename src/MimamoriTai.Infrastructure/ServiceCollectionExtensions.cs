@@ -30,6 +30,19 @@ public sealed record IntegrationStatus(
 public static class ServiceCollectionExtensions
 {
     /// <summary>
+    /// Creates the <see cref="TokenCredential"/> used to authenticate Fabric Data Agent
+    /// (and Eventhouse) calls: a normal Entra service principal (client credentials) when
+    /// <see cref="FabricOptions.HasServicePrincipalCredentials"/> is true - required because
+    /// Fabric Data Agent query auth does not support managed identities - otherwise
+    /// <see cref="DefaultAzureCredential"/> for local dev (Azure CLI login) / Managed
+    /// Identity fallback. Never logs or exposes the secret.
+    /// </summary>
+    public static TokenCredential CreateFabricTokenCredential(FabricOptions options) =>
+        options.HasServicePrincipalCredentials
+            ? new ClientSecretCredential(options.TenantId, options.ClientId, options.ClientSecret)
+            : new DefaultAzureCredential();
+
+    /// <summary>
     /// Registers every integration, always choosing a working mock when the real
     /// service is not configured, so the app runs end to end with zero secrets.
     /// </summary>
@@ -106,7 +119,14 @@ public static class ServiceCollectionExtensions
 
         if (fabric.IsConfigured)
         {
-            services.TryAddSingleton<TokenCredential>(new DefaultAzureCredential());
+            // TryAddSingleton means this becomes the app-wide TokenCredential the first
+            // time it runs; if Eventhouse direct ingestion is also configured (see below)
+            // it reuses this same credential rather than registering its own. That is
+            // intentional here: Fabric Data Agent query auth requires a normal service
+            // principal (managed identities are unsupported), so when Fabric is enabled
+            // with SP credentials configured, Eventhouse REST ingestion authenticates with
+            // that same service principal instead of DefaultAzureCredential.
+            services.TryAddSingleton<TokenCredential>(CreateFabricTokenCredential(fabric));
             services.AddHttpClient<IFabricDataAgentClient, FabricDataAgentMcpClient>(client =>
             {
                 client.Timeout = TimeSpan.FromSeconds(120);
