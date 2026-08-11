@@ -209,8 +209,8 @@ main { max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; position: rel
 .status-stage {
     --risk-color: var(--cp-success);
     position: relative;
-    width: 132px;
-    height: 132px;
+    width: 168px;
+    height: 168px;
     flex: 0 0 auto;
     border-radius: 50%;
     background:
@@ -859,12 +859,19 @@ main > *:nth-child(n+6) { animation-delay: 0.32s; }
 .risk-medium .status-stage::after { animation-duration: 2.6s; }
 .risk-high .status-stage::after { animation-duration: 1.5s; }
 
-.hero-card { padding: 32px; }
+.hero-card { padding: 32px; gap: 28px; }
 .hero-card .status-copy h2 { font-size: 34px; line-height: 1.25; }
 
+/* 画面が広いときはミマモをもっと大きく。顔の作り込みと、その日の様子に
+   合わせた出迎えの動きは、小さく出すと伝わらないため。 */
+@media (min-width: 1024px) {
+    .status-stage { width: 200px; height: 200px; }
+    .status-stage .status-badge { right: 8px; bottom: 8px; width: 40px; height: 40px; font-size: 21px; }
+}
+
 @media (max-width: 640px) {
-    .status-stage { width: 104px; height: 104px; }
-    .hero-card { padding: 22px; }
+    .status-stage { width: 116px; height: 116px; }
+    .hero-card { padding: 22px; gap: 18px; }
     .hero-card .status-copy h2 { font-size: 26px; }
 }
 

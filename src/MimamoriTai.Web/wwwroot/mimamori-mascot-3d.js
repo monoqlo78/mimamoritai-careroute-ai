@@ -130,9 +130,10 @@ class MascotController {
 
         // 小さな円の中に全身を入れると顔がつぶれて表情が読めない。
         // data-mascot-frame="face" のときは頭のあたりまで寄る。
+        // 円で切り抜かれるぶん、四隅は捨てる前提で近づける。
         if (this.host.dataset.mascotFrame === "face") {
             const headY = (bounds.max.y - center.y) * scale * 0.34;
-            this.camera.position.set(0, headY, 5.2);
+            this.camera.position.set(0, headY, 4.7);
             this.camera.lookAt(0, headY, 0);
             return;
         }
