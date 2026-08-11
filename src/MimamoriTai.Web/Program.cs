@@ -16,6 +16,7 @@ builder.Services.AddMimamoriTaiInfrastructure(builder.Configuration);
 builder.Services.AddMimamoriTaiAuthentication(builder.Configuration);
 builder.Services.AddScoped<DashboardService>();
 builder.Services.AddScoped<DeviceDetailService>();
+builder.Services.AddScoped<DeviceSettingsService>();
 builder.Services.AddScoped<AdminConsoleService>();
 builder.Services.AddOpenApi();
 builder.Services.AddHostedService<WatchAlertBackgroundService>();

@@ -76,6 +76,7 @@ public static partial class WebhookEndpoints
             IOptions<LineOptions> lineOptions,
             AppDbContext db,
             HouseholdAccessService householdAccess,
+            IDataSourceContext dataSource,
             TimeProvider clock,
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
@@ -192,6 +193,7 @@ public static partial class WebhookEndpoints
                         }
 
                         await UpsertRecipientAsync(db, hid, evt.SourceId, isActive: true, clock, eventCt);
+                        await ApplyDataSourceAsync(db, dataSource, hid, eventCt);
 
                         string replyText2;
                         try
@@ -233,6 +235,7 @@ public static partial class WebhookEndpoints
                         }
 
                         await UpsertRecipientAsync(db, hid, evt.SourceId, isActive: true, clock, eventCt);
+                        await ApplyDataSourceAsync(db, dataSource, hid, eventCt);
 
                         if (!string.IsNullOrWhiteSpace(evt.PostbackData))
                         {
@@ -317,6 +320,29 @@ public static partial class WebhookEndpoints
             .OrderByDescending(r => r.LastSeenAt)
             .Select(r => (Guid?)r.HouseholdId)
             .FirstOrDefaultAsync(ct);
+    }
+
+    /// <summary>
+    /// Points the ambient data-source context at the household this event belongs to.
+    /// Without this the context keeps its <c>Sample</c> default, so the IDeviceProvider
+    /// decorator hands every LINE-originated command to the mock provider and a real
+    /// SwitchBot device fails with "未登録の機器です" even though it resolved correctly
+    /// from the database. The Blazor read models already do this per unit of work
+    /// (see DashboardService); the webhook is just another entry point that must too.
+    /// </summary>
+    internal static async Task ApplyDataSourceAsync(
+        AppDbContext db, IDataSourceContext dataSource, Guid householdId, CancellationToken ct)
+    {
+        var mode = await db.Households
+            .Where(h => h.Id == householdId)
+            .Select(h => (DataSourceMode?)h.DataSourceMode)
+            .FirstOrDefaultAsync(ct);
+
+        if (mode is { } resolved)
+        {
+            dataSource.Mode = resolved;
+            dataSource.HouseholdId = householdId;
+        }
     }
 
     /// <summary>Creates or refreshes a <see cref="LineRecipient"/> row for the given source id.</summary>

@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using MimamoriTai.Core.Abstractions;
 using MimamoriTai.Core.Application;
 using MimamoriTai.Core.Domain;
+using MimamoriTai.Infrastructure.Devices;
 using MimamoriTai.Infrastructure.Line;
 using MimamoriTai.Web.Endpoints;
 
@@ -158,6 +159,49 @@ public class LineRecipientTests
         }
 
         await db.Context.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task ApplyDataSource_Switches_To_Production_So_Real_Devices_Are_Reachable()
+    {
+        using var db = await new TestDb().SeedAsync();
+        var production = new Household
+        {
+            Id = Guid.NewGuid(),
+            Name = "わが家",
+            DataSourceMode = DataSourceMode.Production
+        };
+        db.Context.Households.Add(production);
+        await db.Context.SaveChangesAsync();
+        // The context defaults to Sample, which routes every command to the mock provider.
+        var context = new DataSourceContext();
+
+        await WebhookEndpoints.ApplyDataSourceAsync(db.Context, context, production.Id, CancellationToken.None);
+
+        Assert.Equal(DataSourceMode.Production, context.Mode);
+        Assert.Equal(production.Id, context.HouseholdId);
+    }
+
+    [Fact]
+    public async Task ApplyDataSource_Keeps_Sample_For_A_Sample_Household()
+    {
+        using var db = await new TestDb().SeedAsync();
+        var context = new DataSourceContext { Mode = DataSourceMode.Production };
+
+        await WebhookEndpoints.ApplyDataSourceAsync(db.Context, context, db.HouseholdId, CancellationToken.None);
+
+        Assert.Equal(DataSourceMode.Sample, context.Mode);
+    }
+
+    [Fact]
+    public async Task ApplyDataSource_Leaves_Context_Untouched_For_An_Unknown_Household()
+    {
+        using var db = await new TestDb().SeedAsync();
+        var context = new DataSourceContext { Mode = DataSourceMode.Production };
+
+        await WebhookEndpoints.ApplyDataSourceAsync(db.Context, context, Guid.NewGuid(), CancellationToken.None);
+
+        Assert.Equal(DataSourceMode.Production, context.Mode);
     }
 
     [Fact]

@@ -273,6 +273,20 @@ a.ghost.small { min-height: 32px; padding: 4px 10px; font-size: 12px; }
 .device-actions { display: flex; gap: 6px; margin-top: 12px; }
 .device-actions button { flex: 1; min-height: 34px; padding: 5px 8px; font-size: 12px; }
 .restricted-note { margin: 8px 0 0; color: var(--cp-danger); font-size: 11px; }
+.permission-card { margin-top: 16px; padding: 16px; border: 1px solid var(--cp-border); border-radius: 12px; background: var(--cp-surface); }
+.permission-card h3 { margin: 0 0 4px; font-size: 14px; }
+.permission-lead { margin: 0 0 12px; font-size: 12px; color: var(--cp-muted); }
+.permission-hint { margin: 0; font-size: 12px; color: var(--cp-muted); }
+.permission-row { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--cp-border); }
+.permission-row input { margin-top: 3px; width: 18px; height: 18px; flex: 0 0 auto; }
+.permission-row span { display: flex; flex-direction: column; gap: 2px; }
+.permission-row strong { font-size: 13px; font-weight: 600; }
+.permission-row small { font-size: 11px; color: var(--cp-muted); line-height: 1.5; }
+.permission-row.is-disabled { opacity: 0.55; }
+.rename-row { align-items: stretch; }
+.rename-copy { flex: 1 1 auto; }
+.rename-input { display: flex; gap: 8px; margin-top: 8px; }
+.rename-input input { flex: 1 1 auto; height: 36px; padding: 0 10px; border: 1px solid var(--cp-border); border-radius: 8px; font-size: 13px; }
 .device-detail-link { display: inline-block; margin-top: 10px; }
 
 .line-controls { display: flex; flex-wrap: wrap; gap: 8px; }

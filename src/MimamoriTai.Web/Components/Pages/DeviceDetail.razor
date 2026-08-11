@@ -7,6 +7,7 @@
 @inject DeviceDetailService DeviceDetailReadModel
 @inject DeviceInsightQuestionService Insight
 @inject DeviceControlService Control
+@inject DeviceSettingsService Settings
 
 <PageTitle>@(_model is null ? "デバイス詳細" : _model.Name) / 見守り隊</PageTitle>
 
@@ -81,10 +82,69 @@ else
                     disabled="@(_busy || !_model.IsEnabled)">消す</button>
         </div>
     </section>
-    @if (_model.SafetyClass == "Restricted")
+    @if (!_model.RemoteControlAllowed)
+    {
+        <p class="restricted-note">この機器は遠隔操作が許可されていません。下の「遠隔操作を許可する」をオンにしてください</p>
+    }
+    else if (_model.SafetyClass == "Restricted")
     {
         <p class="restricted-note">安全のため、遠隔では消す操作だけできます</p>
     }
+
+    <section class="permission-card">
+        <h3>この機器の設定</h3>
+
+        @if (_model.DataSourceMode == DataSourceMode.Sample)
+        {
+            <p class="permission-hint">デモデータの機器のため変更できません。</p>
+        }
+        else
+        {
+            <div class="permission-row rename-row">
+                <span class="rename-copy">
+                    <strong>呼び名</strong>
+                    <small>
+                        AIやLINEはこの名前で機器を探します。「リビングの電気」のように、
+                        普段そう呼んでいる言葉にしてください（メーカーの型番のままだと呼びかけても見つかりません）。
+                    </small>
+                    <span class="rename-input">
+                        <input type="text" maxlength="60" placeholder="リビングの電気"
+                               value="@_nameDraft"
+                               disabled="@_busy"
+                               @oninput="@(e => _nameDraft = e.Value?.ToString() ?? "")" />
+                        <button class="secondary-button"
+                                disabled="@(_busy || string.IsNullOrWhiteSpace(_nameDraft) || _nameDraft.Trim() == _model.Name)"
+                                @onclick="RenameAsync">保存</button>
+                    </span>
+                </span>
+            </div>
+
+            <label class="permission-row">
+                <input type="checkbox"
+                       checked="@_model.RemoteControlAllowed"
+                       disabled="@_busy"
+                       @onchange="@(e => UpdatePermissionAsync((bool)e.Value!, _model.SafetyClass == "Safe"))" />
+                <span>
+                    <strong>この機器の遠隔操作を許可する</strong>
+                    <small>オフの間は「つける」「消す」の両方が拒否されます。</small>
+                </span>
+            </label>
+
+            <label class="permission-row @(_model.RemoteControlAllowed ? "" : "is-disabled")">
+                <input type="checkbox"
+                       checked="@(_model.SafetyClass == "Safe")"
+                       disabled="@(_busy || !_model.RemoteControlAllowed)"
+                       @onchange="@(e => UpdatePermissionAsync(_model.RemoteControlAllowed, (bool)e.Value!))" />
+                <span>
+                    <strong>ONにするのも安全な機器として扱う</strong>
+                    <small>
+                        照明や扇風機など、留守中にONになっても危険がない機器のみチェックしてください。
+                        暖房器具・調理器具を接続している場合はオフのままにしてください（OFFのみ可能になります）。
+                    </small>
+                </span>
+            </label>
+        }
+    </section>
 
     <div class="today-summary">
         <div class="summary-item">
@@ -189,6 +249,7 @@ else
     private string? _notice;
     private string _noticeKind = "ok";
     private Guid _loadedDeviceId;
+    private string _nameDraft = string.Empty;
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
 
@@ -210,6 +271,7 @@ else
         _loadedDeviceId = DeviceId;
         _model = await DeviceDetailReadModel.LoadAsync(DeviceId);
         _notFoundOrDenied = _model is null;
+        _nameDraft = _model?.Name ?? string.Empty;
         _insight = null;
 
         if (_model is not null)
@@ -265,6 +327,57 @@ else
                 CommandStatus.Rejected => "blocked",
                 _ => "warn"
             };
+
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task RenameAsync()
+    {
+        if (_model is null || _busy || string.IsNullOrWhiteSpace(_nameDraft))
+        {
+            return;
+        }
+
+        _busy = true;
+        StateHasChanged();
+
+        try
+        {
+            var result = await Settings.RenameAsync(_model.DeviceId, _nameDraft);
+            _notice = result.Message;
+            _noticeKind = result.Status == DeviceSettingsUpdateStatus.Updated ? "ok" : "blocked";
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task UpdatePermissionAsync(bool remoteControlAllowed, bool treatAsSafeAppliance)
+    {
+        if (_model is null || _busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        StateHasChanged();
+
+        try
+        {
+            var result = await Settings.UpdatePermissionsAsync(
+                _model.DeviceId,
+                remoteControlAllowed,
+                treatAsSafeAppliance);
+
+            _notice = result.Message;
+            _noticeKind = result.Status == DeviceSettingsUpdateStatus.Updated ? "ok" : "blocked";
 
             await ReloadAsync();
         }
