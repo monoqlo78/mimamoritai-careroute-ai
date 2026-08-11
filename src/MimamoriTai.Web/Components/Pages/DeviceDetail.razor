@@ -8,6 +8,7 @@
 @inject DeviceInsightQuestionService Insight
 @inject DeviceControlService Control
 @inject DeviceSettingsService Settings
+@implements IAsyncDisposable
 
 <PageTitle>@(_model is null ? "デバイス詳細" : _model.Name) / 見守り隊</PageTitle>
 
@@ -59,17 +60,25 @@ else
         </div>
     }
 
-    <section class="status-card @(_model.IsOn ? "risk-low" : "")">
-        <div class="status-icon" aria-hidden="true">@(_model.IsOn ? "✓" : "―")</div>
+    <section class="status-card @(_model.IsStateKnown && _model.IsOn ? "risk-low" : "")">
+        <div class="status-icon" aria-hidden="true">@(!_model.IsStateKnown ? "？" : _model.IsOn ? "✓" : "―")</div>
         <div class="status-copy">
             <p class="eyebrow">現在の状態</p>
-            <h2>@(_model.IsOn ? "使用中" : "停止中")</h2>
+            <h2>@(!_model.IsStateKnown ? "わかりません" : _model.IsOn ? "使用中" : "停止中")</h2>
             <p class="status-reason">
                 @if (_model.PowerWatts is { } watts)
                 {
                     @($"消費電力 約{watts:0.#}W ・ ")
                 }
-                最終確認 @FormatLocal(_model.StatusObservedAtUtc)
+                @if (!_model.IsStateKnown)
+                {
+                    @("機器から状態を受け取れていません。ハブの接続を確認してください")
+                }
+                else
+                {
+                    @($"最終確認 {FormatLocal(_model.StatusObservedAtUtc)}")
+                    @(_model.IsStateLive ? "" : "（記録からの表示）")
+                }
             </p>
         </div>
         <div class="device-actions">
@@ -102,20 +111,30 @@ else
         {
             <div class="permission-row rename-row">
                 <span class="rename-copy">
-                    <strong>呼び名</strong>
+                    <strong>呼び名と部屋</strong>
                     <small>
-                        AIやLINEはこの名前で機器を探します。「リビングの電気」のように、
+                        画面・LINE・AIの返事すべてでこの名前を使います。「リビングの電気」のように、
                         普段そう呼んでいる言葉にしてください（メーカーの型番のままだと呼びかけても見つかりません）。
+                        部屋は空欄でもかまいません。
                     </small>
                     <span class="rename-input">
                         <input type="text" maxlength="60" placeholder="リビングの電気"
+                               aria-label="呼び名"
                                value="@_nameDraft"
                                disabled="@_busy"
                                @oninput="@(e => _nameDraft = e.Value?.ToString() ?? "")" />
+                        <input type="text" maxlength="64" placeholder="部屋（例：寝室）"
+                               aria-label="部屋"
+                               value="@_roomDraft"
+                               disabled="@_busy"
+                               @oninput="@(e => _roomDraft = e.Value?.ToString() ?? "")" />
                         <button class="secondary-button"
-                                disabled="@(_busy || string.IsNullOrWhiteSpace(_nameDraft) || _nameDraft.Trim() == _model.Name)"
-                                @onclick="RenameAsync">保存</button>
+                                disabled="@(_busy || string.IsNullOrWhiteSpace(_nameDraft) || !HasNamingChanges)"
+                                @onclick="SaveNamingAsync">保存</button>
                     </span>
+                    <small class="muted">
+                        機器そのものの名前は「@_model.ProviderName」です（SwitchBot側の名前。変わりません）。
+                    </small>
                 </span>
             </div>
 
@@ -250,6 +269,17 @@ else
     private string _noticeKind = "ok";
     private Guid _loadedDeviceId;
     private string _nameDraft = string.Empty;
+    private string _roomDraft = string.Empty;
+
+    // 15s keeps a single appliance feeling live without burning through SwitchBot's
+    // daily API allowance (one status read per tick, only while the page is open).
+    private static readonly TimeSpan LiveRefreshInterval = TimeSpan.FromSeconds(15);
+    private readonly CancellationTokenSource _refreshCts = new();
+    private PeriodicTimer? _refreshTimer;
+
+    private bool HasNamingChanges =>
+        _model is not null
+        && (_nameDraft.Trim() != _model.Name || (_roomDraft.Trim() != _model.Room));
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
 
@@ -266,12 +296,19 @@ else
         }
     }
 
-    private async Task ReloadAsync()
+    private async Task ReloadAsync(bool includeInsight = true)
     {
         _loadedDeviceId = DeviceId;
         _model = await DeviceDetailReadModel.LoadAsync(DeviceId);
         _notFoundOrDenied = _model is null;
         _nameDraft = _model?.Name ?? string.Empty;
+        _roomDraft = _model?.Room ?? string.Empty;
+
+        if (!includeInsight)
+        {
+            return;
+        }
+
         _insight = null;
 
         if (_model is not null)
@@ -280,6 +317,63 @@ else
             // delays the initial page render - the panel shows a loading state until it resolves.
             _ = LoadInsightAsync(_model.HouseholdId, DeviceId);
         }
+    }
+
+    /// <summary>
+    /// Re-reads the appliance while the page stays open, so flipping the physical switch
+    /// on the device itself is reflected here instead of leaving a stale "使用中"/"停止中"
+    /// until the family reloads the page. The usage insight is deliberately not refetched:
+    /// it is an AI call, and only the on/off state changes this often.
+    /// </summary>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || _refreshTimer is not null)
+        {
+            return;
+        }
+
+        _refreshTimer = new PeriodicTimer(LiveRefreshInterval);
+        _ = RefreshLoopAsync(_refreshTimer, _refreshCts.Token);
+        await Task.CompletedTask;
+    }
+
+    private async Task RefreshLoopAsync(PeriodicTimer timer, CancellationToken ct)
+    {
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                // Never refresh mid-edit: it would overwrite what the family is typing,
+                // and never while a command is in flight, because the shared DbContext
+                // cannot serve two operations at once.
+                if (_busy || HasNamingChanges)
+                {
+                    continue;
+                }
+
+                await InvokeAsync(async () =>
+                {
+                    await ReloadAsync(includeInsight: false);
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Page closed.
+        }
+        catch (ObjectDisposedException)
+        {
+            // Circuit torn down between ticks.
+        }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _refreshCts.Cancel();
+        _refreshTimer?.Dispose();
+        _refreshCts.Dispose();
+        return ValueTask.CompletedTask;
     }
 
     private async Task LoadInsightAsync(Guid householdId, Guid deviceId)
@@ -336,7 +430,7 @@ else
         }
     }
 
-    private async Task RenameAsync()
+    private async Task SaveNamingAsync()
     {
         if (_model is null || _busy || string.IsNullOrWhiteSpace(_nameDraft))
         {
@@ -348,7 +442,7 @@ else
 
         try
         {
-            var result = await Settings.RenameAsync(_model.DeviceId, _nameDraft);
+            var result = await Settings.UpdateNamingAsync(_model.DeviceId, _nameDraft, _roomDraft);
             _notice = result.Message;
             _noticeKind = result.Status == DeviceSettingsUpdateStatus.Updated ? "ok" : "blocked";
             await ReloadAsync();

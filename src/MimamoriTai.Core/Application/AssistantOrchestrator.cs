@@ -243,8 +243,8 @@ public sealed class AssistantOrchestrator(
 
         _pending.Set(new PendingDeviceAction(
             request.HouseholdId,
-            plan.DeviceAlias ?? device.Name,
-            device.Name,
+            plan.DeviceAlias ?? device.Alias,
+            device.DisplayName,
             action,
             request.Message,
             clock.GetUtcNow()));
@@ -257,7 +257,7 @@ public sealed class AssistantOrchestrator(
         };
 
         return new AssistantResponse(
-            $"{device.Name} を{verb}。よろしいですか？（「はい」で実行、「いいえ」で中止）",
+            $"{device.DisplayName} を{verb}。よろしいですか？（「はい」で実行、「いいえ」で中止）",
             plan.Intent,
             completion.ResolvedModel,
             completion.Router,
@@ -520,16 +520,23 @@ public sealed class AssistantOrchestrator(
             null);
     }
 
+    /// <summary>
+    /// The alias vocabulary handed to the planning model. The family's own name for a
+    /// device is listed alongside the provider label so a request phrased with either one
+    /// resolves - the resolver accepts both, and the hint must not narrow that.
+    /// </summary>
     private async Task<string> BuildAliasHintAsync(Guid householdId, CancellationToken ct)
     {
         var devices = await db.Devices
             .Where(d => d.HouseholdId == householdId && d.IsEnabled)
-            .Select(d => new { d.Alias, d.Name })
+            .Select(d => new { d.Alias, d.Name, d.DisplayNameOverride })
             .ToListAsync(ct);
 
         return devices.Count == 0
             ? "(なし)"
-            : string.Join(", ", devices.Select(d => $"{d.Alias}({d.Name})"));
+            : string.Join(", ", devices.Select(d => string.IsNullOrWhiteSpace(d.DisplayNameOverride)
+                ? $"{d.Alias}({d.Name})"
+                : $"{d.Alias}({d.DisplayNameOverride}／{d.Name})"));
     }
 
     private async Task RecordMessageAsync(

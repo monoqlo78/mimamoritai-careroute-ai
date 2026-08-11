@@ -190,7 +190,7 @@ public sealed class RiskAssessmentService(IAppDbContext db, TimeProvider clock)
             var on = now - last.OccurredAtUtc;
             if (on > TimeSpan.Zero)
             {
-                leftOn.Add(new LeftOnDevice(device.Name, device.DeviceType, on));
+                leftOn.Add(new LeftOnDevice(device.DisplayName, device.DeviceType, on));
             }
         }
 

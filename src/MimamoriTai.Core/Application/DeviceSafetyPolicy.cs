@@ -55,7 +55,7 @@ public static class DeviceSafetyPolicy
 
         if (!device.IsEnabled)
         {
-            return $"{device.Name} は現在無効になっています。";
+            return $"{device.DisplayName} は現在無効になっています。";
         }
 
         if (action == DeviceAction.GetStatus)
@@ -70,12 +70,12 @@ public static class DeviceSafetyPolicy
 
         if (!device.RemoteControlAllowed)
         {
-            return $"{device.Name} は遠隔操作が許可されていません。";
+            return $"{device.DisplayName} は遠隔操作が許可されていません。";
         }
 
         if (device.SafetyClass == SafetyClass.Restricted && action is DeviceAction.TurnOn or DeviceAction.Toggle)
         {
-            return $"{device.Name} は安全のため音声・チャットからの操作を禁止しています。";
+            return $"{device.DisplayName} は安全のため音声・チャットからの操作を禁止しています。";
         }
 
         return null;

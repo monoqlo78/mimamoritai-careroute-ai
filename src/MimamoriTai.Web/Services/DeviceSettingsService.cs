@@ -47,10 +47,19 @@ public sealed class DeviceSettingsService(
     HouseholdAccessService householdAccess)
 {
     /// <summary>
-    /// Renames a device. The name matters functionally, not just cosmetically:
-    /// <see cref="DeviceResolver"/> matches spoken and typed phrases against Alias/Name, so a
-    /// device still carrying its vendor label ("プラグミニ 92") can never be reached by asking
-    /// for "電気". Renaming it is what makes natural language work at all.
+    /// Sets the name the family sees and speaks. The name matters functionally, not just
+    /// cosmetically: <see cref="DeviceResolver"/> matches spoken and typed phrases against it,
+    /// so a device still carrying its vendor label ("プラグミニ 92") can never be reached by
+    /// asking for "電気". Renaming it is what makes natural language work at all.
+    ///
+    /// <para>
+    /// The new name is written to <see cref="Device.DisplayNameOverride"/>, never over
+    /// <see cref="Device.Name"/>: Name is the provider's own label and
+    /// <see cref="DeviceSyncService"/> refreshes it from SwitchBot on every poll, so a
+    /// correction stored there would silently disappear minutes later. Keeping the raw label
+    /// also means both names keep resolving, and the device stays recognisable in the
+    /// SwitchBot app.
+    /// </para>
     /// </summary>
     public async Task<DeviceSettingsUpdateResult> RenameAsync(
         Guid deviceId,
@@ -63,27 +72,97 @@ public sealed class DeviceSettingsService(
             return denied;
         }
 
-        newName = newName.Trim();
-        if (newName.Length is 0 or > 60)
+        var validation = TryApplyName(device!, newName);
+        if (validation is not null)
         {
+            return validation;
+        }
+
+        await db.SaveChangesAsync(ct);
+
+        return new DeviceSettingsUpdateResult(
+            DeviceSettingsUpdateStatus.Updated,
+            device!.RemoteControlAllowed,
+            device.SafetyClass.ToString(),
+            $"呼び名を「{device.DisplayName}」に変更しました。この名前で話しかけると操作できます。");
+    }
+
+    /// <summary>
+    /// Sets both the display name and the room in one save, which is how the screen presents
+    /// them: the family corrects "リビングの電気" and "リビング" together.
+    ///
+    /// <para>
+    /// A blank <paramref name="room"/> clears the override and falls back to whatever the
+    /// provider reported - SwitchBot has no room concept, so that fallback is a placeholder,
+    /// but it is still better than storing an empty string as if the family had chosen it.
+    /// The display name cannot be blanked the same way, because an unnamed device cannot be
+    /// spoken to at all.
+    /// </para>
+    /// </summary>
+    public async Task<DeviceSettingsUpdateResult> UpdateNamingAsync(
+        Guid deviceId,
+        string newName,
+        string? room,
+        CancellationToken ct = default)
+    {
+        var (device, denied) = await ResolveEditableAsync(deviceId, ct);
+        if (denied is not null)
+        {
+            return denied;
+        }
+
+        room = room?.Trim();
+        if (room is { Length: > 64 })
+        {
+            // Checked before anything is applied, so a rejected save leaves the device untouched.
             return new DeviceSettingsUpdateResult(
                 DeviceSettingsUpdateStatus.InvalidName,
                 device!.RemoteControlAllowed,
                 device.SafetyClass.ToString(),
-                "呼び名は1〜60文字で入力してください。");
+                "部屋の名前は64文字以内で入力してください。");
         }
 
-        // Alias is what DeviceResolver matches first, so both must move together;
-        // leaving Alias behind would make the rename look applied but change nothing.
-        device!.Name = newName;
-        device.Alias = newName;
+        var validation = TryApplyName(device!, newName);
+        if (validation is not null)
+        {
+            return validation;
+        }
+
+        // Storing null rather than a copy of the provider value keeps "the family chose this"
+        // distinguishable from "nobody has said yet", which is what sync relies on.
+        device!.RoomOverride = string.IsNullOrEmpty(room) || room == device.Room ? null : room;
+
         await db.SaveChangesAsync(ct);
+
+        var where = string.IsNullOrWhiteSpace(device.DisplayRoom)
+            ? string.Empty
+            : $"（{device.DisplayRoom}）";
 
         return new DeviceSettingsUpdateResult(
             DeviceSettingsUpdateStatus.Updated,
             device.RemoteControlAllowed,
             device.SafetyClass.ToString(),
-            $"呼び名を「{newName}」に変更しました。この名前で話しかけると操作できます。");
+            $"「{device.DisplayName}」{where}に変更しました。この名前で話しかけると操作できます。");
+    }
+
+    /// <summary>
+    /// Validates and stages the display name. Returns null on success, otherwise the refusal
+    /// to hand straight back to the caller.
+    /// </summary>
+    private static DeviceSettingsUpdateResult? TryApplyName(Device device, string newName)
+    {
+        newName = newName?.Trim() ?? string.Empty;
+        if (newName.Length is 0 or > 60)
+        {
+            return new DeviceSettingsUpdateResult(
+                DeviceSettingsUpdateStatus.InvalidName,
+                device.RemoteControlAllowed,
+                device.SafetyClass.ToString(),
+                "呼び名は1〜60文字で入力してください。");
+        }
+
+        device.DisplayNameOverride = newName == device.Name ? null : newName;
+        return null;
     }
 
     public async Task<DeviceSettingsUpdateResult> UpdatePermissionsAsync(

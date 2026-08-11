@@ -7,10 +7,12 @@
     <base href="/" />
     <script>
         (() => {
+          // The dashboard is read by families of elderly residents, often on a phone that
+          // silently switches to dark at night. Following prefers-color-scheme made the
+          // same screen flip between a white and a near-black background, so the theme is
+          // pinned to light; ?scoutTheme=dark stays available for capture tooling.
           const param = new URLSearchParams(window.location.search).get("scoutTheme");
-          const theme =
-            param || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-          document.documentElement.setAttribute("data-theme", theme);
+          document.documentElement.setAttribute("data-theme", param || "light");
         })();
     </script>
     <ResourcePreloader />

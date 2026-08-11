@@ -112,7 +112,7 @@ public sealed class LocalDataQuestionService(IAppDbContext db, TimeProvider cloc
         var names = await db.Devices
             .Where(d => d.HouseholdId == householdId && d.IsActive)
             .OrderBy(d => d.Name)
-            .Select(d => d.Alias ?? d.Name)
+            .Select(d => d.DisplayNameOverride ?? d.Alias ?? d.Name)
             .ToListAsync(ct);
 
         return names.Count == 0
@@ -141,7 +141,7 @@ public sealed class LocalDataQuestionService(IAppDbContext db, TimeProvider cloc
                 r.ApproxWatts,
                 r.DailyEnergyWh,
                 r.UsageMinutesToday,
-                Name = r.Device!.Alias ?? r.Device.Name
+                Name = r.Device!.DisplayNameOverride ?? r.Device.Alias ?? r.Device.Name
             })
             .FirstOrDefaultAsync(ct);
 

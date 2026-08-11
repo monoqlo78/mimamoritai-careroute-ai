@@ -93,7 +93,7 @@ public class DeviceSettingsServiceTests
     }
 
     [Fact]
-    public async Task Rename_Updates_Both_Name_And_Alias_So_NaturalLanguage_Can_Find_It()
+    public async Task Rename_Stores_An_Override_And_Keeps_The_Vendor_Label_Resolvable()
     {
         using var db = await new TestDb().SeedAsync();
         var (_, deviceId, owner) = await SeedOwnedPlugAsync(db);
@@ -105,13 +105,68 @@ public class DeviceSettingsServiceTests
 
         Assert.Equal(DeviceSettingsUpdateStatus.Updated, result.Status);
         var device = db.Context.Devices.Single(d => d.Id == deviceId);
-        Assert.Equal("リビングの電気", device.Name);
-        // Alias must move too: DeviceResolver matches it first, so a rename that left the
-        // old alias behind would look applied while changing nothing.
-        Assert.Equal("リビングの電気", device.Alias);
+        Assert.Equal("リビングの電気", device.DisplayNameOverride);
+        Assert.Equal("リビングの電気", device.DisplayName);
 
-        // ...and after the rename it can.
+        // The provider values stay untouched, otherwise the next sync has nothing to match on.
+        Assert.Equal("プラグミニ 92", device.Name);
+        Assert.Equal("plug-mini-92", device.Alias);
+
+        // ...and after the rename both the new and the original wording find it.
         Assert.Single(DeviceResolver.Resolve(db.Context.Devices.ToList(), "リビングの電気"));
+        Assert.Single(DeviceResolver.Resolve(db.Context.Devices.ToList(), "プラグミニ 92"));
+    }
+
+    [Fact]
+    public async Task Renaming_Back_To_The_Vendor_Label_Clears_The_Override()
+    {
+        using var db = await new TestDb().SeedAsync();
+        var (_, deviceId, owner) = await SeedOwnedPlugAsync(db);
+        var service = Service(db, owner);
+
+        await service.RenameAsync(deviceId, "リビングの電気");
+        await service.RenameAsync(deviceId, "プラグミニ 92");
+
+        var device = db.Context.Devices.Single(d => d.Id == deviceId);
+        Assert.Null(device.DisplayNameOverride);
+        Assert.Equal("プラグミニ 92", device.DisplayName);
+    }
+
+    [Fact]
+    public async Task UpdateNaming_Sets_Room_And_Clearing_It_Falls_Back_To_The_Provider_Room()
+    {
+        using var db = await new TestDb().SeedAsync();
+        var (_, deviceId, owner) = await SeedOwnedPlugAsync(db);
+        var service = Service(db, owner);
+
+        var result = await service.UpdateNamingAsync(deviceId, "テレビ", "寝室");
+
+        Assert.Equal(DeviceSettingsUpdateStatus.Updated, result.Status);
+        var device = db.Context.Devices.Single(d => d.Id == deviceId);
+        Assert.Equal("寝室", device.RoomOverride);
+        Assert.Equal("寝室", device.DisplayRoom);
+        Assert.Equal("リビング", device.Room);
+
+        // Emptying the field means "use whatever the hub says" rather than "blank the room".
+        await service.UpdateNamingAsync(deviceId, "テレビ", "   ");
+
+        device = db.Context.Devices.Single(d => d.Id == deviceId);
+        Assert.Null(device.RoomOverride);
+        Assert.Equal("リビング", device.DisplayRoom);
+    }
+
+    [Fact]
+    public async Task UpdateNaming_Rejects_An_Overlong_Room()
+    {
+        using var db = await new TestDb().SeedAsync();
+        var (_, deviceId, owner) = await SeedOwnedPlugAsync(db);
+
+        var result = await Service(db, owner).UpdateNamingAsync(deviceId, "テレビ", new string('あ', 65));
+
+        Assert.Equal(DeviceSettingsUpdateStatus.InvalidName, result.Status);
+        var device = db.Context.Devices.Single(d => d.Id == deviceId);
+        Assert.Null(device.RoomOverride);
+        Assert.Null(device.DisplayNameOverride);
     }
 
     [Theory]
@@ -125,7 +180,7 @@ public class DeviceSettingsServiceTests
         var result = await Service(db, owner).RenameAsync(deviceId, candidate);
 
         Assert.Equal(DeviceSettingsUpdateStatus.InvalidName, result.Status);
-        Assert.Equal("プラグミニ 92", db.Context.Devices.Single(d => d.Id == deviceId).Name);
+        Assert.Equal("プラグミニ 92", db.Context.Devices.Single(d => d.Id == deviceId).DisplayName);
     }
 
     [Fact]
@@ -138,7 +193,7 @@ public class DeviceSettingsServiceTests
         var result = await Service(db, stranger).RenameAsync(deviceId, "乗っ取り");
 
         Assert.Equal(DeviceSettingsUpdateStatus.NotFoundOrDenied, result.Status);
-        Assert.Equal("プラグミニ 92", db.Context.Devices.Single(d => d.Id == deviceId).Name);
+        Assert.Equal("プラグミニ 92", db.Context.Devices.Single(d => d.Id == deviceId).DisplayName);
     }
 
     [Fact]
