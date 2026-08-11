@@ -1,0 +1,163 @@
+/* LIFF WebView. Opened inside a LINE talk on a phone, so everything is a single
+   narrow column with no site chrome: the family taps the rich menu and should see
+   Mimamo and today's status without scrolling past a header first. */
+
+.liff-page {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    width: min(520px, 100%);
+    margin: 0 auto;
+    padding: 16px 14px 28px;
+}
+
+.liff-stage {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+}
+
+.mascot-viewer {
+    position: relative;
+    width: 100%;
+    /* Roughly square keeps the head centred on tall and short phones alike. */
+    aspect-ratio: 1 / 1;
+    max-height: 46vh;
+    overflow: hidden;
+    border: 1px solid var(--cp-border);
+    border-radius: 20px;
+    background: radial-gradient(circle at center, var(--cp-highlight), var(--cp-surface-soft));
+    touch-action: pan-y;
+}
+
+.mascot-viewer canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    transition: opacity 260ms ease;
+}
+
+/* The poster carries the view until (or instead of) the 7.6MB GLB, so it is never
+   hidden by default - only once the 3D scene has actually rendered. */
+.mascot-poster {
+    position: absolute;
+    inset: 50% auto auto 50%;
+    width: min(80%, 320px);
+    height: min(80%, 320px);
+    object-fit: contain;
+    transform: translate(-50%, -50%);
+    transition: opacity 220ms ease;
+}
+
+.mascot-loading {
+    position: absolute;
+    right: 14px;
+    bottom: 12px;
+    color: var(--cp-text-muted);
+    font-size: 12px;
+}
+
+.mascot-viewer.is-ready canvas {
+    opacity: 1;
+}
+
+.mascot-viewer.is-ready .mascot-poster,
+.mascot-viewer.is-ready .mascot-loading {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.liff-ghost-button {
+    padding: 8px 18px;
+    border: 1px solid var(--cp-border);
+    border-radius: 999px;
+    background: var(--cp-panel-strong);
+    color: var(--cp-text);
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.liff-card {
+    padding: 18px 18px 20px;
+    border: 1px solid var(--cp-border);
+    border-left: 6px solid var(--cp-accent);
+    border-radius: 18px;
+    background: var(--cp-panel-strong);
+    text-align: center;
+}
+
+.liff-card.risk-medium {
+    border-left-color: var(--cp-warning, #e0a23c);
+}
+
+.liff-card.risk-high {
+    border-left-color: var(--cp-danger, #d1495b);
+}
+
+.liff-eyebrow {
+    margin: 0 0 4px;
+    color: var(--cp-text-muted);
+    font-size: 13px;
+}
+
+.liff-card h1 {
+    margin: 0 0 8px;
+    font-size: 22px;
+    line-height: 1.35;
+}
+
+.liff-reason,
+.liff-notice p {
+    margin: 0;
+    color: var(--cp-text-muted);
+    font-size: 14px;
+    line-height: 1.7;
+}
+
+.liff-facts {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+}
+
+.liff-facts > div {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px 6px;
+    border: 1px solid var(--cp-border);
+    border-radius: 14px;
+    background: var(--cp-panel);
+    text-align: center;
+}
+
+.liff-facts span {
+    color: var(--cp-text-muted);
+    font-size: 12px;
+}
+
+.liff-facts strong {
+    font-size: 17px;
+}
+
+.liff-link {
+    padding: 14px;
+    border-radius: 14px;
+    background: var(--cp-accent);
+    /* Fixed white rather than a token: the accent fill is dark in every theme, and a
+       themed foreground rendered this label unreadable in the LINE WebView. */
+    color: #fff;
+    font-weight: 600;
+    text-align: center;
+    text-decoration: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+
+    .mascot-viewer canvas,
+    .mascot-poster {
+        transition: none;
+    }
+}

@@ -53,9 +53,9 @@ https://<公開ホスト>/webhooks/line
 ./scripts/setup-line-rich-menu.ps1 -ChannelAccessToken "<チャネルアクセストークン>"
 ```
 
-- 既定では、Blenderで制作した見守りフクロウのCGを組み込んだ `assets/line-rich-menu.png` を使用します。CGの編集可能な原本は `assets/line-mimamori-mascot.blend` です。
+- 既定では、自作の3Dキャラクター「ミマモ」のCGを組み込んだ `assets/line-rich-menu.png` を使用します。元画像は `src/MimamoriTai.Web/wwwroot/images/mimamo-robot-opus.png`（Webの3Dビューアと同じミマモ）です。
 - 置換は安全な順序で行います。新しいメニューの作成、画像アップロード、デフォルト設定、設定確認がすべて成功したあとにだけ、古い `MimamoriTai-` メニューを削除します。途中で失敗しても、現在動いているメニューは残ります。
-- CGを再制作する場合は、既存のBlenderプロジェクトを開いたプロセスとは分離した新規プロセスで `assets/create-mimamori-mascot.py` を実行します。その後 `assets/create-line-rich-menu.ps1` で2500×1686pxのメニュー画像を再構成します。
+- メニュー画像を作り直す場合は `assets/create-line-rich-menu.ps1` を実行すると2500×1686pxの画像が再生成されます（別のキャラクター画像を使いたいときは `-MascotPath` で指定。縦横比は保たれます）。
 - `-ImagePath ''` を明示した場合は、従来の簡易画像を `scripts/generated/line-rich-menu.png` に生成できます。
 - Windows以外の環境、または画像を差し替えたい場合は `-ImagePath` で独自のPNG（2500×1686px）を指定できます。寸法とファイル形式（PNGシグネチャ）はスクリプト側で検証されます。
 - トークンは一切ログや画面に出力されません。実行結果として、作成されたリッチメニューID・デフォルト設定の確認結果のみが表示されます。
@@ -65,7 +65,55 @@ https://<公開ホスト>/webhooks/line
 ./scripts/setup-line-rich-menu.ps1 -ChannelAccessToken "<token>" -ImagePath ".\my-menu.png"
 ```
 
+## 4-1. 公式アカウントのアイコンをミマモに差し替える（手作業・5クリック）
+
+トークの吹き出しに出る送信者名とアイコンは Messaging API 側でコードから上書きしています（後述）。しかし**公式アカウント本体のプロフィール画像**は Messaging API では変更できず、LINE Official Account Manager での操作が必要です。アップロードするファイルは用意済みです。
+
+1. `assets/line/mimamo-line-account-icon.png`（1024×1024・不透明PNG）を手元に用意します。作り直したいときは `./assets/create-line-account-icon.ps1` を実行してください。
+2. [LINE Official Account Manager](https://manager.line.biz/) にログインし、見守り隊のアカウントを選びます。
+3. 右上の **設定** → 左メニューの **アカウント設定** → **基本情報** を開きます。
+4. **プロフィール画像** の右にある **編集** をクリックし、上記PNGをアップロードして保存します。
+5. 反映まで数分かかります。トーク画面を開き直してミマモの顔になっていることを確認してください。
+
+> LINEはアイコンを円形に切り抜いて表示します。上記PNGは透過部分を淡いミントで塗りつぶし、円の内側に顔が収まるよう余白を取ってあります（透過PNGをそのまま上げると背景が黒くなります）。
+
+## 4-2. 吹き出しの送信者名・アイコン（コード側・設定のみ）
+
+`Line:SenderName` と `Line:SenderIconPath`、および `Line:PublicBaseUrl` を設定すると、アプリが送るすべてのメッセージ（reply / push / Flex）に `sender` が付与され、その吹き出しだけ表示名とアイコンが「ミマモ」になります。
+
+```json
+"Line": {
+  "PublicBaseUrl": "https://app-mimamoritai-hack.azurewebsites.net",
+  "SenderName": "ミマモ",
+  "SenderIconPath": "/images/mimamo-avatar.png"
+}
+```
+
+- `PublicBaseUrl` が空、またはHTTPSでない場合は `sender` を**付けずに**送信します（LINEは自サーバーから画像を取得するため、`http://localhost` では成立しないため）。
+- `SenderName` は LINE の上限である20文字を超えると `sender` ごと省略されます。メッセージ本体が400で弾かれて家族に届かないことを避けるためです。
+
+## 4-3. LINEの中でミマモを動かす（LIFF）
+
+`/liff` は LINE のトークから開く縦長ページです。Webと同じ three.js ビューアでミマモが動き、「今日の様子」を表示します。**`Line:LiffId` が未設定のあいだはこの機能は表示されません**（URLを直接開いても案内文だけが出ます）。
+
+1. [LINE Developers](https://developers.line.biz/console/) で対象チャネルを開き、**LIFF** タブ → **追加** をクリックします。
+2. サイズは **Full**、エンドポイントURLに `https://app-mimamoritai-hack.azurewebsites.net/liff` を入力します。
+3. **Scope** で `profile` と `openid` にチェックを入れます（`openid` がないとIDトークンが発行されず、世帯を特定できません）。
+4. 発行された **LIFF ID**（`1234567890-AbCdEfGh` 形式）と、同じチャネルの **Channel ID**（数字）を設定に入れます。
+
+```powershell
+cd src/MimamoriTai.Web
+dotnet user-secrets set "Line:LiffId" "<発行されたLIFF ID>"
+dotnet user-secrets set "Line:LiffChannelId" "<チャネルID（数字）>"
+```
+
+- `Line:LiffChannelId` はブラウザーから受け取ったIDトークンを LINE の `/oauth2/v2.1/verify` で検証するために使います。**未設定だと検証できないため、`/liff` は常に「LINEからひらいてください」の状態のまま**になり、世帯データは一切表示されません。ブラウザーが自称するユーザーIDを信用しない、という設計です。
+- 世帯の特定は既存の `LineRecipient`（連携コードで紐づけた行）をそのまま使います。未連携のユーザーには連携コードの案内だけが出ます。
+- 3Dモデル（GLB）は7.6MBあります。まず静止画（`mimamo-robot-opus.png`）を表示し、そのあと3Dに差し替えます。端末が「視差効果を減らす」設定のときはGLBを取得せず静止画のままにし、タップしたときだけ3Dを読み込みます。
+- リッチメニューからLIFFを開きたい場合は、`assets/create-line-rich-menu.ps1` のURIアクション先を `https://liff.line.me/<LIFF ID>` に変更してメニューを作り直してください。
+
 ## 5. ボタンの動作
+
 
 各ボタンはLINEの `postback`（一部は `message`）アクションとして送信され、`WebhookEndpoints` → `LinePostbackActionService`（`src/MimamoriTai.Core/Application/LinePostbackActionService.cs`）が処理します。
 

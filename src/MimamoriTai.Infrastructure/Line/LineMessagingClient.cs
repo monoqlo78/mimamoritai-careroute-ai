@@ -14,13 +14,20 @@ public sealed class LineMessagingClient(
 {
     private readonly LineOptions _options = options.Value;
 
+    /// <summary>
+    /// Per-message name/icon override applied to everything the bot sends.
+    /// Resolved once: it depends only on configuration, and re-deriving it per message
+    /// would just repeat the same string work on every alert.
+    /// </summary>
+    private readonly LineSender? _sender = LineSenderFactory.Create(options.Value);
+
     public bool IsConfigured => _options.IsConfigured;
 
     public Task<LineSendResult> ReplyAsync(string replyToken, string text, CancellationToken ct = default) =>
         PostAsync("/v2/bot/message/reply", new
         {
             replyToken,
-            messages = new[] { new { type = "text", text } }
+            messages = new[] { BuildTextMessage(text) }
         }, ct);
 
     /// <summary>
@@ -102,8 +109,36 @@ public sealed class LineMessagingClient(
         PostAsync("/v2/bot/message/push", new
         {
             to,
-            messages = new[] { new { type = "text", text } }
+            messages = new[] { BuildTextMessage(text) }
         }, ct);
+
+    /// <summary>
+    /// Wraps a plain text body in a message object, adding the mascot sender override
+    /// when one is configured.
+    ///
+    /// A Dictionary rather than an anonymous type because `sender` has to be absent --
+    /// not null -- when it cannot be built: LINE rejects `"sender": null` outright.
+    /// </summary>
+    private Dictionary<string, object> BuildTextMessage(string text)
+    {
+        var message = new Dictionary<string, object>
+        {
+            ["type"] = "text",
+            ["text"] = text
+        };
+
+        ApplySender(message);
+        return message;
+    }
+
+    /// <summary>Adds `sender` to a message object when the override is available.</summary>
+    private void ApplySender(Dictionary<string, object> message)
+    {
+        if (_sender is { } sender)
+        {
+            message["sender"] = new { name = sender.Name, iconUrl = sender.IconUrl };
+        }
+    }
 
     /// <summary>
     /// Pushes the alert as a Flex bubble carrying the mascot.
@@ -122,18 +157,24 @@ public sealed class LineMessagingClient(
         return PostAsync("/v2/bot/message/push", new
         {
             to,
-            messages = new object[]
-            {
-                new
-                {
-                    type = "flex",
-                    // Shown in the chat list and in the phone's notification banner,
-                    // where a Flex bubble cannot be rendered.
-                    altText = card.Text,
-                    contents = BuildAlertBubble(card)
-                }
-            }
+            messages = new object[] { BuildAlertMessage(card) }
         }, ct);
+    }
+
+    /// <summary>Builds the Flex message envelope, carrying the same mascot sender as a text message.</summary>
+    private Dictionary<string, object> BuildAlertMessage(LineAlertCard card)
+    {
+        var message = new Dictionary<string, object>
+        {
+            ["type"] = "flex",
+            // Shown in the chat list and in the phone's notification banner,
+            // where a Flex bubble cannot be rendered.
+            ["altText"] = card.Text,
+            ["contents"] = BuildAlertBubble(card)
+        };
+
+        ApplySender(message);
+        return message;
     }
 
     private static object BuildAlertBubble(LineAlertCard card)

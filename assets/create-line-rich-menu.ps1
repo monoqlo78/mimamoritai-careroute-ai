@@ -1,7 +1,7 @@
 #Requires -Version 7
 [CmdletBinding()]
 param(
-    [string]$MascotPath = (Join-Path $PSScriptRoot 'line-mimamori-mascot.png'),
+    [string]$MascotPath = (Join-Path $PSScriptRoot '../src/MimamoriTai.Web/wwwroot/images/mimamo-robot-opus.png'),
     [string]$OutputPath = (Join-Path $PSScriptRoot 'line-rich-menu.png')
 )
 
@@ -112,6 +112,35 @@ function Draw-MessageIcon {
     }
 }
 
+function Draw-FittedImage {
+    <#
+        Draws the mascot inside a box without distorting it.
+
+        The original artwork was a square owl render, so it was stretched to a square
+        box. The current CG (mimamo-robot-opus.png) is a 4:5 portrait full-body shot:
+        forcing that into a square squashes the character's proportions, which is
+        precisely the thing the CG work was done to get right. Fit-inside preserves the
+        aspect ratio and centres the result, and the image is bottom-anchored so the
+        character stands on the card's baseline rather than floating.
+    #>
+    param(
+        [System.Drawing.Graphics]$Graphics,
+        [System.Drawing.Image]$Image,
+        [float]$BoxX,
+        [float]$BoxY,
+        [float]$BoxWidth,
+        [float]$BoxHeight
+    )
+
+    $scale = [Math]::Min($BoxWidth / $Image.Width, $BoxHeight / $Image.Height)
+    $drawWidth = $Image.Width * $scale
+    $drawHeight = $Image.Height * $scale
+    $drawX = $BoxX + ($BoxWidth - $drawWidth) / 2
+    $drawY = $BoxY + ($BoxHeight - $drawHeight)
+
+    $Graphics.DrawImage($Image, $drawX, $drawY, $drawWidth, $drawHeight)
+}
+
 if (-not (Test-Path -LiteralPath $MascotPath -PathType Leaf)) {
     throw "Mascot image not found: $MascotPath"
 }
@@ -177,7 +206,9 @@ try {
 
             if ($button.Icon -eq 'mascot') {
                 # Make the crafted CG the visual hero of the status card, not a tiny icon.
-                $graphics.DrawImage($mascot, $iconX - 242, $cellY + 24, 484, 484)
+                # The box starts below the accent rail so the antenna heart -- the top-most
+                # part of the character -- is not sliced off by it.
+                Draw-FittedImage -Graphics $graphics -Image $mascot -BoxX ($iconX - 242) -BoxY ($cellY + 66) -BoxWidth 484 -BoxHeight 442
             }
             else {
                 $graphics.FillEllipse($accentBrush, $iconX - 132, $iconY - 132, 264, 264)

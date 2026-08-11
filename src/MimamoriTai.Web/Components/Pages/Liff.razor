@@ -1,0 +1,214 @@
+@page "/liff"
+@rendermode InteractiveServer
+@using Microsoft.Extensions.Options
+@using MimamoriTai.Core.Application
+@using MimamoriTai.Core.Domain
+@using MimamoriTai.Infrastructure.Line
+@using MimamoriTai.Web.Services
+@inject IOptions<LineOptions> LineOptions
+@inject LiffSessionService Sessions
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<PageTitle>今日の様子 | 見守り隊</PageTitle>
+
+@* LIFFはトーク画面から開く縦長のWebView。ヘッダーやナビは置かず、ミマモと
+   「今日の様子」だけを見せる。 *@
+<div class="liff-page">
+    @if (!LineOptions.Value.HasLiff)
+    {
+        @* LIFF IDが未設定のときは機能ごと出さない。設定を促すのは運用者向けの一文だけ。 *@
+        <section class="liff-card liff-notice">
+            <h1>準備中です</h1>
+            <p>LINE内表示の設定がまだ完了していません。しばらくお待ちください。</p>
+        </section>
+    }
+    else
+    {
+        <section class="liff-stage" aria-label="ミマモ">
+            <div class="mascot-viewer @(_mascot3d ? "" : "is-static")"
+                 data-mascot-frame="face"
+                 data-mascot-greeting="@_greeting"
+                 data-mascot-model="@(_mascot3d ? "/models/mimamo-robot-opus-rigged.glb" : null)"
+                 aria-label="見守り隊のキャラクター「ミマモ」">
+                <canvas></canvas>
+                @* 3Dが来る前でも顔が見えるように、静止画を先に出しておく。
+                   読み込み失敗時もこの画像が残る。 *@
+                <img class="mascot-poster" src="/images/mimamo-robot-opus.png"
+                     alt="ハートのアンテナとマントを身につけた見守り隊のキャラクター「ミマモ」" />
+                @if (_mascot3d && !_mascotReady)
+                {
+                    <span class="mascot-loading">ミマモを準備中…</span>
+                }
+            </div>
+
+            @if (!_mascot3d && _reducedMotion)
+            {
+                <button type="button" class="liff-ghost-button" @onclick="EnableMascotAsync">
+                    ミマモを動かす
+                </button>
+            }
+        </section>
+
+        @if (_state == LiffSessionStatus.Ready && _view is not null)
+        {
+            <section class="liff-card risk-@_view.Risk.Level.ToString().ToLowerInvariant()">
+                <p class="liff-eyebrow">@_view.ResidentName さんの今日</p>
+                <h1>@RiskLabel(_view.Risk.Level)</h1>
+                <p class="liff-reason">@_view.Risk.Reason</p>
+            </section>
+
+            <section class="liff-facts" aria-label="今日の活動">
+                <div>
+                    <span>最初の活動</span>
+                    <strong>@TimeOrDash(_view.Today.FirstActivityTime)</strong>
+                </div>
+                <div>
+                    <span>最後の活動</span>
+                    <strong>@TimeOrDash(_view.Today.LastActivityTime)</strong>
+                </div>
+                <div>
+                    <span>家電の利用</span>
+                    <strong>@_view.Today.DeviceUsageCount 回</strong>
+                </div>
+            </section>
+
+            <a class="liff-link" href="/one-touch">かんたん操作をひらく</a>
+        }
+        else if (_state == LiffSessionStatus.NotLinked)
+        {
+            <section class="liff-card liff-notice">
+                <h1>ご家庭とつながっていません</h1>
+                <p>
+                    トーク画面で <strong>連携コード</strong> を送ると、この画面に
+                    ご家族の今日の様子が表示されます。
+                </p>
+            </section>
+        }
+        else if (_loading)
+        {
+            <section class="liff-card liff-notice" aria-live="polite">
+                <p>読み込んでいます…</p>
+            </section>
+        }
+        else
+        {
+            <section class="liff-card liff-notice">
+                <h1>LINEからひらいてください</h1>
+                <p>この画面は、見守り隊のLINEトークから開くと今日の様子を表示します。</p>
+            </section>
+        }
+    }
+</div>
+
+@code {
+    private IJSObjectReference? _module;
+    private LiffSessionStatus _state = LiffSessionStatus.NotSignedIn;
+    private LiffStatus? _view;
+    private bool _loading = true;
+    private bool _mascot3d;
+    private bool _mascotReady;
+    private bool _reducedMotion;
+
+    /// <summary>
+    /// Drives the CG's greeting animation. Defaults to a plain wave until the household
+    /// resolves, so the mascot never celebrates in front of a family whose status is
+    /// actually a concern.
+    /// </summary>
+    private string _greeting = "status";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || !LineOptions.Value.HasLiff)
+        {
+            return;
+        }
+
+        _module = await JS.InvokeAsync<IJSObjectReference>("import", "/mimamori-liff.js");
+
+        // The GLB is 7.6MB. On a mobile connection inside a WebView that is a long wait
+        // for something purely decorative, so a device asking for reduced motion keeps
+        // the poster and only loads the 3D scene if the family taps for it.
+        _reducedMotion = await _module.InvokeAsync<bool>("prefersReducedMotion");
+        _mascot3d = !_reducedMotion;
+
+        await ResolveSessionAsync();
+
+        if (_mascot3d)
+        {
+            await StartMascotAsync();
+        }
+    }
+
+    private async Task ResolveSessionAsync()
+    {
+        try
+        {
+            var result = await _module!.InvokeAsync<LiffInitResult>("initLiff", LineOptions.Value.LiffId);
+            var session = await Sessions.ResolveAsync(result.IdToken);
+
+            _state = session.Status;
+            _view = session.View;
+            _greeting = session.View is null
+                ? "status"
+                : LiffSessionService.MascotGreeting(session.View.Risk.Level);
+        }
+        catch (JSException)
+        {
+            // A WebView with no network never reaches LINE's SDK. Falling through to the
+            // signed-out card is honest; showing an error dialog inside a talk is not.
+            _state = LiffSessionStatus.NotSignedIn;
+        }
+        finally
+        {
+            _loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task EnableMascotAsync()
+    {
+        _mascot3d = true;
+        StateHasChanged();
+        await StartMascotAsync();
+    }
+
+    private async Task StartMascotAsync()
+    {
+        // The attribute the viewer looks for is only rendered once _mascot3d is true, so
+        // this must run after the re-render that adds it.
+        await Task.Yield();
+        await JS.InvokeVoidAsync("mimamoriUi.initMascot");
+        _mascotReady = true;
+        StateHasChanged();
+    }
+
+    private static string RiskLabel(RiskLevel level) => level switch
+    {
+        RiskLevel.High => "気になる様子です",
+        RiskLevel.Medium => "少し気になります",
+        _ => "いつもどおりです"
+    };
+
+    private static string TimeOrDash(TimeOnly? value) =>
+        value?.ToString("HH\\:mm") ?? "—";
+
+    /// <summary>Mirrors the object returned by <c>initLiff</c> in mimamori-liff.js.</summary>
+    private sealed record LiffInitResult(string Status, string? IdToken, bool InClient);
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_module is not null)
+        {
+            try
+            {
+                await _module.DisposeAsync();
+            }
+            catch (JSDisconnectedException)
+            {
+                // The circuit is already gone (the family closed the LIFF window);
+                // there is nothing left to dispose on the browser side.
+            }
+        }
+    }
+}
