@@ -32,6 +32,18 @@ public class LineWebhookEventsTests
         "{\"events\":[{\"type\":\"message\",\"replyToken\":\"reply-1\",\"source\":{\"type\":\"group\",\"groupId\":\"" + groupId +
         "\"},\"message\":{\"type\":\"text\",\"text\":\"" + text + "\"}}]}";
 
+    /// <summary>The shape LINE really sends for a group message: the group AND the speaker.</summary>
+    private static string GroupMessageWithSpeakerJson(string groupId, string speakerUserId, string text) =>
+        "{\"events\":[{\"type\":\"message\",\"replyToken\":\"reply-1\",\"source\":{\"type\":\"group\",\"groupId\":\"" + groupId +
+        "\",\"userId\":\"" + speakerUserId + "\"},\"message\":{\"type\":\"text\",\"text\":\"" + text + "\"}}]}";
+
+    private static string JoinEventJson(string groupId, string speakerUserId) =>
+        "{\"events\":[{\"type\":\"join\",\"replyToken\":\"reply-1\",\"source\":{\"type\":\"group\",\"groupId\":\"" + groupId +
+        "\",\"userId\":\"" + speakerUserId + "\"}}]}";
+
+    private static string LeaveEventJson(string groupId) =>
+        "{\"events\":[{\"type\":\"leave\",\"source\":{\"type\":\"group\",\"groupId\":\"" + groupId + "\"}}]}";
+
     private static string PostbackEventJson(string userId, string data, string replyToken = "reply-1") =>
         "{\"events\":[{\"type\":\"postback\",\"replyToken\":\"" + replyToken + "\",\"source\":{\"type\":\"user\",\"userId\":\"" + userId +
         "\"},\"postback\":{\"data\":\"" + data + "\"}}]}";
@@ -78,6 +90,63 @@ public class LineWebhookEventsTests
         var evt = Assert.Single(events);
         Assert.Equal(FakeGroupId, evt.SourceId);
         Assert.Equal("group", evt.SourceType);
+    }
+
+    /// <summary>
+    /// A real group message carries the group id AND the speaking member's user id.
+    /// The group must win: registering the speaker instead would send every later alert
+    /// to that one person privately, and the rest of the family would never see it.
+    /// </summary>
+    [Fact]
+    public void ParseEvents_GroupMessage_Prefers_The_Group_Over_The_Speaker()
+    {
+        var events = WebhookEndpoints.ParseEvents(
+            GroupMessageWithSpeakerJson(FakeGroupId, FakeUserId, "おばあちゃん大丈夫？"));
+
+        var evt = Assert.Single(events);
+        Assert.Equal(FakeGroupId, evt.SourceId);
+        Assert.Equal("group", evt.SourceType);
+    }
+
+    /// <summary>A multi-person "room" behaves exactly like a group.</summary>
+    [Fact]
+    public void ParseEvents_RoomSource_Prefers_The_Room_Over_The_Speaker()
+    {
+        const string roomId = "Rtestroom00000000000000000000000000";
+        var json = "{\"events\":[{\"type\":\"message\",\"replyToken\":\"reply-1\",\"source\":{\"type\":\"room\",\"roomId\":\"" +
+                   roomId + "\",\"userId\":\"" + FakeUserId + "\"},\"message\":{\"type\":\"text\",\"text\":\"やあ\"}}]}";
+
+        var events = WebhookEndpoints.ParseEvents(json);
+
+        var evt = Assert.Single(events);
+        Assert.Equal(roomId, evt.SourceId);
+        Assert.Equal("room", evt.SourceType);
+    }
+
+    /// <summary>
+    /// "join" fires when the bot is invited into the family group. It is the group-chat
+    /// counterpart of "follow", so it has to survive parsing to be able to register the group.
+    /// </summary>
+    [Fact]
+    public void ParseEvents_Extracts_A_Join_Event_For_The_Group()
+    {
+        var events = WebhookEndpoints.ParseEvents(JoinEventJson(FakeGroupId, FakeUserId));
+
+        var evt = Assert.Single(events);
+        Assert.Equal("join", evt.Type);
+        Assert.Equal(FakeGroupId, evt.SourceId);
+        Assert.Equal("reply-1", evt.ReplyToken);
+    }
+
+    [Fact]
+    public void ParseEvents_Extracts_A_Leave_Event_For_The_Group()
+    {
+        var events = WebhookEndpoints.ParseEvents(LeaveEventJson(FakeGroupId));
+
+        var evt = Assert.Single(events);
+        Assert.Equal("leave", evt.Type);
+        Assert.Equal(FakeGroupId, evt.SourceId);
+        Assert.Null(evt.ReplyToken);
     }
 
     [Fact]
