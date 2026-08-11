@@ -60,33 +60,65 @@ FACE_HW = L(_tune("MIMAMO_FACE_HW", 158.0))   # measured x 393..718 at the wides
 FACE_HH = L(122.0)
 FACE_N = _tune("MIMAMO_FACE_N", 1.95)  # near-true ellipse: the poster face is NOT a squircle
 
-# eyes (annotated grid g_eyes3.png): left lid x 422..505 y 562..653,
-# right lid x 615..697 y 564..655  ->  dx 94, centre y 607.5, 41.5 x 45.5.
-# The lid opening is filled almost entirely by the iris: the black ring is
-# ~17 px at the top (lash line), 9 px at the sides, 2 px at the bottom, and
-# there is NO visible white sclera.
-EYE_X = L(94.0)
-EYE_CZ = Z(607.5)
-EYE_A = L(42.0)             # half width  (poster black rim x 425..509)
-EYE_B = L(50.5)             # half height (poster black rim y 551..652)
-IRIS_A = L(32.5)
-IRIS_B = L(39.0)
+# eyes - re-measured 1:1 against ref_poster.png with the exact projection
+# mapping (px = 2*xr - 350, py = 2*yr - 460), screen-left eye, reference px:
+#
+#   black rim, OUTER edge   x 424..508  y 555..649  -> c(466.0, 602.0) half(42.5, 47.5)
+#   pearl socket (the hole) x 429..506  y 571..649  -> c(467.0, 610.0) half(38.5, 38.5)
+#   teal lens               x 445..506  y 570..648  -> c(475.5, 609.0) half(31.0, 39.5)
+#
+# The decisive finding: the socket is a CIRCLE that is dropped 8 px BELOW the
+# rim ellipse centre.  That single offset is what makes the black read 17 px at
+# the lash line, 5 px on the outer side, 3 px on the inner side and only 1 px
+# under the lens - a crescent open at the bottom.  The previous version used
+# two near-concentric ellipses of similar aspect, which can only ever produce
+# the even black donut the reference never has.
+EYE_X = L(94.0)             # 555 -/+ 94 = 461 ; rim centre is 6 px inward
+EYE_CZ = Z(602.0)           # rim ellipse centre
+EYE_A = L(42.5)
+EYE_B = L(47.5)
+SOC_R = L(38.5)             # socket is round ...
+SOC_DZ = L(8.0)             # ... and sunk 8 px below the rim centre
+IRIS_A = L(31.0)
+IRIS_B = L(39.5)
+IRIS_DX = L(14.5)           # lens centre, inward of EYE_X
+IRIS_CZ = Z(609.0)
 
-# brows (annotated grid g_tiara3.png): left x 449..486, right x 632..667,
-# y 518..529 -> a SHORT thin arc, half-width 19 px (not 28).
-BROW_X = L(88.0)            # measured ref brow centres x 467.5 / 642.5
-BROW_Z = Z(522.0)
-BROW_HW = L(22.0)           # ref brow arc is 43 px long, not 55
+# brows - re-measured: ref L x451..488 y517..529 c(469.5, 523.0),
+#                      ref R x635..672 y526..539 c(653.5, 532.5).
+# Mean centre x offset 92, mean apex centre-line y 524.  The reference brow is
+# a *comma*: the apex sits well toward the INNER end (u ~ 0.72) and the stroke
+# droops 8 px at the outer tip and 2.5 px at the inner tip, staying ~7 px thick
+# through the middle and only blunting at the very ends.
+BROW_X = L(92.0)
+BROW_Z = Z(524.0)           # apex centre-line; the droop table subtracts from it
+BROW_HW = L(19.0)           # ref arc is 38 px long
 BROW_T = L(7.0)             # max stroke thickness
+# droop below the apex, u = 0 outer .. 1 inner (reference px)
+BROW_V = [(0.00, 8.0), (0.12, 5.0), (0.25, 3.2), (0.38, 1.6), (0.51, 0.7),
+          (0.64, 0.2), (0.76, 0.0), (0.88, 0.7), (1.00, 2.5)]
 
-# mouth: measured REF x528..579 (52 wide), y665..689 -> +15px lower than v13
+# mouth - row-by-row extents off the poster.  The opening's outer silhouette is
+# x 527..581 (w54), so MOUTH_HW / MOUTH_TOP were already right; the "narrow top"
+# the first pass saw was a *specular sheen* on the inner upper lip, not geometry.
+# Corners: left (527, 664), right (581, 667).  Dark cavity slivers survive down
+# to y 684 beside the tongue, and the tongue itself runs to y 690.
 MOUTH_HW = L(27.0)
 MOUTH_TOP = Z(663.0)
-MOUTH_COR = Z(667.0)
-MOUTH_BOT = Z(697.0)
+MOUTH_COR = Z(665.5)
+MOUTH_BOT = Z(690.0)        # bowl closes where the tongue ends
+# tongue: ref runs y675..690, widest 534..570 -> c(552, 682.5) half(18.5, 8)
+TONGUE_A = L(18.5)
+TONGUE_B = L(8.0)
+TONGUE_Z = Z(682.5)
 
-# nose bump centre (552, 661)
-NOSE_Z = Z(661.0)
+# nose - from the brightness profile down x 548..566: the reference highlight
+# peaks at y 634.5 and its shadow bottoms at y 647.5, so the bump is centred at
+# y ~641 and is only ~14 px tall.  The CG had it at y ~655 (14 px too low, right
+# on the upper lip) and twice as deep, which read as a white ball.
+# Second pass: the measured CG highlight still came out c(560.5, 646) 22x33 px
+# against the reference's c(560.5, 638) 6x9 px, so raise 8 px and shrink hard.
+NOSE_Z = Z(633.0)
 
 # blush: sits directly under each eye, centre dx 100, y 665, 56 x 26 px
 BLUSH_X = L(100.0)
@@ -322,63 +354,69 @@ def build_eye(head, M, coll, sx):
     inward = -sx                                    # +x is inward for the left eye
     objs = []
 
-    # Measured off the poster (screen-left eye, reference pixels):
-    #   black rim   x 425..509  y 551..652   -> c(467, 601.5) half(42, 50.5)
-    #   pearl socket x 431..509 y 558..650   -> c(470, 604.0) half(39, 46.0)
-    #   teal lens   x 441..506  y 568..646   -> c(473.5, 607) half(32.5, 39)
-    # i.e. three ellipses each nudged further *inward and down*, which is what
-    # produces the reference's crescent lash + pearl highlight band instead of
-    # a concentric black donut.  All of them are shallow inset decals - the
-    # poster eye is nearly flush with the face, not a protruding blob.
-    # 1. dark lash oval (whole eye silhouette)
+    # Measured 1:1 off the poster (screen-left eye, reference pixels):
+    #   rim outer ellipse  c(466.0, 602.0)  half(42.5, 47.5)
+    #   pearl socket       c(467.0, 610.0)  half(38.5, 38.5)   <- ROUND, 8 px down
+    #   teal lens          c(475.5, 609.0)  half(31.0, 39.5)
+    # Subtracting a round socket that is offset downward from an ellipse that is
+    # taller than it is wide gives 17 px of black at the lash line, 5 px outer,
+    # 3 px inner and 1 px underneath: the reference's crescent.  The z-order is
+    # deliberately generous so the socket never lets the dark plate poke through
+    # at its own rim (that was the "even donut" artefact).
+    # 1. dark lash oval (whole eye silhouette) - kept deliberately shallow
     soc_cx = cx + inward * L(6.0)
-    soc_cz = EYE_CZ + L(6.0)
+    soc_cz = EYE_CZ
     dark_o = ellipse_outline(EYE_A, EYE_B, 128, soc_cx, soc_cz,
                              squash_top=1.0, squash_bot=0.985)
-    dark = flat_shape("EyeDark_" + tag, dark_o, M["eye_dark"], coll, depth=0.0075,
+    dark = flat_shape("EyeDark_" + tag, dark_o, M["eye_dark"], coll, depth=0.0035,
                       rings=7, power=0.55)
     decal(dark, head, 0.0240)
     objs.append(dark)
 
-    # 1b. pearl socket - the light band that shows on the *outer* side of the
-    #     lens.  Without it the eye reads as a heavy black ring.
-    soc_o = ellipse_outline(L(35.5), L(42.5), 112,
-                            cx + inward * L(9.5), EYE_CZ + L(4.5),
-                            squash_top=1.0, squash_bot=0.985)
-    socket = flat_shape("EyeSocket_" + tag, soc_o, M["face_rim"], coll,
-                        depth=0.0060, rings=7, power=0.58)
-    decal(socket, head, 0.0252)
+    # 1b. pearl socket - a CIRCLE dropped below the rim centre.  This is the
+    #     piece that carves the crescent; it is face-coloured (very slightly
+    #     shaded) so it reads as the white sliver between lash line and lens.
+    soc_o = ellipse_outline(SOC_R, SOC_R, 112, soc_cx, soc_cz - SOC_DZ)
+    # kept almost perfectly flat on purpose: as a raised pillow its own shaded
+    # rim read as ~4 px of extra black at the lash line and made the socket look
+    # like a separate white pearl sitting behind the lens
+    socket = flat_shape("EyeSocket_" + tag, soc_o, M["eye_socket"], coll,
+                        depth=0.0015, rings=7, power=0.58)
+    decal(socket, head, 0.0280)
     objs.append(socket)
 
     # 2. iris - the glossy teal lens, seated inward-and-down in the socket
-    ir_cx = cx + inward * L(12.5)
-    ir_cz = EYE_CZ + L(0.5)
+    ir_cx = cx + inward * IRIS_DX
+    ir_cz = IRIS_CZ
     ir_a, ir_b = IRIS_A, IRIS_B
     ir_o = ellipse_outline(ir_a, ir_b, 128, ir_cx, ir_cz,
                            squash_top=0.965, squash_bot=1.0)
-    iris = flat_shape("Iris_" + tag, ir_o, M["iris"], coll, depth=0.012,
+    # flatter than before: the reference lens is a disc with one crisp catch
+    # light, the old dome caught a broad sheen that washed the teal out to grey
+    iris = flat_shape("Iris_" + tag, ir_o, M["iris"], coll, depth=0.0045,
                       rings=13, power=0.66)
-    decal(iris, head, 0.0264)
+    decal(iris, head, 0.0305)
 
     def iris_col(w, l):
         v = (w.z - ir_cz) / ir_b                    # +1 top .. -1 bottom
         uin = (w.x - ir_cx) / ir_a * inward         # +1 toward the nose
-        # Bright lens body: luminous mint at the bottom, cooler toward the top.
-        t = max(0.0, min(1.0, (0.55 - v) / 1.45))
+        # Reference lens: dark teal over the upper two thirds, luminous mint
+        # only in the bottom third.  The old ramp turned bright at mid-height.
+        t = max(0.0, min(1.0, (0.10 - v) / 1.10))
         c = (0.055 + 0.210 * t ** 1.3,
              0.300 + 0.600 * t ** 0.85,
              0.310 + 0.510 * t ** 0.85)
-        # Soft near-black iris core.  Measured x 450..500 / y 572..628, which in
-        # normalised lens space is centred at (uin 0.05, v 0.18) with radii
-        # (0.80, 0.75).  A gradient - not a hard-edged pupil disc - is what the
-        # poster actually shows.
+        # Soft near-black iris core.  Measured x 460..492 / y 588..618, which in
+        # normalised lens space is centred at (uin 0.02, v 0.15) with radii
+        # (0.52, 0.38) at full strength.  A gradient - not a hard-edged pupil
+        # disc - is what the poster actually shows.
         e = ((uin - 0.05) / 0.86) ** 2 + ((v - 0.14) / 0.82) ** 2
         k = max(0.0, min(1.0, 1.45 - e)) ** 0.35
         core = (0.010, 0.045, 0.056)
         c = tuple(c[i] * (1.0 - k) + core[i] * k for i in range(3))
         # cool rim light along the lower-outer edge
         rim = max(0.0, 1.0 - ((uin * 0.85 + 0.34) ** 2 + (v + 0.78) ** 2) * 2.3)
-        c = tuple(min(1.0, c[i] + rim * 0.34) for i in range(3))
+        c = tuple(min(1.0, c[i] + rim * 0.14) for i in range(3))
         return (c[0], c[1], c[2], 1.0)
 
     set_vertex_colors(iris, iris_col)
@@ -388,16 +426,16 @@ def build_eye(head, M, coll, sx):
     #    inward and 25 px above the lens centre; small bounce spot low-outward
     hi_o = ellipse_outline(L(7.7), L(7.7), 56, ir_cx + inward * L(10.5),
                            ir_cz + L(25.0))
-    hi = flat_shape("Spec_" + tag, hi_o, M["highlight"], coll, depth=0.008,
+    hi = flat_shape("Spec_" + tag, hi_o, M["highlight"], coll, depth=0.006,
                     rings=7, power=0.58)
-    decal(hi, head, 0.0345)
+    decal(hi, head, 0.0375)
     objs.append(hi)
 
-    hi2_o = ellipse_outline(L(4.5), L(3.6), 40, ir_cx - inward * L(11.0),
+    hi2_o = ellipse_outline(L(3.4), L(2.7), 40, ir_cx - inward * L(11.0),
                             ir_cz - L(27.0))
-    hi2 = flat_shape("Spec2_" + tag, hi2_o, M["highlight2"], coll, depth=0.004,
+    hi2 = flat_shape("Spec2_" + tag, hi2_o, M["highlight2"], coll, depth=0.003,
                      rings=5, power=0.58)
-    decal(hi2, head, 0.0330)
+    decal(hi2, head, 0.0368)
     objs.append(hi2)
 
     # 6. outer lash spike - a thin flick off the top-outer rim, not a bean
@@ -426,16 +464,26 @@ def build_brow(head, M, coll, sx):
     tag = "L" if sx > 0 else "R"
     cx = sx * BROW_X
     top, bot = [], []
-    n = 40
+    n = 48
+
+    def droop(u):
+        """Linear interpolation of the measured BROW_V table (reference px)."""
+        for i in range(len(BROW_V) - 1):
+            u0, d0 = BROW_V[i]
+            u1, d1 = BROW_V[i + 1]
+            if u <= u1:
+                f = 0.0 if u1 == u0 else (u - u0) / (u1 - u0)
+                return d0 + (d1 - d0) * f
+        return BROW_V[-1][1]
+
     for i in range(n + 1):
         u = i / n                                    # 0 = outer, 1 = inner
         x = cx + sx * (u - 0.5) * -2.0 * BROW_HW     # outer -> inner
-        arch = L(8.0) * math.sin(math.pi * min(1.0, u ** 0.92)) ** 0.85
-        if u < 0.36:
-            th = BROW_T * (u / 0.36) ** 0.85
-        else:
-            th = BROW_T * ((1.0 - u) / 0.64) ** 0.80
-        zc = BROW_Z + arch
+        # measured comma profile: apex at u ~ 0.76, 8 px droop at the outer tip
+        zc = BROW_Z - L(droop(u))
+        # single smooth bell instead of the old two-piece ramp, whose join at
+        # u = 0.36 produced a visible kink and a needle-thin inner tip
+        th = BROW_T * math.sin(math.pi * u) ** 0.30
         top.append((x, zc + th * 0.55))
         bot.append((x, zc - th * 0.45))
     outline = top + bot[::-1]
@@ -447,14 +495,16 @@ def build_brow(head, M, coll, sx):
 
 # --------------------------------------------------------------------------- #
 def build_nose(head, M, coll):
-    o = ellipse_outline(L(8.5), L(10.0), 64, 0.0, NOSE_Z)
-    ob = flat_shape("Nose", o, M["white_face"], coll, depth=0.019, rings=11,
+    # the poster's nose is a faint crease ~14 px tall, not a ball; the old
+    # depth-0.019 dome 14 px lower rendered as a white sphere on the upper lip
+    o = ellipse_outline(L(4.5), L(5.0), 64, 0.0, NOSE_Z)
+    ob = flat_shape("Nose", o, M["white_face"], coll, depth=0.0035, rings=9,
                     power=0.70)
     decal(ob, head, 0.0230)
 
     def col(w, l):
-        v = (w.z - NOSE_Z) / L(10.0)
-        k = 1.0 + 0.045 * max(0.0, v) - 0.065 * max(0.0, -v) ** 1.4
+        v = (w.z - NOSE_Z) / L(5.0)
+        k = 1.0 + 0.016 * max(0.0, v) - 0.030 * max(0.0, -v) ** 1.4
         return (k, k * 0.995, k * 0.985, 1.0)
 
     set_vertex_colors(ob, col)
@@ -463,16 +513,23 @@ def build_nose(head, M, coll):
 
 # --------------------------------------------------------------------------- #
 def mouth_outline(hw, top_z, cor_z, bot_z, n=72, grow=0.0):
-    """Open smile: shallow arc on top, deep bowl below."""
+    """Open smile: shallow arc on top, deep bowl below.
+
+    `grow` is tapered to zero at the corners (|t| -> 1).  Adding it to x and z
+    independently, as the previous version did, left a blunt vertical segment
+    at each corner; the reference mouth comes to a point.
+    """
     top, bot = [], []
     for i in range(n + 1):
         t = -1.0 + 2.0 * i / n
         k = max(0.0, 1.0 - t * t)
-        top.append((t * (hw + grow), cor_z + (top_z - cor_z) * k ** 0.55 + grow))
+        g = grow * k ** 0.45
+        top.append((t * (hw + g), cor_z + (top_z - cor_z) * k ** 0.55 + g))
     for i in range(n + 1):
         t = 1.0 - 2.0 * i / n
         k = max(0.0, 1.0 - t * t)
-        bot.append((t * (hw + grow), cor_z + (bot_z - cor_z) * k ** 0.62 - grow))
+        g = grow * k ** 0.45
+        bot.append((t * (hw + g), cor_z + (bot_z - cor_z) * k ** 0.62 - g))
     return top[:-1] + bot[:-1]
 
 
@@ -480,36 +537,46 @@ def build_mouth(head, M, coll):
     objs = []
     # NOTE: the rim must stay FLATTER than the cavity is forward, or its dome
     # pokes through and the mouth renders white (v2-iter1 bug).
-    rim_o = mouth_outline(MOUTH_HW, MOUTH_TOP, MOUTH_COR, MOUTH_BOT, grow=L(4.0))
+    rim_o = mouth_outline(MOUTH_HW, MOUTH_TOP, MOUTH_COR, MOUTH_BOT, grow=L(2.5))
     rim = flat_shape("MouthRim", rim_o, M["mouth_rim"], coll, depth=0.005,
                      rings=7, power=0.6)
     decal(rim, head, 0.0224)
     objs.append(rim)
 
     cav_o = mouth_outline(MOUTH_HW, MOUTH_TOP, MOUTH_COR, MOUTH_BOT)
-    cav = flat_shape("MouthCavity", cav_o, M["mouth_cavity"], coll, depth=0.010,
+    cav = flat_shape("MouthCavity", cav_o, M["mouth_cavity"], coll, depth=0.005,
                      rings=9, power=0.55)
     decal(cav, head, 0.0262)
 
     def cav_col(w, l):
         v = (w.z - MOUTH_BOT) / (MOUTH_TOP - MOUTH_BOT)
         v = max(0.0, min(1.0, v))
-        k = 0.62 + 0.55 * (1.0 - v) ** 1.5
+        t = min(1.0, abs(w.x) / MOUTH_HW)
+        # The poster shows a glossy sheen on the *inner upper lip* (bright band
+        # x547..567 at y664..670) with deep shadow at the corners and down in
+        # the bowl.  The previous ramp was inverted - brightest at the bottom.
+        k = (0.52 + 0.70 * v ** 1.9) * (1.0 - 0.30 * t ** 2)
+        # localised specular band; without it the CG opening reads as one solid
+        # dark slab from y665 down, where the reference is split in two by it
+        sheen = math.exp(-((v - 0.88) / 0.14) ** 2) * \
+            math.exp(-(t / 0.42) ** 2)
+        k *= 1.0 + 2.1 * sheen
         return (k, k * 0.80, k * 0.82, 1.0)
 
     set_vertex_colors(cav, cav_col)
     objs.append(cav)
 
-    # tongue - fills the lower bowl
-    tz = Z(684.0)
-    tongue_o = ellipse_outline(L(25.0), L(12.5), 96, 0.0, tz,
+    # tongue - ref x 534..570 (w37) y 675..690 (h16); the old 50 x 25 px ellipse
+    # was ~35 % oversized and filled the whole opening
+    tz = TONGUE_Z
+    tongue_o = ellipse_outline(TONGUE_A, TONGUE_B, 96, 0.0, tz,
                                squash_top=0.92, squash_bot=1.10)
-    tongue = flat_shape("Tongue", tongue_o, M["tongue"], coll, depth=0.024,
+    tongue = flat_shape("Tongue", tongue_o, M["tongue"], coll, depth=0.015,
                         rings=11, power=0.66)
     decal(tongue, head, 0.0280)
 
     def t_col(w, l):
-        v = (w.z - tz) / L(12.5)
+        v = (w.z - tz) / TONGUE_B
         k = 1.0 + 0.16 * max(0.0, v) - 0.20 * max(0.0, -v)
         return (k, k * 0.96, k * 0.96, 1.0)
 
@@ -553,11 +620,38 @@ def head_hw_px(yr):
 # Iter-9 used a deep centre dip (487) -> band too tall; iter-10 used the
 # g_crown reading (403) -> band a thin flap, because the pale area at the
 # upper-left of the poster is a SPECULAR STREAK on glossy mint, not white
-# material.  The true boundary is a nearly flat arc at y ~427..440, with the
-# central "V" supplied by the mint heart surround (CrestDrop).
+# material.
+#
+# Iter-13: measured column-by-column with the b-r discriminator and verified by
+# drawing the detected edge back onto both images (hoodmark.png).  The detector
+# lands exactly on the boundary in both, and the shapes are plainly different:
+# the reference lower edge is a DOME on each side - it climbs to a plateau at
+# y ~436 over dx 100..120 and falls away both outward (y 480 at dx 180) and
+# inward toward the heart - whereas the CG traced an almost straight diagonal.
+# Folded left-against-right (the poster's head is turned, so the two sides
+# disagree by 10-20 px through dx 50..90; the average is the best a symmetric
+# model can do):
+#   dx   40  48  56  64  72  80  90 100 110 120 130 140 150 160 170 180
+#   y   481 480 475 470 463 454 442 438 436 437 441 447 455 463 468 480
+# NOTE the inner readings (dx < 60) are the mint HEART SURROUND, not the band -
+# CrestDrop supplies those separately.  Following them here as well produced
+# two pointed mint wings either side of the badge.
+# Holding the inner section flat at the measured y ~458..461 was also wrong: the
+# render then carried opaque mint right across the forehead, and a per-row mint
+# scan showed the CG band reaching 68..142 px further toward the centre than the
+# poster's between y438 and y470 - exactly the "hat covers the face too much"
+# complaint.  The poster's own inner edge cannot be read directly because the
+# badge bezel occludes it, but bare white face is visible at dx 47..80 by y438,
+# so the band must have receded by then.  The inner section is therefore carried
+# flat at y ~431..435, continuing the outer curve instead of dipping 25 px below
+# it, and CrestDrop supplies the mint that dips lower in the centre.
+# The outer end is pinned to the helmet silhouette - head_hw_px(484) - 10 -
+# so the lower edge meets the outer edge with no sliver (iter-8 bug).
 # (yr, dx-from-centre), outer end first.
-HOOD_V = [(440.0, 157.5), (436.0, 140.0), (433.0, 120.0), (431.0, 100.0),
-          (429.0, 80.0), (428.0, 55.0), (427.0, 30.0), (427.0, 0.0)]
+HOOD_V = [(484.0, 184.0), (470.0, 170.0), (463.0, 160.0), (455.0, 150.0),
+          (447.0, 140.0), (441.0, 130.0), (437.0, 120.0), (436.0, 110.0),
+          (435.0, 100.0), (434.0, 90.0), (433.0, 80.0), (432.0, 70.0),
+          (431.0, 58.0), (431.0, 40.0), (431.0, 0.0)]
 HOOD_INSET = 10.0          # thin white helmet rim outside the mint
 HOOD_CX = 554.5
 
@@ -620,7 +714,7 @@ def hood_trim_outline(inner=13.0, outer=1.0):
 def build_crest(head, M, coll):
     """Mint tiara hood + white heart bezel + pink heart badge."""
     objs = []
-    hood = flat_shape("Crest", crest_outline(), M["mint"], coll,
+    hood = flat_shape("Crest", crest_outline(), M["mint_glass"], coll,
                       depth=0.014, rings=8, power=0.5)
     decal(hood, head, 0.0170)
     objs.append(hood)
@@ -631,39 +725,70 @@ def build_crest(head, M, coll):
 
     # mint heart surround: hangs BELOW the hood arc, behind the white badge.
     # This is the deep central "V" the poster reads at small scale.
+    # Iter-13: the whole badge stack was 15 % oversized.  Anchor measurement -
+    # the pink heart's bounding box on the poster is x 537..596 y 421..466
+    # (60 x 46 px, centre y 443.5), against 69 x 54 in the CG.  Every layer is
+    # therefore scaled by 0.86 about (HOOD_CX, y 444).  (The poster's heart is
+    # centred at x 566.5 rather than 554.5 because the head is turned; a
+    # symmetric model cannot follow that, so the centre stays on HOOD_CX.)
+    #
+    # Iter-14: drawing the measured hood edge back onto both images
+    # (hoodmark2.png) showed the band itself is now correct, but the CG still
+    # read wrong because the mint SURROUND was far too narrow, leaving the
+    # band's inner tips sticking out as two bare blades.  Measured with the
+    # (b-r, g-r) mint mask, the poster's surround spans x 478..659 (181 px
+    # wide, half 90) x y ~400..494, against 107 x 101 here - i.e. the poster's
+    # is a WIDE, flat heart that merges into the band, not a narrow tall one.
+    # Iter-16: measuring the mint tone either side of the badge gives the
+    # poster (0.511, 0.767, 0.714) against (0.367, 0.728, 0.716) here, i.e. the
+    # CG surround is far too dark in red.  The poster's surround is simply the
+    # same light mint as the band -- there is no deep-teal layer at all -- so
+    # mint_deep is gone and both layers now read as one soft mint pillow.
     drop_o = fit_px(heart_outline(1.0, 1.0, 144, plump=0.28),
-                    492.0, 617.0, 394.0, 512.0)
-    drop = flat_shape("CrestDrop", drop_o, M["mint_deep"], coll,
+                    466.0, 643.0, 396.0, 494.0)
+    drop = flat_shape("CrestDrop", drop_o, M["mint"], coll,
                       depth=0.012, rings=8, power=0.52)
     decal(drop, head, 0.0250)
     objs.append(drop)
 
     drop_rim_o = fit_px(heart_outline(1.0, 1.0, 144, plump=0.28),
-                        499.0, 610.0, 400.0, 504.0)
+                        474.0, 635.0, 401.0, 489.0)
     drop_rim = flat_shape("CrestDropRim", drop_rim_o, M["mint"], coll,
                           depth=0.010, rings=8, power=0.52)
     decal(drop_rim, head, 0.0262)
     objs.append(drop_rim)
 
-    # white bezel plate: measured on g_tiara3 -> x 506..603, y 408..487
+    # white bezel plate.  Isolating the pink with (r-g, r-b) > 0.02 and taking
+    # the largest blob puts the poster's heart at x 530..602 y 417..475
+    # (72 x 58, widest 36 % down) against 60 x 46 widest 27 % down here -- so
+    # the badge was 20 % too narrow, 26 % too short, sat 5 px high and was too
+    # top-heavy.  Scanning y 446 across the badge, the poster reads mint to
+    # x 483, white bezel x 511..530, pink from x 531, about a centre of x 566:
+    # bezel outer half 55, pink half 36.  Every layer below is rebuilt to that.
     plate_o = fit_px(heart_outline(1.0, 1.0, 144, plump=0.30),
-                     506.0, 603.0, 408.0, 487.0)
+                     499.5, 609.5, 405.0, 484.0)
     plate = flat_shape("BadgePlate", plate_o, M["white_shell"], coll,
                        depth=0.009, rings=8, power=0.55)
     decal(plate, head, 0.0300)
     objs.append(plate)
 
-    rim_o = fit_px(heart_outline(1.0, 1.0, 144, plump=0.40),
-                   514.0, 595.0, 414.0, 480.0)
-    rim = flat_shape("BadgeRim", rim_o, M["mouth_rim"], coll,
+    # Iter-17: scanning y 444 across the poster badge, the white bezel occupies
+    # half-radius 43..54 (x 512..523 left of centre x 566) and there is a 6 px
+    # DARK teal ring at half-radius 36..43 (x 524..529) between the bezel and
+    # the pink heart.  The CG had white running straight into the pink, which
+    # cost the badge all of its definition, so this layer is now the dark ring
+    # (BadgePlate above already supplies the white bezel out to half 55).
+    rim_o = fit_px(heart_outline(1.0, 1.0, 144, plump=0.44),
+                   511.0, 597.0, 411.5, 480.5)
+    rim = flat_shape("BadgeRim", rim_o, M["mint_deep"], coll,
                      depth=0.006, rings=8, power=0.55)
     decal(rim, head, 0.0385)
     objs.append(rim)
 
-    ph_o = fit_px(heart_outline(1.0, 1.0, 144, plump=0.50),
-                  520.0, 589.0, 418.0, 472.0)
-    bcz = Z(445.0)
-    bh = L(54.0)
+    ph_o = fit_px(heart_outline(1.0, 1.0, 144, plump=0.56),
+                  518.5, 590.5, 417.0, 475.0)
+    bcz = Z(446.0)
+    bh = L(58.0)
     ph = flat_shape("BadgeHeart", ph_o, M["pink_heart"], coll, depth=0.018,
                     rings=11, power=0.62)
     decal(ph, head, 0.0440)
