@@ -23,6 +23,15 @@
     --cp-panel-strong: rgba(255, 255, 255, 0.96);
     --cp-sheen: rgba(255, 255, 255, 0.55);
     --cp-highlight: rgba(177, 31, 75, 0.12);
+    /* 近未来の質感づくり用。背景に流すオーラの色と、カードのガラス面。
+       見守りは高齢のご家族の毎日にかかわる画面なので、
+       彩度と不透明度は「読みやすさが落ちない範囲」に抑えている。 */
+    --cp-glow-a: rgba(56, 189, 248, 0.20);
+    --cp-glow-b: rgba(177, 31, 75, 0.13);
+    --cp-glow-c: rgba(45, 212, 191, 0.16);
+    --cp-glass: rgba(255, 255, 255, 0.72);
+    --cp-glass-line: rgba(255, 255, 255, 0.85);
+    --cp-glass-shadow: 0 18px 40px -24px rgba(15, 40, 70, 0.45);
 }
 
 html[data-theme="dark"] {
@@ -50,6 +59,12 @@ html[data-theme="dark"] {
     --cp-panel-strong: rgba(41, 41, 41, 0.96);
     --cp-sheen: rgba(255, 255, 255, 0.04);
     --cp-highlight: rgba(253, 142, 161, 0.12);
+    --cp-glow-a: rgba(56, 189, 248, 0.16);
+    --cp-glow-b: rgba(253, 142, 161, 0.12);
+    --cp-glow-c: rgba(45, 212, 191, 0.12);
+    --cp-glass: rgba(41, 41, 41, 0.66);
+    --cp-glass-line: rgba(255, 255, 255, 0.10);
+    --cp-glass-shadow: 0 18px 40px -24px rgba(0, 0, 0, 0.7);
 }
 
 * { box-sizing: border-box; }
@@ -64,7 +79,46 @@ html, body {
     line-height: 1.55;
 }
 
-main { max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; }
+main { max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; position: relative; z-index: 1; }
+
+/* --- 背景のオーラ -------------------------------------------------------
+   ゆっくり流れる光を1枚敷く。装飾なので pointer-events は切ってあり、
+   文字の上には絶対に乗らない（main が z-index:1）。
+   端末が「動きを減らす」設定なら、静止したグラデーションとして残す。 */
+.app-aura {
+    position: fixed;
+    inset: -20vmax;
+    z-index: 0;
+    pointer-events: none;
+    background:
+        radial-gradient(38vmax 38vmax at 18% 12%, var(--cp-glow-a), transparent 60%),
+        radial-gradient(32vmax 32vmax at 82% 8%, var(--cp-glow-b), transparent 62%),
+        radial-gradient(42vmax 42vmax at 62% 88%, var(--cp-glow-c), transparent 62%);
+    filter: blur(18px);
+    animation: cp-aura-drift 38s ease-in-out infinite alternate;
+}
+@keyframes cp-aura-drift {
+    from { transform: translate3d(-2%, -1%, 0) scale(1); }
+    to   { transform: translate3d(3%, 2%, 0) scale(1.08); }
+}
+
+/* 画面上端の細い走査線。現在地が「生きている画面」だと分かる合図。 */
+.app-aura::after {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    top: 20vmax;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--cp-accent), transparent);
+    opacity: 0.28;
+    animation: cp-scan 9s linear infinite;
+}
+@keyframes cp-scan {
+    0%   { transform: translateX(-60%) scaleX(0.4); opacity: 0; }
+    18%  { opacity: 0.3; }
+    82%  { opacity: 0.3; }
+    100% { transform: translateX(60%) scaleX(0.4); opacity: 0; }
+}
 
 .topbar {
     display: grid;
@@ -114,15 +168,27 @@ main { max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; }
 }
 
 .status-card {
+    position: relative;
     display: grid;
     grid-template-columns: auto 1fr auto;
     align-items: center;
     gap: 20px;
     padding: 28px;
-    background: var(--cp-surface);
-    border: 1px solid var(--cp-border);
-    border-radius: 16px;
-    box-shadow: 0 0 2px var(--cp-border), 0 1px 2px var(--cp-border);
+    background: var(--cp-glass);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    backdrop-filter: blur(16px) saturate(140%);
+    border: 1px solid var(--cp-glass-line);
+    border-radius: 20px;
+    box-shadow: var(--cp-glass-shadow);
+    overflow: hidden;
+}
+/* カード上端のハイライト。ガラスらしさはここでほぼ決まる。 */
+.status-card::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--cp-glass-line), transparent);
 }
 .status-icon {
     --risk-color: var(--cp-success);
@@ -138,6 +204,46 @@ main { max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; }
     font-weight: 700;
     flex: 0 0 auto;
 }
+/* ダッシュボード先頭の「今日の様子」。ここだけは大きく取り、
+   3Dのミマモを立たせて、画面をひらいた瞬間に目が行くようにする。 */
+.status-stage {
+    --risk-color: var(--cp-success);
+    position: relative;
+    width: 132px;
+    height: 132px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background:
+        radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--risk-color) 16%, transparent), transparent 68%),
+        var(--cp-surface-soft);
+}
+.hero-mascot {
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    overflow: hidden;
+    cursor: pointer;
+    touch-action: pan-y;
+}
+.hero-mascot canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    opacity: 0;
+    transition: opacity 320ms ease;
+}
+.hero-mascot .mascot-poster {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: opacity 260ms ease;
+}
+.hero-mascot.is-ready canvas { opacity: 1; }
+.hero-mascot.is-ready .mascot-poster { opacity: 0; }
+.risk-medium .status-stage { --risk-color: var(--cp-warning); }
+.risk-high .status-stage { --risk-color: var(--cp-danger); }
 /* ミマモの顔。状態は右下のバッジと見出しで伝えるので、絵は常に同じ表情にする。
    レベルごとに表情を変えると、注意が「安心そう」に見えてしまうことがあるため。 */
 .status-icon img {
@@ -190,11 +296,22 @@ main { max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; }
 .primary-grid { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(280px, .65fr); gap: 16px; margin-bottom: 16px; }
 .secondary-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
 .card {
+    position: relative;
     padding: 24px;
-    background: var(--cp-surface);
-    border: 1px solid var(--cp-border);
-    border-radius: 16px;
-    box-shadow: 0 0 2px var(--cp-border), 0 1px 2px var(--cp-border);
+    background: var(--cp-glass);
+    -webkit-backdrop-filter: blur(14px) saturate(130%);
+    backdrop-filter: blur(14px) saturate(130%);
+    border: 1px solid var(--cp-glass-line);
+    border-radius: 20px;
+    box-shadow: var(--cp-glass-shadow);
+}
+.card::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto;
+    height: 1px;
+    border-radius: 20px 20px 0 0;
+    background: linear-gradient(90deg, transparent, var(--cp-glass-line), transparent);
 }
 .card h2 { margin: 0 0 16px; font-size: 20px; }
 .card h3, .detail-content h3 { margin: 0 0 12px; font-size: 15px; }
@@ -535,3 +652,102 @@ a.ghost.small { min-height: 32px; padding: 4px 10px; font-size: 12px; }
 .pill-alert { background: var(--cp-accent-soft); border-color: var(--cp-danger); color: var(--cp-danger); }
 .danger { color: var(--cp-danger); }
 .small { font-size: 11px; }
+
+/* ======================================================================
+   モーション
+   見守りの画面は「毎日ひらいて、ひと目で安心する」ことが仕事なので、
+   動きは案内役に徹する。派手に動かすのは状態が変わったときだけ。
+   ====================================================================== */
+
+/* カードがひと呼吸おいて順に立ち上がる。読む順番がそのまま動く順番になる。 */
+@keyframes cp-rise {
+    from { opacity: 0; transform: translate3d(0, 14px, 0); }
+    to   { opacity: 1; transform: none; }
+}
+main > section,
+main > article,
+main > .card {
+    animation: cp-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+main > *:nth-child(1) { animation-delay: 0.02s; }
+main > *:nth-child(2) { animation-delay: 0.08s; }
+main > *:nth-child(3) { animation-delay: 0.14s; }
+main > *:nth-child(4) { animation-delay: 0.20s; }
+main > *:nth-child(5) { animation-delay: 0.26s; }
+main > *:nth-child(n+6) { animation-delay: 0.32s; }
+
+/* 状態アイコンのまわりの光。落ち着いているときはゆっくりの呼吸、
+   注意・異常のときは速い脈にする。色だけでなく「速さ」でも伝わるように。 */
+.status-icon::after {
+    content: "";
+    position: absolute;
+    inset: -7px;
+    border-radius: 50%;
+    border: 2px solid var(--risk-color);
+    opacity: 0.28;
+    animation: cp-breathe 5.5s ease-in-out infinite;
+}
+.risk-medium .status-icon::after { animation-duration: 2.6s; opacity: 0.4; }
+.risk-high .status-icon::after { animation-duration: 1.5s; opacity: 0.55; }
+@keyframes cp-breathe {
+    0%, 100% { transform: scale(1); opacity: 0.2; }
+    50%      { transform: scale(1.09); opacity: 0.5; }
+}
+
+/* カードに指を置いたとき、わずかに浮く。触れる場所であることの合図。 */
+.card, .status-card { transition: transform 0.25s ease, box-shadow 0.25s ease; }
+.card:hover, .status-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 26px 52px -26px rgba(15, 40, 70, 0.5);
+}
+
+/* 端末が「動きを減らす」設定なら、動かさない。
+   めまいや乗り物酔いを起こす方がいるため、これは装飾より優先する。 */
+@media (prefers-reduced-motion: reduce) {
+    .app-aura,
+    .app-aura::after,
+    .status-icon::after,
+    main > section,
+    main > article,
+    main > .card {
+        animation: none !important;
+    }
+    .card, .status-card { transition: none; }
+    .card:hover, .status-card:hover { transform: none; }
+}
+
+/* ヒーローのバッジと、まわりの光。バッジはリスク色そのままで文字は白抜き。 */
+.status-stage .status-badge {
+    right: 4px;
+    bottom: 4px;
+    width: 34px;
+    height: 34px;
+    font-size: 18px;
+    z-index: 2;
+}
+.status-stage::after {
+    content: "";
+    position: absolute;
+    inset: -8px;
+    border-radius: 50%;
+    border: 2px solid var(--risk-color);
+    opacity: 0.3;
+    pointer-events: none;
+    animation: cp-breathe 5.5s ease-in-out infinite;
+}
+.risk-medium .status-stage::after { animation-duration: 2.6s; }
+.risk-high .status-stage::after { animation-duration: 1.5s; }
+
+.hero-card { padding: 32px; }
+.hero-card .status-copy h2 { font-size: 34px; line-height: 1.25; }
+
+@media (max-width: 640px) {
+    .status-stage { width: 104px; height: 104px; }
+    .hero-card { padding: 22px; }
+    .hero-card .status-copy h2 { font-size: 26px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .status-stage::after { animation: none !important; }
+    .hero-mascot canvas, .hero-mascot .mascot-poster { transition: none; }
+}

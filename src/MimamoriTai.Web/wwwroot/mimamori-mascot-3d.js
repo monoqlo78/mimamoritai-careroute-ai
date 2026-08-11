@@ -115,6 +115,16 @@ class MascotController {
 
         this.model.scale.setScalar(scale);
         this.model.position.set(-center.x * scale, -center.y * scale - 0.12, -center.z * scale);
+
+        // 小さな円の中に全身を入れると顔がつぶれて表情が読めない。
+        // data-mascot-frame="face" のときは頭のあたりまで寄る。
+        if (this.host.dataset.mascotFrame === "face") {
+            const headY = (bounds.max.y - center.y) * scale * 0.34;
+            this.camera.position.set(0, headY, 5.2);
+            this.camera.lookAt(0, headY, 0);
+            return;
+        }
+
         this.camera.position.set(0, 0.15, 8.7);
         this.camera.lookAt(0, 0.1, 0);
     }

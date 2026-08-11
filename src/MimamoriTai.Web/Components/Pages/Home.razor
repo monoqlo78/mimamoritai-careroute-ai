@@ -105,9 +105,16 @@ else
         <div class="busy-bar" role="status" aria-live="polite">処理中…</div>
     }
 
-    <section class="status-card risk-@_model.Risk.Level.ToString().ToLowerInvariant()">
-        <div class="status-icon" aria-hidden="true">
-            <img src="/images/mimamo-avatar.png" alt="" />
+    <section class="status-card hero-card risk-@_model.Risk.Level.ToString().ToLowerInvariant()">
+        @* WebGLが動く端末では3Dのミマモが立つ。動かない端末・読み込み失敗時は
+           下の静止画がそのまま残るので、顔が消えることはない。 *@
+        <div class="status-stage" aria-hidden="true">
+            <div class="hero-mascot mascot-viewer"
+                 data-mascot-frame="face"
+                 data-mascot-model="/models/mimamo-robot-opus-rigged.glb">
+                <canvas></canvas>
+                <img class="mascot-poster" src="/images/mimamo-avatar.png" alt="" />
+            </div>
             <span class="status-badge">@RiskIcon(_model.Risk.Level)</span>
         </div>
         <div class="status-copy">
@@ -494,6 +501,18 @@ else
         // themselves honest instead of freezing on whatever was true when the page opened.
         _refreshTimer = new PeriodicTimer(LiveRefreshInterval);
         _ = RefreshLoopAsync(_refreshTimer, _refreshCts.Token);
+
+        // The 3D mascot is decoration. If WebGL is missing, the file 404s, or interop
+        // is briefly unavailable, the still image underneath stays visible - so a
+        // failure here must never surface to the family as an error.
+        try
+        {
+            await JS.InvokeVoidAsync("mimamoriUi.initMascot");
+        }
+        catch (JSException)
+        {
+            // Keep the poster.
+        }
 
         // The mic button is only offered where the browser can actually honour it
         // (Safari and Firefox on some platforms cannot), so nobody taps a dead control.
