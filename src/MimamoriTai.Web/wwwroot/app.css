@@ -751,3 +751,33 @@ main > *:nth-child(n+6) { animation-delay: 0.32s; }
     .status-stage::after { animation: none !important; }
     .hero-mascot canvas, .hero-mascot .mascot-poster { transition: none; }
 }
+
+/* 棒が下から伸びる。数字のカウントアップは入れない
+   ── 読み手は高齢の家族で、確定した値が一度で読めることの方が大事。 */
+@keyframes cp-bar-grow {
+    from { transform: scaleY(0); }
+    to   { transform: scaleY(1); }
+}
+.bar-chart svg rect {
+    transform-box: fill-box;
+    transform-origin: bottom;
+    animation: cp-bar-grow 520ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.bar-chart svg rect:nth-of-type(1)  { animation-delay: 0ms; }
+.bar-chart svg rect:nth-of-type(2)  { animation-delay: 26ms; }
+.bar-chart svg rect:nth-of-type(3)  { animation-delay: 52ms; }
+.bar-chart svg rect:nth-of-type(4)  { animation-delay: 78ms; }
+.bar-chart svg rect:nth-of-type(5)  { animation-delay: 104ms; }
+.bar-chart svg rect:nth-of-type(6)  { animation-delay: 130ms; }
+.bar-chart svg rect:nth-of-type(7)  { animation-delay: 156ms; }
+.bar-chart svg rect:nth-of-type(8)  { animation-delay: 182ms; }
+.bar-chart svg rect:nth-of-type(9)  { animation-delay: 208ms; }
+.bar-chart svg rect:nth-of-type(10) { animation-delay: 234ms; }
+.bar-chart svg rect:nth-of-type(11) { animation-delay: 260ms; }
+.bar-chart svg rect:nth-of-type(12) { animation-delay: 286ms; }
+.bar-chart svg rect:nth-of-type(13) { animation-delay: 312ms; }
+.bar-chart svg rect:nth-of-type(n+14) { animation-delay: 338ms; }
+
+@media (prefers-reduced-motion: reduce) {
+    .bar-chart svg rect { animation: none !important; }
+}
