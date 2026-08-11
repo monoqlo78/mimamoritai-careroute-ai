@@ -63,7 +63,8 @@ $payload = [ordered]@{
     windowDays = 7
     households = @(ConvertTo-Rows $ds.Tables[0])
     alerts     = @(ConvertTo-Rows $ds.Tables[1])
+    activity   = @(ConvertTo-Rows $ds.Tables[2])
 }
 
 $payload | ConvertTo-Json -Depth 6 | Set-Content -Path $OutFile -Encoding utf8
-Write-Host "Wrote $($payload.households.Count) households and $($payload.alerts.Count) alerts to $OutFile"
+Write-Host "Wrote $($payload.households.Count) households, $($payload.alerts.Count) alerts and $($payload.activity.Count) activity buckets to $OutFile"

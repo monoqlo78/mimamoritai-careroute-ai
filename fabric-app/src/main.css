@@ -26,3 +26,21 @@
     -moz-osx-font-smoothing: grayscale;
   }
 }
+
+/* Flow hint on the architecture diagram. Also the fallback when WebGL is
+   unavailable, so the picture still reads as "data is moving". */
+@keyframes dataflow-dash {
+  to {
+    stroke-dashoffset: -38;
+  }
+}
+
+.dataflow-dash {
+  animation: dataflow-dash 1.6s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dataflow-dash {
+    animation: none;
+  }
+}

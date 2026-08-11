@@ -1,3 +1,4 @@
+import { ActivityBucket } from './ActivityBucket.js';
 import { AlertRecord } from './AlertRecord.js';
 import { HouseholdSnapshot } from './HouseholdSnapshot.js';
 
@@ -9,6 +10,7 @@ import { HouseholdSnapshot } from './HouseholdSnapshot.js';
 export type MimamoriAdminSchema = {
   HouseholdSnapshot: HouseholdSnapshot;
   AlertRecord: AlertRecord;
+  ActivityBucket: ActivityBucket;
 };
 
-export const schema = [HouseholdSnapshot, AlertRecord];
+export const schema = [HouseholdSnapshot, AlertRecord, ActivityBucket];

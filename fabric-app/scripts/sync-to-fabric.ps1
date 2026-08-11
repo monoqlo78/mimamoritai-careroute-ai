@@ -92,6 +92,15 @@ function SnapshotId([string]$householdId) {
     return ([guid]::new($bytes)).ToString()
 }
 
+# Activity buckets have no natural key in the source, so derive one from the
+# grain (household + device + hour). Re-syncing an hour overwrites it in place.
+function BucketId([string]$householdId, [string]$deviceName, [datetime]$bucketStart) {
+    $md5 = [System.Security.Cryptography.MD5]::Create()
+    $key = "activity-bucket:$householdId|$deviceName|$($bucketStart.ToString('o'))"
+    $bytes = $md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($key))
+    return ([guid]::new($bytes)).ToString()
+}
+
 function Invoke-NonQuery([string]$sql, [hashtable]$params) {
     $cmd = $conn.CreateCommand()
     $cmd.CommandText = $sql
@@ -174,6 +183,35 @@ VALUES
         } | Out-Null
     }
     Write-Host "Synced $($snapshot.alerts.Count) alert records"
+
+    $activityMerge = @'
+MERGE dbo.ActivityBuckets AS t
+USING (SELECT @id AS id) AS s ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET
+    householdId = @householdId, householdName = @householdName, deviceName = @deviceName,
+    deviceType = @deviceType, bucketStart = @bucketStart, eventCount = @eventCount,
+    onCount = @onCount, source = @source
+WHEN NOT MATCHED THEN INSERT
+    (id, householdId, householdName, deviceName, deviceType, bucketStart, eventCount, onCount, source)
+VALUES
+    (@id, @householdId, @householdName, @deviceName, @deviceType, @bucketStart, @eventCount, @onCount, @source);
+'@
+
+    foreach ($b in $snapshot.activity) {
+        $bucketStart = [datetime]::Parse($b.BucketStart).ToUniversalTime()
+        Invoke-NonQuery $activityMerge @{
+            id            = [guid](BucketId $b.HouseholdId $b.DeviceName $bucketStart)
+            householdId   = Text $b.HouseholdId
+            householdName = Text $b.HouseholdName
+            deviceName    = Text $b.DeviceName
+            deviceType    = Text $b.DeviceType
+            bucketStart   = $bucketStart
+            eventCount    = [string]$b.EventCount
+            onCount       = [string]$b.OnCount
+            source        = Text $b.Source
+        } | Out-Null
+    }
+    Write-Host "Synced $($snapshot.activity.Count) activity buckets"
 }
 finally {
     $conn.Close()
