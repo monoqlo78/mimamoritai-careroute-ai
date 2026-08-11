@@ -125,18 +125,44 @@ main { max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; }
     box-shadow: 0 0 2px var(--cp-border), 0 1px 2px var(--cp-border);
 }
 .status-icon {
+    --risk-color: var(--cp-success);
+    position: relative;
     display: grid;
     place-items: center;
     width: 64px;
     height: 64px;
     border-radius: 50%;
     background: var(--cp-surface-soft);
-    color: var(--cp-success);
+    color: var(--risk-color);
     font-size: 32px;
     font-weight: 700;
+    flex: 0 0 auto;
 }
-.risk-medium .status-icon { color: var(--cp-warning); }
-.risk-high .status-icon { color: var(--cp-danger); }
+/* ミマモの顔。状態は右下のバッジと見出しで伝えるので、絵は常に同じ表情にする。
+   レベルごとに表情を変えると、注意が「安心そう」に見えてしまうことがあるため。 */
+.status-icon img {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    object-fit: cover;
+}
+.status-badge {
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    border: 2px solid var(--cp-surface);
+    background: var(--risk-color);
+    color: #fff;
+    font-size: 14px;
+    line-height: 1;
+}
+.risk-medium .status-icon { --risk-color: var(--cp-warning); }
+.risk-high .status-icon { --risk-color: var(--cp-danger); }
 .status-copy h2 { margin: 2px 0 4px; font-size: 30px; line-height: 1.25; }
 .status-reason { margin: 0; color: var(--cp-text-muted); }
 .eyebrow {

@@ -106,7 +106,10 @@ else
     }
 
     <section class="status-card risk-@_model.Risk.Level.ToString().ToLowerInvariant()">
-        <div class="status-icon" aria-hidden="true">@RiskIcon(_model.Risk.Level)</div>
+        <div class="status-icon" aria-hidden="true">
+            <img src="/images/mimamo-avatar.png" alt="" />
+            <span class="status-badge">@RiskIcon(_model.Risk.Level)</span>
+        </div>
         <div class="status-copy">
             <p class="eyebrow">@ResidentDisplayName(_model.ResidentName)の今日</p>
             <h2>@RiskLabel(_model.Risk.Level)</h2>
