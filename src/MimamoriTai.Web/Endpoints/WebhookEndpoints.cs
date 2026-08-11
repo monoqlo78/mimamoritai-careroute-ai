@@ -52,7 +52,9 @@ public static partial class WebhookEndpoints
         "コードが正しくないか、有効期限が切れています。設定画面で新しいコードを発行して、もう一度お試しください。";
 
     private const string ProcessingTimeoutText =
-        "メッセージを受け取りました。処理に時間がかかっているため、少し待ってからもう一度お試しください。";
+        "うまくお答えできませんでした。もう一度、短いことばで送ってみてください。\n" +
+        "「使い方」と送っていただくと、できることをご案内します。\n" +
+        "お急ぎのときは、画面下の「助けて」ボタンを押してください。";
 
     private static readonly TimeSpan EventProcessingTimeout = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan ReplyTimeout = TimeSpan.FromSeconds(5);
