@@ -1,0 +1,60 @@
+@using MimamoriTai.Web.Charts
+@using G = MimamoriTai.Web.Charts.BarChartGeometry
+
+@* Inline SVG so a chart needs no charting library, no JS interop and no extra
+   download: it renders server-side with the rest of the page and prints correctly.
+   All the maths lives in BarChartGeometry so it can be tested on its own. *@
+
+<figure class="bar-chart @Class">
+    @if (!string.IsNullOrWhiteSpace(Caption))
+    {
+        <figcaption>@Caption</figcaption>
+    }
+
+    @if (Points.Count == 0)
+    {
+        <p class="empty-state">まだ記録がありません</p>
+    }
+    else
+    {
+        var max = G.Max(Points);
+        var width = G.BarWidth(Points.Count);
+
+        <svg viewBox="0 0 @G.F(G.ViewWidth) @G.F(G.ViewHeight)" role="img" aria-label="@AriaLabel" preserveAspectRatio="none">
+            @* Baseline: without it a run of empty days reads as "no chart" rather than "nothing happened". *@
+            <line x1="0" y1="@G.F(G.PlotBottom)" x2="@G.F(G.ViewWidth)" y2="@G.F(G.PlotBottom)" class="bar-chart-axis" />
+
+            @for (var i = 0; i < Points.Count; i++)
+            {
+                var point = Points[i];
+
+                <rect x="@G.F(G.BarX(i, Points.Count))" y="@G.F(G.BarTop(point.Value, max))"
+                      width="@G.F(width)" height="@G.F(G.BarHeight(point.Value, max))"
+                      rx="1" class="@G.BarClass(point)">
+                    <title>@point.Label：@G.Describe(point, Unit)</title>
+                </rect>
+            }
+        </svg>
+
+        <ul class="bar-chart-labels" aria-hidden="true">
+            @foreach (var point in Points)
+            {
+                <li class="@(point.IsHighlighted ? "is-highlighted" : null)">@point.Label</li>
+            }
+        </ul>
+    }
+</figure>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<BarChartPoint> Points { get; set; } = [];
+
+    /// <summary>Read out to screen readers, which cannot see the bars.</summary>
+    [Parameter] public string AriaLabel { get; set; } = "推移グラフ";
+
+    [Parameter] public string? Caption { get; set; }
+
+    /// <summary>Appended to the value in each bar's tooltip, e.g. "回".</summary>
+    [Parameter] public string Unit { get; set; } = string.Empty;
+
+    [Parameter] public string? Class { get; set; }
+}

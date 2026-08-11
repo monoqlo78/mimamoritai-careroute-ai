@@ -122,7 +122,12 @@ public static partial class WebhookEndpoints
 
                 switch (evt.Type)
                 {
+                    // "join" is the group-chat counterpart of "follow": it fires when the bot
+                    // is invited into a group or multi-person room. Without it, adding the bot
+                    // to the family group registered nothing and the group never got an alert
+                    // until somebody happened to type into it.
                     case "follow":
+                    case "join":
                     {
                         var householdId = linkedHouseholdId
                             ?? (allowDefaultFallback ? await householdAccess.ResolveDefaultAsync(eventCt) : null);
@@ -146,6 +151,9 @@ public static partial class WebhookEndpoints
                     }
 
                     case "unfollow":
+                    // "leave" is the group-chat counterpart of "unfollow" (the bot was removed
+                    // from the group). It carries no reply token - there is nobody left to reply to.
+                    case "leave":
                         // Deactivate wherever this source is *currently* linked. This is
                         // independent of the default-fallback flag: "stop following" always
                         // means "stop notifying this source", never "stop notifying the
@@ -469,9 +477,15 @@ public static partial class WebhookEndpoints
     }
 
     /// <summary>
-    /// Resolves the id used as the LINE push `to` value: `userId` for 1:1 chats, or `groupId`
-    /// (source.type == "group") for group chats. `userId` is preferred when both are present.
+    /// Resolves the id used as the LINE push `to` value: `groupId` / `roomId` for a group or
+    /// multi-person chat, otherwise the 1:1 `userId`.
     /// </summary>
+    /// <remarks>
+    /// The group id must win when present. LINE sends BOTH `groupId` and the speaking
+    /// member's `userId` on a group message, so preferring `userId` registered the family
+    /// member who happened to speak first instead of the group itself - every later alert
+    /// then went to that one person privately and the rest of the family saw nothing.
+    /// </remarks>
     private static (string? SourceId, string? SourceType) ExtractSource(JsonElement evt)
     {
         if (!evt.TryGetProperty("source", out var source) || source.ValueKind != JsonValueKind.Object)
@@ -481,14 +495,22 @@ public static partial class WebhookEndpoints
 
         var sourceType = source.TryGetProperty("type", out var typeElement) ? typeElement.GetString() : null;
 
-        if (source.TryGetProperty("userId", out var userIdElement) && userIdElement.GetString() is { } userId)
-        {
-            return (userId, sourceType);
-        }
-
-        if (source.TryGetProperty("groupId", out var groupIdElement) && groupIdElement.GetString() is { } groupId)
+        if (source.TryGetProperty("groupId", out var groupIdElement)
+            && groupIdElement.GetString() is { Length: > 0 } groupId)
         {
             return (groupId, sourceType);
+        }
+
+        if (source.TryGetProperty("roomId", out var roomIdElement)
+            && roomIdElement.GetString() is { Length: > 0 } roomId)
+        {
+            return (roomId, sourceType);
+        }
+
+        if (source.TryGetProperty("userId", out var userIdElement)
+            && userIdElement.GetString() is { Length: > 0 } userId)
+        {
+            return (userId, sourceType);
         }
 
         return (null, sourceType);

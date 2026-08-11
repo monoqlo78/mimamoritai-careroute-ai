@@ -191,6 +191,31 @@ main { max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; }
 .chat-input { display: flex; gap: 8px; }
 .chat-input input { flex: 1; }
 
+/* Voice input. The mic sits quietly beside the box until it is listening, then
+   turns solid so it is obvious at a glance that the microphone is live. */
+.mic-button {
+    flex: 0 0 auto;
+    min-width: 44px;
+    padding: 8px 12px;
+    background: var(--cp-surface);
+    color: var(--cp-text);
+    border-color: var(--cp-border-strong);
+    font-size: 18px;
+    line-height: 1;
+}
+
+.mic-button.listening {
+    background: var(--cp-accent);
+    color: var(--cp-accent-fg);
+    border-color: var(--cp-accent);
+}
+
+.listening-hint {
+    margin: 8px 0 0;
+    font-size: 13px;
+    color: var(--cp-text-muted);
+}
+
 button, a.ghost {
     display: inline-flex;
     align-items: center;
@@ -292,7 +317,7 @@ a.ghost.small { min-height: 32px; padding: 4px 10px; font-size: 12px; }
 /* Inline "名前・部屋を直す" form on a dashboard device card. */
 .device-rename-open { display: inline-block; margin-top: 10px; }
 .device-rename { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--cp-border); }
-.device-rename label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--cp-muted); }
+.device-rename label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--cp-text-muted); }
 .device-rename input { height: 36px; padding: 0 10px; border: 1px solid var(--cp-border); border-radius: 8px; font-size: 14px; color: var(--cp-text); }
 .device-rename-actions { display: flex; align-items: center; gap: 10px; }
 
@@ -327,6 +352,52 @@ a.ghost.small { min-height: 32px; padding: 4px 10px; font-size: 12px; }
 .history li { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
 .history .date { min-width: 38px; color: var(--cp-text-muted); font-size: 11px; }
 .history .bar { height: 6px; border-radius: 0.625rem; background: var(--cp-accent); }
+
+/* Charts ------------------------------------------------------------------
+   Inline SVG stretched to the card width, so the bars stay readable on a phone
+   without any charting library. */
+.bar-chart { margin: 0; }
+.bar-chart figcaption {
+    margin-bottom: 6px;
+    color: var(--cp-text-muted);
+    font-size: 12px;
+    font-weight: 600;
+}
+.bar-chart svg {
+    display: block;
+    width: 100%;
+    height: 96px;
+    overflow: visible;
+}
+.bar-chart-axis { stroke: var(--cp-border); stroke-width: 0.4; vector-effect: non-scaling-stroke; }
+.bar-chart-bar { fill: var(--cp-accent); opacity: 0.35; }
+.bar-chart-bar.is-highlighted { opacity: 1; }
+.bar-chart-labels {
+    display: flex;
+    justify-content: space-between;
+    list-style: none;
+    margin: 4px 0 0;
+    padding: 0;
+    color: var(--cp-text-muted);
+    font-size: 10px;
+}
+/* Only the ends and today are labelled: a fortnight of dates would not fit on a phone. */
+.bar-chart-labels li { flex: 1 1 0; text-align: center; visibility: hidden; }
+.bar-chart-labels li:first-child,
+.bar-chart-labels li:last-child,
+.bar-chart-labels li.is-highlighted { visibility: visible; }
+.bar-chart-labels li.is-highlighted { color: var(--cp-text); font-weight: 600; }
+
+.trend-card { margin-bottom: 16px; }
+.trend-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 20px;
+    margin-top: 12px;
+}
+.trend-note { margin: 12px 0 0; color: var(--cp-text-muted); font-size: 12px; }
+.bar-chart.device-trend { margin-bottom: 12px; }
+.bar-chart.device-trend svg { height: 72px; }
 
 .muted { color: var(--cp-text-muted); font-size: 12px; }
 .loading { color: var(--cp-text-muted); }

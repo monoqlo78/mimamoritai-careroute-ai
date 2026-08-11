@@ -133,6 +133,32 @@ else
         </div>
     </section>
 
+    <section class="card trend-card" aria-label="最近の推移">
+        <div class="section-head">
+            <div>
+                <p class="eyebrow">最近の推移</p>
+                <h2>いつもと比べてどうか</h2>
+            </div>
+            <span class="summary-meta">直近@(_model.Recent.Count)日間</span>
+        </div>
+
+        <div class="trend-grid">
+            <div class="trend-item">
+                <BarChart Points="UsageTrend()" Caption="家電の利用回数" Unit="回"
+                          AriaLabel="@TrendAriaLabel("家電の利用回数", d => d.DeviceUsageCount, "回")" />
+            </div>
+            <div class="trend-item">
+                <BarChart Points="WakeUpTrend()" Caption="起きた時間"
+                          AriaLabel="@WakeUpAriaLabel()" />
+            </div>
+            <div class="trend-item">
+                <BarChart Points="NightTrend()" Caption="夜間の動き" Unit="回"
+                          AriaLabel="@TrendAriaLabel("夜間の動き", d => d.NightActivityCount, "回")" />
+            </div>
+        </div>
+        <p class="trend-note">濃い色が今日です。棒にふれると日付と回数が出ます。</p>
+    </section>
+
     <section class="primary-grid">
         <article class="card assistant-card">
             <div class="section-head">
@@ -160,9 +186,22 @@ else
             </div>
             <div class="chat-input">
                 <input @bind="_input" @bind:event="oninput" @onkeydown="OnKeyDown"
-                       placeholder="例：今日のお母さんの様子は？" disabled="@_busy" />
+                       placeholder="例：今日のお母さんの様子は？" disabled="@(_busy || _listening)" />
+                @if (_speechSupported)
+                {
+                    <button class="mic-button @(_listening ? "listening" : null)"
+                            @onclick="ToggleListeningAsync" disabled="@_busy"
+                            title="@(_listening ? "聞き取りをやめる" : "話しかけて入力する")"
+                            aria-label="@(_listening ? "聞き取りをやめる" : "話しかけて入力する")">
+                        @(_listening ? "■" : "🎤")
+                    </button>
+                }
                 <button @onclick="SendAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_input))">聞く</button>
             </div>
+            @if (_listening)
+            {
+                <p class="listening-hint" role="status" aria-live="polite">お話しください…（例：「リビングの電気を消して」）</p>
+            }
             <div class="quick">
                 <button class="suggestion" @onclick="@(() => SendSampleAsync("今日のお母さんどう？"))" disabled="@_busy">今日の様子は？</button>
                 <button class="suggestion" @onclick="@(() => SendSampleAsync("今日最初に活動したのは何時？"))" disabled="@_busy">最初に動いた時間は？</button>
@@ -406,6 +445,11 @@ else
     private string _editNameDraft = string.Empty;
     private string _editRoomDraft = string.Empty;
 
+    // Voice input: speaking is easier than typing for the people this app is for.
+    // Recognition runs in the browser (Web Speech API); we only receive the text.
+    private bool _speechSupported;
+    private bool _listening;
+
     // 30s: the dashboard reads every appliance each tick, so it refreshes half as often
     // as the single-device detail page to stay well inside SwitchBot's daily API allowance.
     private static readonly TimeSpan LiveRefreshInterval = TimeSpan.FromSeconds(30);
@@ -447,6 +491,69 @@ else
         // themselves honest instead of freezing on whatever was true when the page opened.
         _refreshTimer = new PeriodicTimer(LiveRefreshInterval);
         _ = RefreshLoopAsync(_refreshTimer, _refreshCts.Token);
+
+        // The mic button is only offered where the browser can actually honour it
+        // (Safari and Firefox on some platforms cannot), so nobody taps a dead control.
+        try
+        {
+            _speechSupported = await JS.InvokeAsync<bool>("mimamoriUi.speechSupported");
+            if (_speechSupported)
+            {
+                StateHasChanged();
+            }
+        }
+        catch (JSException)
+        {
+            // Interop still settling; the keyboard path is unaffected.
+        }
+    }
+
+    /// <summary>
+    /// Starts (or cancels) a single voice capture and puts the recognised words into the
+    /// same text box the keyboard writes to, so the family can review and correct them
+    /// before anything is sent. Voice never executes a command on its own - a mis-heard
+    /// "電気を消して" should not silently switch off an appliance.
+    /// </summary>
+    private async Task ToggleListeningAsync()
+    {
+        if (_listening)
+        {
+            _listening = false;
+            try
+            {
+                await JS.InvokeVoidAsync("mimamoriUi.stopListening");
+            }
+            catch (JSException)
+            {
+                // Nothing to stop.
+            }
+
+            return;
+        }
+
+        _listening = true;
+        StateHasChanged();
+
+        string? heard = null;
+        try
+        {
+            heard = await JS.InvokeAsync<string>("mimamoriUi.listenOnce", "ja-JP");
+        }
+        catch (JSException)
+        {
+            // Microphone denied or unavailable: fall through and leave the box as it was.
+        }
+        finally
+        {
+            _listening = false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(heard))
+        {
+            _input = heard.Trim();
+        }
+
+        StateHasChanged();
     }
 
     private async Task RefreshLoopAsync(PeriodicTimer timer, CancellationToken ct)
@@ -949,6 +1056,76 @@ else
         RiskLevel.Medium => "少し気になる",
         _ => "いつもどおり"
     };
+
+    // ---- Trend charts -------------------------------------------------------
+    // All three read the daily figures the dashboard already loads, so drawing them
+    // costs no extra query. Today is highlighted so the family can see at a glance
+    // whether today stands out from the fortnight behind it.
+
+    private IReadOnlyList<BarChartPoint> UsageTrend() =>
+        TrendPoints(d => d.DeviceUsageCount);
+
+    private IReadOnlyList<BarChartPoint> NightTrend() =>
+        TrendPoints(d => d.NightActivityCount);
+
+    /// <summary>
+    /// Getting-up time as hours past midnight, so a later start makes a taller bar.
+    /// Days with no activity at all stay at zero rather than being dropped: a missing
+    /// morning is the single most important thing on this screen. The tooltip shows a
+    /// real clock time, because "6.5時" is not how anyone reads a wake-up time.
+    /// </summary>
+    private IReadOnlyList<BarChartPoint> WakeUpTrend()
+    {
+        if (_model is null)
+        {
+            return [];
+        }
+
+        var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
+
+        return [.. _model.Recent.Select(d => new BarChartPoint(
+            d.Date.ToString("M/d"),
+            d.FirstActivityTime is { } t ? Math.Round(t.ToTimeSpan().TotalHours, 2) : 0,
+            d.Date == today,
+            d.FirstActivityTime?.ToString("H\\:mm") ?? "記録なし"))];
+    }
+
+    private IReadOnlyList<BarChartPoint> TrendPoints(Func<DailyActivity, double> value)
+    {
+        if (_model is null)
+        {
+            return [];
+        }
+
+        var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
+
+        return [.. _model.Recent.Select(d =>
+            new BarChartPoint(d.Date.ToString("M/d"), value(d), d.Date == today))];
+    }
+
+    /// <summary>Spells the series out for screen readers, which cannot read the bars.</summary>
+    private string TrendAriaLabel(string title, Func<DailyActivity, int> value, string unit)
+    {
+        if (_model is null || _model.Recent.Count == 0)
+        {
+            return $"{title}：まだ記録がありません";
+        }
+
+        var parts = _model.Recent.Select(d => $"{d.Date:M月d日} {value(d)}{unit}");
+        return $"{title}：{string.Join("、", parts)}";
+    }
+
+    private string WakeUpAriaLabel()
+    {
+        if (_model is null || _model.Recent.Count == 0)
+        {
+            return "起きた時間：まだ記録がありません";
+        }
+
+        var parts = _model.Recent.Select(d =>
+            $"{d.Date:M月d日} {d.FirstActivityTime?.ToString("H\\:mm") ?? "記録なし"}");
+        return $"起きた時間：{string.Join("、", parts)}";
+    }
 
     private static string RiskIcon(RiskLevel level) => level switch
     {

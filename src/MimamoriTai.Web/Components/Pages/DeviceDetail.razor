@@ -242,12 +242,16 @@ else
             }
             else
             {
+                @* Scaled against the busiest day: the old fixed 12px-per-use bar hit its
+                   200px cap at 17 uses, so every busy day looked identical. *@
+                <BarChart Points="UsageBars()" Unit="回"
+                          AriaLabel="@UsageBarsAriaLabel()" Class="device-trend" />
+
                 <ul class="history">
                     @foreach (var day in _model.DailyBreakdown.AsEnumerable().Reverse())
                     {
                         <li>
                             <span class="date">@day.Date.ToString("M/d")</span>
-                            <span class="bar" style="width:@(Math.Min(day.OnCount * 12, 200))px"></span>
                             <span class="muted">@day.OnCount 回</span>
                         </li>
                     }
@@ -280,6 +284,31 @@ else
     private bool HasNamingChanges =>
         _model is not null
         && (_nameDraft.Trim() != _model.Name || (_roomDraft.Trim() != _model.Room));
+
+    /// <summary>Oldest day on the left, so the chart reads left-to-right like a calendar.</summary>
+    private IReadOnlyList<BarChartPoint> UsageBars()
+    {
+        if (_model is null)
+        {
+            return [];
+        }
+
+        var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
+
+        return [.. _model.DailyBreakdown.Select(d =>
+            new BarChartPoint(d.Date.ToString("M/d"), d.OnCount, d.Date == today))];
+    }
+
+    private string UsageBarsAriaLabel()
+    {
+        if (_model is null || _model.DailyBreakdown.Count == 0)
+        {
+            return "使用回数の記録はまだありません";
+        }
+
+        var parts = _model.DailyBreakdown.Select(d => $"{d.Date:M月d日} {d.OnCount}回");
+        return $"日ごとの使用回数：{string.Join("、", parts)}";
+    }
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
 
