@@ -101,6 +101,37 @@ public class DeviceSyncServiceTests
     }
 
     [Fact]
+    public async Task SyncAsync_Never_Overwrites_The_Name_And_Room_The_Family_Set_By_Hand()
+    {
+        // The reason overrides exist: SwitchBot has no notion of a room, so the raw values
+        // are wrong on screen, and before this the next poll silently undid every correction.
+        using var db = await new TestDb().SeedAsync();
+        var provider = new FakeDeviceProvider
+        {
+            Devices = [new ProviderDevice("sb-light-1", "Plug Mini 92", DeviceType.Light, "Hub 02-202502")]
+        };
+        var sync = Create(db, provider);
+        await sync.SyncAsync(db.HouseholdId);
+
+        var device = db.Context.Devices.Single();
+        device.DisplayNameOverride = "台所の電気";
+        device.RoomOverride = "台所";
+        await db.Context.SaveChangesAsync();
+
+        await sync.SyncAsync(db.HouseholdId);
+        // Even when the provider then reports something different, the correction stands.
+        provider.Devices = [new ProviderDevice("sb-light-1", "Plug Mini 92 (renamed)", DeviceType.Light, "Hub 02-202502")];
+        await sync.SyncAsync(db.HouseholdId);
+
+        device = db.Context.Devices.Single();
+        Assert.Equal("台所の電気", device.DisplayName);
+        Assert.Equal("台所", device.DisplayRoom);
+        // The provider values keep tracking the hub so future syncs can still match on them.
+        Assert.Equal("Plug Mini 92 (renamed)", device.Name);
+        Assert.Equal("Hub 02-202502", device.Room);
+    }
+
+    [Fact]
     public async Task SyncAsync_Deactivates_Device_That_Vanished_From_Provider()
     {
         using var db = await new TestDb().SeedAsync();

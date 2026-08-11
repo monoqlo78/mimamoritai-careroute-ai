@@ -26,6 +26,10 @@ public sealed record DeviceDetailModel(
     string Name,
     string Alias,
     string Room,
+    /// <summary>The provider's own label, shown only as a hint on the rename form.</summary>
+    string ProviderName,
+    /// <summary>The provider's own room value, shown only as a hint on the rename form.</summary>
+    string ProviderRoom,
     string DeviceType,
     string Provider,
     bool IsEnabled,
@@ -33,6 +37,14 @@ public sealed record DeviceDetailModel(
     bool RemoteControlAllowed,
     string SafetyClass,
     bool IsOn,
+    /// <summary>
+    /// False when neither the hub nor the recorded history can say whether the appliance is
+    /// on. Rendering that case as "停止中" told the family the light was off when in truth
+    /// nothing had been read back at all.
+    /// </summary>
+    bool IsStateKnown,
+    /// <summary>True when <see cref="IsOn"/> came from a live read; false when it was recovered from the event log.</summary>
+    bool IsStateLive,
     double? PowerWatts,
     DateTimeOffset? StatusObservedAtUtc,
     DateTimeOffset? LastEventAtUtc,
@@ -52,7 +64,7 @@ public sealed record DeviceDetailModel(
 /// </summary>
 public sealed class DeviceDetailService(
     AppDbContext db,
-    IDeviceProviderFactory deviceProviderFactory,
+    IDeviceProvider provider,
     IDataSourceContext dataSourceContext,
     HouseholdAccessService householdAccess,
     DeviceInsightService deviceInsight,
@@ -84,13 +96,26 @@ public sealed class DeviceDetailService(
         }
 
         // Same rule as DashboardService.LoadAsync: the ambient data-source context must
-        // be set explicitly so IDeviceProvider resolves the correct concrete provider.
+        // be set explicitly so the IDeviceProvider decorator resolves the correct concrete
+        // provider - including this household's own SwitchBot credentials, which the
+        // factory-based lookup this replaced never saw.
         dataSourceContext.Mode = household.DataSourceMode;
         dataSourceContext.HouseholdId = household.Id;
-        var provider = deviceProviderFactory.Get(household.DataSourceMode);
 
         var status = await provider.GetStatusAsync(device.ExternalDeviceId, ct);
         var summary = await deviceInsight.GetUsageSummaryAsync(household.Id, device.Id, ct: ct);
+
+        // Infrared remotes have no status endpoint at all, and a hub that is offline or
+        // rate-limited returns nothing either. In both cases the last recorded event is the
+        // best answer available - notably the one this app wrote itself when the family
+        // pressed "つける", which is exactly the moment the old code claimed "停止中".
+        var lastEvent = await db.DeviceEvents
+            .Where(e => e.DeviceId == device.Id)
+            .OrderByDescending(e => e.OccurredAtUtc)
+            .Select(e => new { e.State, e.OccurredAtUtc })
+            .FirstOrDefaultAsync(ct);
+
+        var isOn = status?.IsOn ?? string.Equals(lastEvent?.State, "on", StringComparison.OrdinalIgnoreCase);
 
         var dailyBreakdown = summary?.DailyBreakdown
             .Select(d => new DeviceDailyUsageItem(d.Date, d.OnCount, d.OffCount))
@@ -107,8 +132,10 @@ public sealed class DeviceDetailService(
             household.Name,
             household.DataSourceMode,
             device.Id,
-            device.Name,
+            device.DisplayName,
             device.Alias,
+            device.DisplayRoom,
+            device.Name,
             device.Room,
             device.DeviceType.ToString(),
             device.Provider.ToString(),
@@ -116,9 +143,11 @@ public sealed class DeviceDetailService(
             device.IsActive,
             device.RemoteControlAllowed,
             device.SafetyClass.ToString(),
-            status?.IsOn ?? false,
+            status?.IsOn ?? isOn,
+            status is not null || lastEvent is not null,
+            status is not null,
             status?.PowerWatts,
-            status?.ObservedAtUtc,
+            status?.ObservedAtUtc ?? lastEvent?.OccurredAtUtc,
             summary?.LastEventAtUtc,
             summary?.LastUsedAtUtc,
             summary?.TodayUsageCount ?? 0,

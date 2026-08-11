@@ -7,6 +7,11 @@ using MimamoriTai.Infrastructure.Data;
 
 namespace MimamoriTai.Web.Services;
 
+/// <summary>
+/// One appliance as the family sees it. <paramref name="Name"/>/<paramref name="Room"/> are
+/// already the display values (the family's own wording when they set one, otherwise the
+/// provider's), so no caller has to know the override rules.
+/// </summary>
 public sealed record DeviceCard(
     Guid Id,
     string Name,
@@ -14,6 +19,8 @@ public sealed record DeviceCard(
     string Room,
     string DeviceType,
     bool IsOn,
+    /// <summary>False when neither a live read nor any recorded event can say - shown as "確認中" rather than a wrong "停止中".</summary>
+    bool IsStateKnown,
     DateTimeOffset? LastUsedUtc,
     int TodayUsageCount,
     bool RemoteControlAllowed,
@@ -41,7 +48,7 @@ public sealed record DashboardModel(
 /// <summary>Read model builder for the Blazor dashboard.</summary>
 public sealed class DashboardService(
     AppDbContext db,
-    IDeviceProviderFactory deviceProviderFactory,
+    IDeviceProvider deviceProvider,
     IDataSourceContext dataSourceContext,
     HouseholdAccessService householdAccess,
     IntegrationStatus integrations,
@@ -65,12 +72,16 @@ public sealed class DashboardService(
 
         // Every unit of work must set the ambient data-source context explicitly so the
         // IDeviceProvider decorator resolves the correct concrete provider for THIS household.
+        // Going through the decorator (rather than the factory) is what makes it use the
+        // household's OWN SwitchBot credentials: asking the factory directly only ever built
+        // a provider from the global options, so a household that connected its account in
+        // Settings got no status back at all and every appliance rendered as "停止中".
         dataSourceContext.Mode = household.DataSourceMode;
         dataSourceContext.HouseholdId = household.Id;
-        var deviceProvider = deviceProviderFactory.Get(household.DataSourceMode);
 
         var people = await db.People.Where(p => p.HouseholdId == householdId).OrderBy(p => p.Role).ToListAsync(ct);
-        var devices = await db.Devices.Where(d => d.HouseholdId == householdId).OrderBy(d => d.Name).ToListAsync(ct);
+        var devices = await db.Devices.Where(d => d.HouseholdId == householdId).ToListAsync(ct);
+        devices = [.. devices.OrderBy(d => d.DisplayName, StringComparer.Ordinal)];
 
         var activity = new ActivityService(db);
         var recent = await activity.GetRecentAsync(householdId, 14, ct);
@@ -96,20 +107,31 @@ public sealed class DashboardService(
         foreach (var device in devices)
         {
             var status = await deviceProvider.GetStatusAsync(device.ExternalDeviceId, ct);
+
+            // A null status means the hub told us nothing (offline, rate-limited, or an
+            // infrared remote that has no status endpoint). Falling back to the newest
+            // recorded event keeps the card honest instead of defaulting to "停止中".
+            var lastEvent = await db.DeviceEvents
+                .Where(e => e.DeviceId == device.Id)
+                .OrderByDescending(e => e.OccurredAtUtc)
+                .Select(e => e.State)
+                .FirstOrDefaultAsync(ct);
+
             cards.Add(new DeviceCard(
                 device.Id,
-                device.Name,
+                device.DisplayName,
                 device.Alias,
-                device.Room,
+                device.DisplayRoom,
                 device.DeviceType.ToString(),
-                status?.IsOn ?? false,
+                status?.IsOn ?? string.Equals(lastEvent, "on", StringComparison.OrdinalIgnoreCase),
+                status is not null || lastEvent is not null,
                 lastUsed.TryGetValue(device.Id, out var last) ? last : null,
                 todayEvents.Count(e => e.DeviceId == device.Id && e.State.Equals("on", StringComparison.OrdinalIgnoreCase)),
                 device.RemoteControlAllowed,
                 device.SafetyClass.ToString()));
         }
 
-        var deviceNames = devices.ToDictionary(d => d.Id, d => d.Name);
+        var deviceNames = devices.ToDictionary(d => d.Id, d => d.DisplayName);
 
         var timeline = await db.DeviceEvents
             .Where(e => e.HouseholdId == householdId)
