@@ -84,7 +84,8 @@ public sealed class SwitchBotPollingCycleService(IAppDbContext db, TimeProvider 
                 ? await snapshotProvider.GetStatusSnapshotAsync(device.ExternalDeviceId, ct)
                 : new DeviceStatusSnapshot(await provider.GetStatusAsync(device.ExternalDeviceId, ct), null);
 
-            var deviceEvent = await PollStateChangeAsync(device, snapshot.Status, now, ct);
+            var deviceEvent = await PollStateChangeAsync(
+                device, EffectiveState(snapshot.Status, snapshot.PlugMiniReading), now, ct);
             if (deviceEvent is not null)
             {
                 createdEvents.Add((deviceEvent, device));
@@ -106,6 +107,45 @@ public sealed class SwitchBotPollingCycleService(IAppDbContext db, TimeProvider 
         }
 
         return new SwitchBotPollingCycleResult(devices.Count, createdEvents, createdReadings);
+    }
+
+    /// <summary>
+    /// Draw at or above which the appliance plugged into a Plug Mini counts as actually
+    /// in use. A Plug Mini that is switched on but has nothing running behind it still
+    /// reports a small standby draw, so a bare "the socket is energised" reading is not
+    /// evidence that anyone used anything.
+    ///
+    /// Deliberately low. For a watching service, failing to notice a low-power appliance
+    /// someone did use is far worse than counting a standby load as use, so this only
+    /// has to clear the plug's own vampire draw -- it is not a "meaningful appliance"
+    /// threshold.
+    /// </summary>
+    public const double InUseWattsThreshold = 1.0;
+
+    /// <summary>
+    /// Rewrites the raw socket state into what the resident actually did.
+    ///
+    /// Without this, life rhythm is only ever derived from the socket being switched
+    /// on or off -- which for a Plug Mini left permanently energised means a rice
+    /// cooker, kettle or vacuum being used behind it produces no activity at all. When
+    /// this cycle carries Plug Mini telemetry the observed power draw decides the
+    /// state instead: rising above <see cref="InUseWattsThreshold"/> is a use starting,
+    /// falling back below it is that use ending. Devices with no telemetry (a bot, a
+    /// motion sensor, the demo provider) keep their reported state untouched.
+    /// </summary>
+    internal static ProviderDeviceStatus? EffectiveState(
+        ProviderDeviceStatus? status, PlugMiniPowerReading? reading)
+    {
+        if (status is null || reading?.ApproxWatts is not { } watts)
+        {
+            return status;
+        }
+
+        // A socket switched off cannot have an appliance running behind it, whatever a
+        // stale or noisy current sample says.
+        var inUse = status.IsOn && watts >= InUseWattsThreshold;
+
+        return status with { State = inUse ? "on" : "off", PowerWatts = watts };
     }
 
     private async Task<DeviceEvent?> PollStateChangeAsync(

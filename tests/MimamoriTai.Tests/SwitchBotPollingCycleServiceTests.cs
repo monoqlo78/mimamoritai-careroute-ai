@@ -312,7 +312,7 @@ public class SwitchBotPollingCycleServiceTests
         var client = new FakeSwitchBotClient
         {
             DeviceStatusResponse = """
-                {"statusCode":100,"message":"success","body":{"deviceId":"BBBBBBBBBBBB","deviceType":"Plug Mini (JP)","voltage":100.5,"weight":12.3,"electricityOfDay":30,"electricCurrent":0.5}}
+                {"statusCode":100,"message":"success","body":{"deviceId":"BBBBBBBBBBBB","deviceType":"Plug Mini (JP)","voltage":100.5,"weight":12.3,"electricityOfDay":30,"electricCurrent":314}}
                 """
         };
         var provider = new SwitchBotDeviceProvider(client, Microsoft.Extensions.Logging.Abstractions.NullLogger<SwitchBotDeviceProvider>.Instance);
@@ -325,11 +325,11 @@ public class SwitchBotPollingCycleServiceTests
         Assert.Equal("BBBBBBBBBBBB", client.StatusRequests[0]);
 
         var createdEvent = Assert.Single(result.CreatedEvents);
-        Assert.Equal("on", createdEvent.Event.State); // electricCurrent > 0 => on
+        Assert.Equal("on", createdEvent.Event.State); // 314mA at 100.5V => ~31W, well in use
 
         var createdReading = Assert.Single(result.CreatedReadings);
         Assert.Equal(100.5, createdReading.Reading.VoltageV);
-        Assert.Equal(0.5, createdReading.Reading.CurrentMa);
+        Assert.Equal(314, createdReading.Reading.CurrentMa);
         Assert.Equal(12.3, createdReading.Reading.DailyEnergyWh);
         Assert.Equal(30, createdReading.Reading.UsageMinutesToday);
     }
@@ -372,5 +372,83 @@ public class SwitchBotPollingCycleServiceTests
 
         Assert.Equal(1, result.DeviceCount);
         Assert.Empty(result.CreatedEvents);
+    }
+
+    /// <summary>
+    /// A Plug Mini that stays energised all day while an appliance is switched on and
+    /// off behind it must still produce life-rhythm events -- the socket state alone
+    /// would report a single "on" in the morning and nothing else ever again.
+    /// </summary>
+    [Fact]
+    public async Task PollHouseholdAsync_Records_Use_From_Power_Draw_While_The_Socket_Stays_On()
+    {
+        var device = SwitchBotDevice("dev-1");
+        using var db = await new TestDb().SeedAsync(device);
+        var clock = new FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        var service = new SwitchBotPollingCycleService(db.Context, clock);
+        var provider = new FakePollingDeviceProvider();
+
+        // Socket on, nothing running behind it: standby draw only.
+        provider.Statuses[device.ExternalDeviceId] = new ProviderDeviceStatus(device.ExternalDeviceId, "on", null, clock.GetUtcNow());
+        provider.PlugMiniReadings[device.ExternalDeviceId] =
+            new PlugMiniPowerReading(device.ExternalDeviceId, 100.0, 2.0, 0, 0, clock.GetUtcNow());
+        var idle = await service.PollHouseholdAsync(db.HouseholdId, provider);
+        Assert.Equal("off", Assert.Single(idle.CreatedEvents).Event.State);
+
+        // The socket never changes, but an appliance starts drawing power.
+        clock.Advance(TimeSpan.FromMinutes(5));
+        provider.Statuses[device.ExternalDeviceId] = new ProviderDeviceStatus(device.ExternalDeviceId, "on", null, clock.GetUtcNow());
+        provider.PlugMiniReadings[device.ExternalDeviceId] =
+            new PlugMiniPowerReading(device.ExternalDeviceId, 100.0, 400.0, 3, 5, clock.GetUtcNow());
+        var inUse = await service.PollHouseholdAsync(db.HouseholdId, provider);
+
+        var started = Assert.Single(inUse.CreatedEvents);
+        Assert.Equal("on", started.Event.State);
+        Assert.Equal(40.0, started.Event.PowerWatts);
+
+        // ...and stops again, still without the socket changing.
+        clock.Advance(TimeSpan.FromMinutes(5));
+        provider.Statuses[device.ExternalDeviceId] = new ProviderDeviceStatus(device.ExternalDeviceId, "on", null, clock.GetUtcNow());
+        provider.PlugMiniReadings[device.ExternalDeviceId] =
+            new PlugMiniPowerReading(device.ExternalDeviceId, 100.0, 2.0, 6, 10, clock.GetUtcNow());
+        var finished = await service.PollHouseholdAsync(db.HouseholdId, provider);
+
+        Assert.Equal("off", Assert.Single(finished.CreatedEvents).Event.State);
+    }
+
+    /// <summary>A switched-off socket is never "in use", however noisy the current sample.</summary>
+    [Fact]
+    public async Task PollHouseholdAsync_Never_Reports_Use_While_The_Socket_Is_Off()
+    {
+        var device = SwitchBotDevice("dev-1");
+        using var db = await new TestDb().SeedAsync(device);
+        var now = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var service = new SwitchBotPollingCycleService(db.Context, new FakeTimeProvider(now));
+        var provider = new FakePollingDeviceProvider();
+
+        provider.Statuses[device.ExternalDeviceId] = new ProviderDeviceStatus(device.ExternalDeviceId, "off", null, now);
+        provider.PlugMiniReadings[device.ExternalDeviceId] =
+            new PlugMiniPowerReading(device.ExternalDeviceId, 100.0, 400.0, 0, 0, now);
+
+        var result = await service.PollHouseholdAsync(db.HouseholdId, provider);
+
+        Assert.Equal("off", Assert.Single(result.CreatedEvents).Event.State);
+    }
+
+    /// <summary>Devices with no telemetry at all keep reporting their own state.</summary>
+    [Fact]
+    public async Task PollHouseholdAsync_Keeps_Reported_State_When_There_Is_No_Telemetry()
+    {
+        var device = SwitchBotDevice("dev-1", DeviceType.Light);
+        using var db = await new TestDb().SeedAsync(device);
+        var now = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var service = new SwitchBotPollingCycleService(db.Context, new FakeTimeProvider(now));
+        var provider = new FakePollingDeviceProvider();
+
+        provider.Statuses[device.ExternalDeviceId] = new ProviderDeviceStatus(device.ExternalDeviceId, "on", null, now);
+
+        var result = await service.PollHouseholdAsync(db.HouseholdId, provider);
+
+        Assert.Equal("on", Assert.Single(result.CreatedEvents).Event.State);
     }
 }

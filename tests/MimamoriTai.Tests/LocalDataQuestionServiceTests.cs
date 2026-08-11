@@ -1,0 +1,129 @@
+using Microsoft.EntityFrameworkCore;
+using MimamoriTai.Core.Application;
+using MimamoriTai.Core.Domain;
+
+namespace MimamoriTai.Tests;
+
+/// <summary>
+/// The local answer is the only source of facts a summarising model is given, so
+/// anything missing here is something the model is free to invent. These tests pin the
+/// two things it previously had to guess: how much power is being drawn, and how many
+/// appliances actually exist.
+/// </summary>
+public sealed class LocalDataQuestionServiceTests
+{
+    private static Device Plug(string name) => new()
+    {
+        ExternalDeviceId = "ext-" + name,
+        Name = name,
+        Alias = name,
+        DeviceType = DeviceType.Plug,
+        Room = "リビング",
+        Provider = DeviceProviderKind.SwitchBot,
+        IsActive = true
+    };
+
+    private static LocalDataQuestionService Service(TestDb db, DateTimeOffset now) =>
+        new(db.Context, new FakeTimeProvider(now));
+
+    private static async Task AddReadingAsync(TestDb db, Device device, DateTimeOffset at, double watts)
+    {
+        db.Context.PlugMiniReadings.Add(new PlugMiniReading
+        {
+            HouseholdId = db.HouseholdId,
+            DeviceId = device.Id,
+            VoltageV = 104.1,
+            CurrentMa = watts / 104.1 * 1000,
+            ApproxWatts = watts,
+            DailyEnergyWh = 12.5,
+            UsageMinutesToday = 90,
+            OccurredAtUtc = at,
+            ReceivedAtUtc = at
+        });
+
+        await db.Context.SaveChangesAsync();
+    }
+
+    [Fact]
+    public async Task Power_Question_Reports_The_Measured_Values_Not_A_Missing_Record()
+    {
+        var device = Plug("リビングの電気");
+        using var db = await new TestDb().SeedAsync(device);
+        var now = new DateTimeOffset(2026, 1, 1, 3, 0, 0, TimeSpan.Zero);
+        await AddReadingAsync(db, device, now, 32.7);
+
+        var answer = await Service(db, now).AnswerAsync(db.HouseholdId, "電力使用量は？");
+
+        Assert.True(answer.Success);
+        Assert.Contains("32.7", answer.Answer);
+        Assert.Contains("104.1", answer.Answer);
+        Assert.Contains("12.5", answer.Answer);
+        Assert.DoesNotContain("記録がありません", answer.Answer);
+    }
+
+    [Fact]
+    public async Task Power_Question_Says_So_Plainly_When_Nothing_Has_Been_Measured()
+    {
+        using var db = await new TestDb().SeedAsync(Plug("リビングの電気"));
+        var now = new DateTimeOffset(2026, 1, 1, 3, 0, 0, TimeSpan.Zero);
+
+        var answer = await Service(db, now).AnswerAsync(db.HouseholdId, "電力使用量は？");
+
+        Assert.Contains("記録されていません", answer.Answer);
+    }
+
+    /// <summary>
+    /// The regression behind "家電は2台使っているようです" for a one-appliance household:
+    /// with no inventory in the facts, the model reused the usage count as a device count.
+    /// </summary>
+    [Fact]
+    public async Task Every_Overview_States_The_Registered_Appliance_Count()
+    {
+        var device = Plug("リビングの電気");
+        using var db = await new TestDb().SeedAsync(device);
+        var now = new DateTimeOffset(2026, 1, 1, 3, 0, 0, TimeSpan.Zero);
+
+        var answer = await Service(db, now).AnswerAsync(db.HouseholdId, "今日の様子は？");
+
+        Assert.Contains("1台", answer.Answer);
+        Assert.Contains("リビングの電気", answer.Answer);
+    }
+
+    [Fact]
+    public async Task Appliance_Count_Follows_The_Household_Not_The_Usage_Count()
+    {
+        using var db = await new TestDb().SeedAsync(Plug("リビングの電気"), Plug("寝室の空気清浄機"));
+        var now = new DateTimeOffset(2026, 1, 1, 3, 0, 0, TimeSpan.Zero);
+
+        var answer = await Service(db, now).AnswerAsync(db.HouseholdId, "今日の様子は？");
+
+        Assert.Contains("2台", answer.Answer);
+    }
+
+    /// <summary>A household's power answer must never expose another household's meter.</summary>
+    [Fact]
+    public async Task Power_Question_Ignores_Readings_From_Another_Household()
+    {
+        var device = Plug("リビングの電気");
+        using var db = await new TestDb().SeedAsync(device);
+        var now = new DateTimeOffset(2026, 1, 1, 3, 0, 0, TimeSpan.Zero);
+
+        var stranger = new Household { Name = "よその家" };
+        db.Context.Households.Add(stranger);
+        await db.Context.SaveChangesAsync();
+
+        db.Context.PlugMiniReadings.Add(new PlugMiniReading
+        {
+            HouseholdId = stranger.Id,
+            DeviceId = device.Id,
+            ApproxWatts = 999,
+            OccurredAtUtc = now,
+            ReceivedAtUtc = now
+        });
+        await db.Context.SaveChangesAsync();
+
+        var answer = await Service(db, now).AnswerAsync(db.HouseholdId, "電力使用量は？");
+
+        Assert.DoesNotContain("999", answer.Answer);
+    }
+}

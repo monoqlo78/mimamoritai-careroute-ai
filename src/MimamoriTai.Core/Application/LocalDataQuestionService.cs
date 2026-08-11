@@ -20,6 +20,11 @@ public sealed class LocalDataQuestionService(IAppDbContext db, TimeProvider cloc
         var today = recent.LastOrDefault(d => d.Date == todayDate) ?? new DailyActivity(todayDate, null, null, 0, 0, 0);
         var q = question ?? string.Empty;
 
+        if (Contains(q, "電力", "電気代", "消費", "ワット", "W", "電圧", "電流", "使用量"))
+        {
+            return Answer(await PowerFactsAsync(householdId, ct));
+        }
+
         if (Contains(q, "最初", "何時から", "起き", "朝"))
         {
             return Answer(today.FirstActivityTime is { } f
@@ -89,7 +94,91 @@ public sealed class LocalDataQuestionService(IAppDbContext db, TimeProvider cloc
             ? $"{resident}は今朝{start:HH\\:mm}頃から活動を始め、これまでに家電を{today.DeviceUsageCount}回利用しています。"
             : $"{resident}は本日まだ家電の利用が記録されていません。";
 
-        return Answer($"{head} {risk.Reason}。");
+        // The registered devices are stated explicitly so a summarising model can never
+        // infer a device count from the usage count ("2回" silently becoming "2台").
+        var inventory = await DeviceInventoryAsync(householdId, ct);
+
+        return Answer($"{head} {risk.Reason}。{inventory}");
+    }
+
+    /// <summary>
+    /// The household's registered appliances, named. Included in every overview answer
+    /// because a summarising model with no inventory in front of it will happily invent
+    /// one out of whatever other number it can see.
+    /// </summary>
+    private async Task<string> DeviceInventoryAsync(Guid householdId, CancellationToken ct)
+    {
+        var names = await db.Devices
+            .Where(d => d.HouseholdId == householdId && d.IsActive)
+            .OrderBy(d => d.Name)
+            .Select(d => d.Alias ?? d.Name)
+            .ToListAsync(ct);
+
+        return names.Count == 0
+            ? "登録されている家電はまだありません。"
+            : $"登録されている家電は{names.Count}台（{string.Join("、", names)}）です。";
+    }
+
+    /// <summary>
+    /// Answers power questions from the Plug Mini time series rather than from the
+    /// on/off event count. Voltage, current and the daily energy total are recorded on
+    /// every poll, so "電力使用量は？" has a real answer available -- reporting "記録が
+    /// ありません" while those rows exist is simply wrong.
+    /// </summary>
+    private async Task<string> PowerFactsAsync(Guid householdId, CancellationToken ct)
+    {
+        var since = HouseholdTime.StartOfLocalDayUtc(HouseholdTime.LocalDate(clock.GetUtcNow()));
+
+        var latest = await db.PlugMiniReadings
+            .Where(r => r.HouseholdId == householdId)
+            .OrderByDescending(r => r.OccurredAtUtc)
+            .Select(r => new
+            {
+                r.OccurredAtUtc,
+                r.VoltageV,
+                r.CurrentMa,
+                r.ApproxWatts,
+                r.DailyEnergyWh,
+                r.UsageMinutesToday,
+                Name = r.Device!.Alias ?? r.Device.Name
+            })
+            .FirstOrDefaultAsync(ct);
+
+        var inventory = await DeviceInventoryAsync(householdId, ct);
+
+        if (latest is null)
+        {
+            return $"電力の測定値はまだ記録されていません。{inventory}";
+        }
+
+        var parts = new List<string>();
+
+        if (latest.ApproxWatts is { } w)
+        {
+            parts.Add($"消費電力は約{w:0.#}W");
+        }
+
+        if (latest.VoltageV is { } v && latest.CurrentMa is { } ma)
+        {
+            parts.Add($"電圧{v:0.#}V・電流{ma:0}mA");
+        }
+
+        if (latest.DailyEnergyWh is { } wh)
+        {
+            parts.Add($"今日の積算電力量は{wh:0.##}Wh");
+        }
+
+        if (latest.UsageMinutesToday is { } minutes)
+        {
+            parts.Add($"今日の通電時間は{minutes}分");
+        }
+
+        var measuredAt = HouseholdTime.LocalTime(latest.OccurredAtUtc);
+        var samples = await db.PlugMiniReadings
+            .CountAsync(r => r.HouseholdId == householdId && r.OccurredAtUtc >= since, ct);
+
+        return $"{latest.Name}の{measuredAt:HH\\:mm}時点の測定値では、{string.Join("、", parts)}です"
+            + $"（今日の測定回数は{samples}回）。{inventory}";
     }
 
     private static FabricAnswer Answer(string text) => new(true, text, SourceName);
