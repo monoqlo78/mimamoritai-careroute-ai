@@ -152,6 +152,29 @@ public class LineMessagingClientTests
         Assert.Equal("https://mimamoritai.example/images/mimamo-avatar.png", sender.GetProperty("iconUrl").GetString());
     }
 
+    /// <summary>
+    /// The quick-reply reply builds its own message object, so it is the easiest place
+    /// for the mascot override to be silently dropped -- and it is the bubble residents
+    /// see most often, since every answered question comes back with chips attached.
+    /// </summary>
+    [Fact]
+    public async Task Reply_With_Quick_Replies_Carries_The_Mascot_Name_And_Avatar()
+    {
+        var (client, handler) = CreateWithMascotSender();
+
+        await client.ReplyAsync(
+            "reply-token",
+            "本文",
+            [new LineQuickReply("家族の追加", MessageText: "家族の追加")]);
+
+        var message = handler.Body.GetProperty("messages")[0];
+        Assert.True(message.TryGetProperty("quickReply", out _));
+
+        var sender = message.GetProperty("sender");
+        Assert.Equal("ミマモ", sender.GetProperty("name").GetString());
+        Assert.Equal("https://mimamoritai.example/images/mimamo-avatar.png", sender.GetProperty("iconUrl").GetString());
+    }
+
     /// <summary>The alert card is the message families actually act on, so it must carry the mascot too.</summary>
     [Fact]
     public async Task Alert_Bubble_Carries_The_Mascot_Name_And_Avatar()

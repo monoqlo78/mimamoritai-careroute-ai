@@ -303,5 +303,5 @@ dotnet test
 | Microsoft Fabric Data Agent | 🟡 モック稼働 | `MockFabricDataAgentClient` は常に `IsConfigured = false` を返し、代わりに `LocalDataQuestionService` がDBから直接回答。実際のMCP接続クライアントは未実装（`docs/FABRIC_SETUP.md` 参照）。 |
 | Microsoft Fabric Eventhouse（リアルタイム分析） | ✅ 設定すれば実接続 | `Eventhouse:Enabled=true`＋`ClusterUri`で有効化（認証はマネージドID、秘密情報不要）。`SwitchBotPollingBackgroundService`がAzure SQL保存後に同じイベントをストリーミング取り込みし、`POST /api/stream/publish`／ダッシュボードの「Fabricへ送信」ボタンで手動疎通確認も可能。Eventstream `MimamoriDeviceStream`（Webhook型pushの将来の表玄関）は構築済みだがコードからは未使用。 |
 | LINE | ✅ 設定すれば実接続 | `Line:ChannelAccessToken`/`ChannelSecret` が空の間は `MockLineMessagingClient` がダッシュボードのLINEシミュレーターとして動作。署名検証ロジックはモックでも有効。送信する吹き出しの表示名とアイコンは `Line:SenderName`/`Line:SenderIconPath`（＋公開HTTPSの `Line:PublicBaseUrl`）でミマモに上書きされる。 |
-| LINE内でCGを表示（LIFF） | 🟡 設定すれば有効 | `Line:LiffId` が空の間は `/liff` は機能ごと非表示。`Line:LiffChannelId` はIDトークンをLINE側で検証するために必須で、未設定なら世帯データは一切表示しない。手順は `docs/line-one-touch-setup.md`。 |
+| LINE内でCGを表示（LIFF） | ✅ 登録済み（要デプロイ） | LIFFアプリ `2011065310-k0R1hHKz` を作成済みで `appsettings.json` に設定済み。`Line:LiffChannelId` はIDトークンをLINE側で検証するために必須で、未設定なら世帯データは一切表示しない。手順は `docs/line-one-touch-setup.md`。 |
 | データベース | ✅ 両対応 | 接続文字列があれば SQL Server + マイグレーション、無ければ SQLite ファイルへ自動フォールバック。 |
