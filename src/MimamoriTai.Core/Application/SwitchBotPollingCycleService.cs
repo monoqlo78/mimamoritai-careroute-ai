@@ -84,11 +84,22 @@ public sealed class SwitchBotPollingCycleService(IAppDbContext db, TimeProvider 
                 ? await snapshotProvider.GetStatusSnapshotAsync(device.ExternalDeviceId, ct)
                 : new DeviceStatusSnapshot(await provider.GetStatusAsync(device.ExternalDeviceId, ct), null);
 
-            var deviceEvent = await PollStateChangeAsync(
-                device, EffectiveState(snapshot.Status, snapshot.PlugMiniReading), now, ct);
+            var effective = EffectiveState(snapshot.Status, snapshot.PlugMiniReading);
+            var deviceEvent = await PollStateChangeAsync(device, effective, now, ct);
             if (deviceEvent is not null)
             {
                 createdEvents.Add((deviceEvent, device));
+            }
+            else
+            {
+                // The socket did not switch, but the draw behind it may still have
+                // moved -- someone starting a kettle on a plug that was already
+                // energised. That is activity, so it must not be invisible.
+                var changeEvent = await PollPowerChangeAsync(device, effective, now, ct);
+                if (changeEvent is not null)
+                {
+                    createdEvents.Add((changeEvent, device));
+                }
             }
 
             if (snapshot.PlugMiniReading is not null)
@@ -156,8 +167,11 @@ public sealed class SwitchBotPollingCycleService(IAppDbContext db, TimeProvider 
             return null;
         }
 
+        // Only PowerState rows describe the socket's on/off state. Power-change rows
+        // carry a different State value, so including them here would make the next
+        // poll think the socket had changed and write a duplicate "on".
         var lastEvent = await db.DeviceEvents
-            .Where(e => e.DeviceId == device.Id)
+            .Where(e => e.DeviceId == device.Id && e.EventType == "PowerState")
             .OrderByDescending(e => e.OccurredAtUtc)
             .FirstOrDefaultAsync(ct);
 
@@ -174,6 +188,89 @@ public sealed class SwitchBotPollingCycleService(IAppDbContext db, TimeProvider 
             EventType = "PowerState",
             State = status.State,
             PowerWatts = status.PowerWatts,
+            Source = EventSource.SwitchBotPoll,
+            OccurredAtUtc = status.ObservedAtUtc ?? now,
+            ReceivedAtUtc = now
+        };
+
+        db.DeviceEvents.Add(deviceEvent);
+        return deviceEvent;
+    }
+
+    /// <summary>
+    /// Smallest absolute swing in draw that is worth recording, in watts. Below this a
+    /// change cannot be a different appliance -- it is measurement jitter or a
+    /// thermostat nudging a load that was already running.
+    /// </summary>
+    public const double PowerChangeMinWatts = 10.0;
+
+    /// <summary>
+    /// The swing must also be this fraction of the larger of the two levels. Without it
+    /// a heater cycling 900W -> 880W would be reported as if someone had done something,
+    /// and the family would learn to ignore the timeline.
+    /// </summary>
+    public const double PowerChangeMinRatio = 0.25;
+
+    /// <summary>
+    /// True when the draw moved enough to mean a different load, rather than noise.
+    /// Requires both an absolute and a proportional swing so the rule behaves the same
+    /// for a bedside lamp and for an air conditioner.
+    /// </summary>
+    internal static bool IsSignificantPowerChange(double reference, double current)
+    {
+        var delta = Math.Abs(current - reference);
+        if (delta < PowerChangeMinWatts)
+        {
+            return false;
+        }
+
+        var scale = Math.Max(Math.Max(reference, current), 1.0);
+        return delta / scale >= PowerChangeMinRatio;
+    }
+
+    /// <summary>
+    /// Records a change in draw while the socket stayed on.
+    ///
+    /// Deliberately a separate EventType with its own State: "how many times was an
+    /// appliance used today" counts on-events, and a kettle boiling behind an
+    /// already-on plug must not silently inflate that count. It does still move the
+    /// first/last activity window, because it is real evidence that somebody is up and
+    /// about -- which is the whole point of watching a plug rather than a switch.
+    ///
+    /// Compares against the draw recorded on the previous event rather than the
+    /// previous sample, so a load that ramps up over several cycles is still caught,
+    /// and a level that simply persists is not re-reported every five minutes.
+    /// </summary>
+    private async Task<DeviceEvent?> PollPowerChangeAsync(
+        Device device, ProviderDeviceStatus? status, DateTimeOffset now, CancellationToken ct)
+    {
+        if (status is null || !status.IsOn || status.PowerWatts is not { } watts)
+        {
+            return null;
+        }
+
+        var reference = await db.DeviceEvents
+            .Where(e => e.DeviceId == device.Id && e.PowerWatts != null)
+            .OrderByDescending(e => e.OccurredAtUtc)
+            .Select(e => e.PowerWatts)
+            .FirstOrDefaultAsync(ct);
+
+        // No measured level on record yet: nothing to compare against, and inventing a
+        // change here would report the first telemetry-bearing poll as an event.
+        if (reference is not { } previous || !IsSignificantPowerChange(previous, watts))
+        {
+            return null;
+        }
+
+        var deviceEvent = new DeviceEvent
+        {
+            HouseholdId = device.HouseholdId,
+            DeviceId = device.Id,
+            EventType = "PowerChange",
+            State = watts > previous ? "increased" : "decreased",
+            PowerWatts = watts,
+            NumericValue = Math.Round(watts - previous, 1),
+            Unit = "W",
             Source = EventSource.SwitchBotPoll,
             OccurredAtUtc = status.ObservedAtUtc ?? now,
             ReceivedAtUtc = now

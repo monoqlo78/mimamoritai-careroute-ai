@@ -98,7 +98,8 @@ public sealed class LocalDataQuestionService(IAppDbContext db, TimeProvider cloc
         // infer a device count from the usage count ("2回" silently becoming "2台").
         var inventory = await DeviceInventoryAsync(householdId, ct);
 
-        return Answer($"{head} {risk.Reason}。{inventory}");
+        var since = HouseholdTime.StartOfLocalDayUtc(todayDate);
+        return Answer($"{head} {risk.Reason}。{await PowerChangeFactsAsync(householdId, since, ct)}{inventory}");
     }
 
     /// <summary>
@@ -148,7 +149,7 @@ public sealed class LocalDataQuestionService(IAppDbContext db, TimeProvider cloc
 
         if (latest is null)
         {
-            return $"電力の測定値はまだ記録されていません。{inventory}";
+            return $"電力の測定値はまだ記録されていません。{await PowerChangeFactsAsync(householdId, since, ct)}{inventory}";
         }
 
         var parts = new List<string>();
@@ -178,7 +179,37 @@ public sealed class LocalDataQuestionService(IAppDbContext db, TimeProvider cloc
             .CountAsync(r => r.HouseholdId == householdId && r.OccurredAtUtc >= since, ct);
 
         return $"{latest.Name}の{measuredAt:HH\\:mm}時点の測定値では、{string.Join("、", parts)}です"
-            + $"（今日の測定回数は{samples}回）。{inventory}";
+            + $"（今日の測定回数は{samples}回）。{await PowerChangeFactsAsync(householdId, since, ct)}{inventory}";
+    }
+
+    /// <summary>
+    /// Describes the swings in draw recorded today. Consumption is not only on/off:
+    /// a kettle boiling behind a permanently energised plug shows up here and nowhere
+    /// else, so leaving it out would make the assistant claim nothing happened.
+    /// </summary>
+    private async Task<string> PowerChangeFactsAsync(
+        Guid householdId, DateTimeOffset since, CancellationToken ct)
+    {
+        var changes = await db.DeviceEvents
+            .Where(e => e.HouseholdId == householdId
+                && e.EventType == "PowerChange"
+                && e.OccurredAtUtc >= since)
+            .OrderByDescending(e => e.OccurredAtUtc)
+            .Take(3)
+            .Select(e => new { e.OccurredAtUtc, e.State, e.PowerWatts })
+            .ToListAsync(ct);
+
+        if (changes.Count == 0)
+        {
+            return "今日は消費電力の大きな変化は記録されていません。";
+        }
+
+        var described = changes
+            .Select(c => $"{HouseholdTime.LocalTime(c.OccurredAtUtc):HH\\:mm}に"
+                + (c.State == "increased" ? "増加" : "減少")
+                + (c.PowerWatts is { } w ? $"（約{w:0.#}W）" : string.Empty));
+
+        return $"今日は消費電力の変化が{changes.Count}回あり、直近は{string.Join("、", described)}です。";
     }
 
     private static FabricAnswer Answer(string text) => new(true, text, SourceName);

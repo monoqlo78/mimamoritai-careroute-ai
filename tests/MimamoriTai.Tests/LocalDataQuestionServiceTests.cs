@@ -126,4 +126,51 @@ public sealed class LocalDataQuestionServiceTests
 
         Assert.DoesNotContain("999", answer.Answer);
     }
+
+    /// <summary>
+    /// Swings in draw are the only trace a kettle or a rice cooker leaves behind a
+    /// permanently energised plug. If they never reach the local answer, the model has
+    /// no way to know they happened and will say the day was quiet.
+    /// </summary>
+    [Fact]
+    public async Task Overview_Reports_Changes_In_Draw_Not_Just_On_Off()
+    {
+        var device = Plug("リビングの電気");
+        using var db = await new TestDb().SeedAsync(device);
+        var now = new DateTimeOffset(2026, 1, 1, 3, 0, 0, TimeSpan.Zero);
+
+        db.Context.DeviceEvents.Add(new DeviceEvent
+        {
+            HouseholdId = db.HouseholdId,
+            DeviceId = device.Id,
+            EventType = "PowerChange",
+            State = "increased",
+            PowerWatts = 833,
+            NumericValue = 800,
+            Unit = "W",
+            Source = EventSource.SwitchBotPoll,
+            OccurredAtUtc = now.AddHours(-1),
+            ReceivedAtUtc = now.AddHours(-1)
+        });
+        await db.Context.SaveChangesAsync();
+
+        var overview = await Service(db, now).AnswerAsync(db.HouseholdId, "今日の様子");
+        Assert.Contains("消費電力の変化", overview.Answer);
+        Assert.Contains("833", overview.Answer);
+
+        var power = await Service(db, now).AnswerAsync(db.HouseholdId, "電力使用量は？");
+        Assert.Contains("833", power.Answer);
+    }
+
+    [Fact]
+    public async Task Overview_Says_So_Plainly_When_The_Draw_Never_Moved()
+    {
+        var device = Plug("リビングの電気");
+        using var db = await new TestDb().SeedAsync(device);
+        var now = new DateTimeOffset(2026, 1, 1, 3, 0, 0, TimeSpan.Zero);
+
+        var overview = await Service(db, now).AnswerAsync(db.HouseholdId, "今日の様子");
+
+        Assert.Contains("大きな変化は記録されていません", overview.Answer);
+    }
 }

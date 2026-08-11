@@ -405,6 +405,7 @@ else
     private static string EventTypeLabel(string eventType) => eventType switch
     {
         "PowerState" => "電源状態の変化",
+        "PowerChange" => "消費電力の変化",
         _ => eventType
     };
 
@@ -412,6 +413,8 @@ else
     {
         "on" => "使用",
         "off" => "停止",
+        "increased" => "電力↑",
+        "decreased" => "電力↓",
         "active" => "動きあり",
         "inactive" => "動きなし",
         _ => state
