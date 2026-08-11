@@ -325,23 +325,52 @@ MCP エンドポイントへの認証・疎通は成功しており **HTTP 200 �
 失敗時は生の応答先頭300文字が警告ログに出るので、原因の切り分けに使えます
 （この文言は家族の画面には出ません）。
 
-### 6-4. 応答速度の実測とチューニング
+### 6-4. 応答速度と LINE の 8 秒制限（重要）
+
+LINE の webhook 処理は **1 イベントあたり 8 秒**でキャンセルされます
+（`WebhookEndpoints.EventProcessingTimeout`）。これを超えると、内部で正しい要約が
+できていても家族には定型のタイムアウト文しか届きません。したがって応答速度は
+「体感の好み」ではなく **LINE で機能が成立するかどうかの分かれ目**です。
 
 | 用途 | モデル | 実測 |
 |---|---|---|
 | 意図分類（JSON） | `openai/gpt-4.1-mini`（ピン留め） | 約 2 秒 |
-| 状況要約 | `orcarouter/auto` → `qwen3.7-plus` / `deepseek-v4-pro` | **20〜30 秒** |
+| 状況要約 | `orcarouter/auto` → `qwen3.7-plus` / `deepseek-v4-pro` / `glm-5.2` | **13〜51 秒** |
+| 状況要約 | `openai/gpt-4.1-mini`（ピン留め） | **3〜5 秒** |
 
 `orcarouter/auto` は推論（thinking）系モデルに解決されることがあり、要約が
-20〜30 秒かかります。デモや LINE 応答では長すぎる場合、`OrcaRouter:SummaryModel`
-に速いチャットモデルをピン留めしてください。
+20〜50 秒かかります。**この状態では LINE 経由の要約は必ずタイムアウトします。**
+そのため既定値を `openai/gpt-4.1-mini` にピン留めしています。
 
-```powershell
-dotnet user-secrets set "OrcaRouter:SummaryModel" "openai/gpt-4.1-mini"
+```json
+"OrcaRouter": { "SummaryModel": "openai/gpt-4.1-mini" }
 ```
 
-既定は空文字で、**空のときは `OrcaRouter:Model`（＝自動ルーティング）のまま**です。
-OrcaRouter の自動選択を活かしたい場合は設定しないでください。
+自動ルーティングに戻したい場合は空文字にできますが、**その場合 LINE では要約が
+成立しません**（Web UI / API のみで使う前提にしてください）。
+
+#### Fabric の待ち時間予算（`Fabric:QueryTimeoutSeconds`、既定 2 秒）
+
+要約・データ質問の経路は、**先にローカル DB から完全な答えを作ってから**
+Fabric Data Agent に問い合わせ、成功すればそれを併記します。つまり Fabric は
+「あれば嬉しい追加情報」であって前提ではありません。
+
+以前はこの Fabric 呼び出しに上限が無く（HTTP 側の 120 秒まで待つ）、Fabric 単独で
+19〜20 秒かかっていたため、**手元に正しい答えがあるのに呼び出し側の 8 秒を
+使い切って答えごと失われる**という不具合がありました。現在は予算を超えると
+Fabric を諦めてローカルの答えを返します。
+
+エンドツーエンドの実測（`POST /api/assistant/message`、要約）:
+
+| 構成 | 実測 | 8 秒予算 |
+|---|---|---|
+| `auto` + Fabric 無制限（修正前） | 19〜51 秒 | 超過 |
+| `mini` + Fabric 4 秒 | 6.9〜8.1 秒 | ぎりぎり／たまに超過 |
+| **`mini` + Fabric 2 秒（現在の既定）** | **4.8〜6.9 秒** | 収まる |
+
+Fabric がデータソースに到達できるようになり、待つ価値が出たら
+`Fabric:QueryTimeoutSeconds` を上げてください。ただし
+「要約全体 ≦ 8 秒」を守れる範囲に留める必要があります。
 
 ### 6-5. SwitchBot 実機の構成に関する注意
 
@@ -361,5 +390,7 @@ ON と Toggle は拒否** されます。ヒーター等が挿さっていた場
 1. Fabric Data Agent のデータソースをサービスプリンシパル対応の構成に直す（6-3）。
    直さない場合もローカル DB へフォールバックするため、デモは実施可能です。
 2. デモで照明を操作したい場合、照明を Plug Mini に挿して別名を合わせる（6-5）。
-3. 要約の応答速度が問題になる場合、`OrcaRouter:SummaryModel` をピン留めする（6-4）。
+3. 本番（App Service）にも `OrcaRouter__SummaryModel=openai/gpt-4.1-mini` を
+   設定する。未設定だと自動ルーティングになり、LINE 経由の要約が 8 秒を超えて
+   タイムアウトします（6-4）。
 

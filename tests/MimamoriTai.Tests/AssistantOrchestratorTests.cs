@@ -11,7 +11,11 @@ namespace MimamoriTai.Tests;
 
 public class AssistantOrchestratorTests
 {
-    private static AssistantOrchestrator Create(TestDb db, IAiRouterClient? ai = null, IFabricDataAgentClient? fabric = null)
+    private static AssistantOrchestrator Create(
+        TestDb db,
+        IAiRouterClient? ai = null,
+        IFabricDataAgentClient? fabric = null,
+        TimeSpan? fabricBudget = null)
     {
         var provider = new MockDeviceProvider();
         return new AssistantOrchestrator(
@@ -20,7 +24,9 @@ public class AssistantOrchestratorTests
             provider,
             fabric ?? new MockFabricDataAgentClient(),
             new LocalDataQuestionService(db.Context, TimeProvider.System),
-            TimeProvider.System);
+            TimeProvider.System,
+            null,
+            fabricBudget);
     }
 
     [Fact]
@@ -621,7 +627,6 @@ public class LineSignatureTests
     {
         Assert.False(LineSignature.Verify(null, "{}", Sign("{}", Secret)));
     }
-
     [Fact]
     public void MockLineClient_Still_Verifies_A_Configured_Secret()
     {
@@ -631,5 +636,110 @@ public class LineSignatureTests
         const string body = """{"events":[]}""";
         Assert.True(client.VerifySignature(body, Sign(body, Secret)));
         Assert.False(client.VerifySignature(body, Sign(body, "wrong")));
+    }
+}
+
+/// <summary>
+/// The Fabric Data Agent must never be able to take down an answer the local
+/// database has already produced.
+///
+/// Measured against the live workspace a single AskAsync takes ~19s and is then
+/// rejected anyway, while the LINE webhook cancels the whole event after 8s. Before
+/// this was bounded, a slow data agent turned a perfectly good local answer into the
+/// generic "時間がかかっています" text -- the family lost real information because an
+/// optional enrichment was slow.
+/// </summary>
+public class FabricBudgetTests
+{
+    private sealed class SlowFabricClient(TimeSpan delay) : IFabricDataAgentClient
+    {
+        public bool IsConfigured => true;
+
+        public async Task<FabricAnswer> AskAsync(string question, CancellationToken ct = default)
+        {
+            await Task.Delay(delay, ct);
+            return new FabricAnswer(true, "Fabric からの詳細な内訳です。", "Fabric", null);
+        }
+    }
+
+    private sealed class ThrowingFabricClient : IFabricDataAgentClient
+    {
+        public bool IsConfigured => true;
+
+        public Task<FabricAnswer> AskAsync(string question, CancellationToken ct = default) =>
+            throw new HttpRequestException("data agent unreachable");
+    }
+
+    private static AssistantOrchestrator Create(TestDb db, IFabricDataAgentClient fabric, TimeSpan budget) =>
+        new(db.Context,
+            new MockAiRouterClient(),
+            new MockDeviceProvider(),
+            fabric,
+            new LocalDataQuestionService(db.Context, TimeProvider.System),
+            TimeProvider.System,
+            null,
+            budget);
+
+    [Fact]
+    public async Task A_slow_data_agent_falls_back_to_local_facts_within_the_budget()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var orchestrator = Create(db, new SlowFabricClient(TimeSpan.FromSeconds(30)), TimeSpan.FromMilliseconds(200));
+
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        var response = await orchestrator.HandleAsync(
+            new AssistantRequest(db.HouseholdId, null, "今日の様子を教えて", CommandSource.Line));
+        started.Stop();
+
+        Assert.Equal(AssistantIntent.QueryData, response.Intent);
+        Assert.False(string.IsNullOrWhiteSpace(response.Reply));
+
+        // The slow agent's text must not appear: it never finished.
+        Assert.DoesNotContain("Fabric からの詳細な内訳です。", response.Reply, StringComparison.Ordinal);
+
+        // Well inside the 8s the LINE webhook allows for an entire event.
+        Assert.True(started.ElapsedMilliseconds < 5000, $"took {started.ElapsedMilliseconds}ms");
+    }
+
+    [Fact]
+    public async Task A_throwing_data_agent_still_answers_from_local_facts()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var orchestrator = Create(db, new ThrowingFabricClient(), TimeSpan.FromSeconds(4));
+
+        var response = await orchestrator.HandleAsync(
+            new AssistantRequest(db.HouseholdId, null, "今日の様子を教えて", CommandSource.Line));
+
+        Assert.Equal(AssistantIntent.QueryData, response.Intent);
+        Assert.False(string.IsNullOrWhiteSpace(response.Reply));
+    }
+
+    [Fact]
+    public async Task A_data_agent_that_answers_in_time_is_still_used()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var orchestrator = Create(db, new SlowFabricClient(TimeSpan.Zero), TimeSpan.FromSeconds(4));
+
+        var response = await orchestrator.HandleAsync(
+            new AssistantRequest(db.HouseholdId, null, "今日の様子を教えて", CommandSource.Line));
+
+        // MockAiRouterClient echoes the facts it is given, so the Fabric text survives.
+        Assert.Contains("Fabric からの詳細な内訳です。", response.Reply, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Cancellation by the caller means the caller has abandoned the whole request,
+    /// not just the optional enrichment, so it must not be swallowed.
+    /// </summary>
+    [Fact]
+    public async Task Caller_cancellation_is_not_swallowed()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var orchestrator = Create(db, new SlowFabricClient(TimeSpan.FromSeconds(30)), TimeSpan.FromSeconds(30));
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => orchestrator.HandleAsync(
+            new AssistantRequest(db.HouseholdId, null, "今日の様子を教えて", CommandSource.Line), cts.Token));
     }
 }

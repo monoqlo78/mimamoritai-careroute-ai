@@ -27,6 +27,19 @@ public sealed class FabricOptions
     public string Scope { get; set; } = DefaultScope;
 
     /// <summary>
+    /// How long the assistant's query path waits for the data agent before answering
+    /// from the local database instead.
+    ///
+    /// Fabric enriches an answer the local database has already produced in full, so
+    /// it must never be allowed to consume a caller's whole deadline. Measured against
+    /// the live workspace a single query takes ~20s, while the LINE webhook cancels the
+    /// entire event after 8s -- unbounded, that replaced a correct summary with the
+    /// generic timeout message. This is separate from the HTTP timeout on the client,
+    /// which stays generous for background/manual use.
+    /// </summary>
+    public int QueryTimeoutSeconds { get; set; } = 2;
+
+    /// <summary>
     /// Entra tenant id for the service principal used to authenticate Fabric Data Agent
     /// queries. Optional: leave blank to fall back to DefaultAzureCredential.
     /// </summary>

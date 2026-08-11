@@ -237,7 +237,20 @@ public static class ServiceCollectionExtensions
         // Singleton on purpose: a confirmation is proposed on one HTTP request and
         // answered on the next, so the pending action has to outlive the scope.
         services.AddSingleton<IPendingActionStore, InMemoryPendingActionStore>();
-        services.AddScoped<AssistantOrchestrator>();
+
+        // Built by hand so the Fabric budget stays configurable: the container cannot
+        // supply a bare TimeSpan, and callers such as the LINE webhook enforce their own
+        // deadline that a slow data agent must not be allowed to consume.
+        services.AddScoped(sp => new AssistantOrchestrator(
+            sp.GetRequiredService<IAppDbContext>(),
+            sp.GetRequiredService<IAiRouterClient>(),
+            sp.GetRequiredService<IDeviceProvider>(),
+            sp.GetRequiredService<IFabricDataAgentClient>(),
+            sp.GetRequiredService<ILocalDataQuestionService>(),
+            sp.GetRequiredService<TimeProvider>(),
+            sp.GetRequiredService<IPendingActionStore>(),
+            TimeSpan.FromSeconds(Math.Max(1, fabric.QueryTimeoutSeconds))));
+
         services.AddScoped<DeviceSyncService>();
         services.AddScoped<EventStreamPublishService>();
         services.AddScoped<PlugMiniReadingPublishService>();

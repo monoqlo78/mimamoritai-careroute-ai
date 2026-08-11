@@ -30,9 +30,23 @@ public sealed class AssistantOrchestrator(
     IFabricDataAgentClient fabric,
     ILocalDataQuestionService localData,
     TimeProvider clock,
-    IPendingActionStore? pendingActions = null)
+    IPendingActionStore? pendingActions = null,
+    TimeSpan? fabricBudget = null)
 {
     private readonly IPendingActionStore _pending = pendingActions ?? new InMemoryPendingActionStore();
+
+    /// <summary>
+    /// How long the Fabric Data Agent is allowed to take before the query path gives
+    /// up on it and answers from the local database instead.
+    ///
+    /// Fabric is an enhancement over local data, never a prerequisite: the local
+    /// answer is already complete before Fabric is consulted. Measured against the
+    /// live workspace a single AskAsync takes ~19s and is then rejected anyway
+    /// (the data agent cannot reach its datasource), while the LINE webhook cancels
+    /// the whole event after 8s. Left unbounded that turns a perfectly good local
+    /// answer into the generic timeout message.
+    /// </summary>
+    private readonly TimeSpan _fabricBudget = fabricBudget ?? TimeSpan.FromSeconds(4);
 
     private const string SystemPrompt = """
         あなたは高齢者見守りサービス「見守り隊 / CareRoute AI」の意図解析エンジンです。
@@ -306,8 +320,8 @@ public sealed class AssistantOrchestrator(
 
         if (fabric.IsConfigured)
         {
-            var remote = await fabric.AskAsync(question, ct);
-            if (remote.Success && !string.IsNullOrWhiteSpace(remote.Answer))
+            var remote = await TryAskFabricAsync(question, ct);
+            if (remote is { Success: true } && !string.IsNullOrWhiteSpace(remote.Answer))
             {
                 answer = new FabricAnswer(true, Merge(remote.Answer, local.Answer), remote.Source, null);
             }
@@ -322,6 +336,39 @@ public sealed class AssistantOrchestrator(
             summary?.Router ?? completion.Router,
             false,
             null);
+    }
+
+    /// <summary>
+    /// Consults the Fabric Data Agent without letting it take the answer down with it.
+    ///
+    /// By the time this runs the local database has already produced a complete answer,
+    /// so anything Fabric does beyond enriching it is pure downside. A data agent that
+    /// is slow, throwing or unreachable must therefore degrade to that local answer
+    /// rather than propagate: the family gets real times and counts instead of an
+    /// error, and callers with their own deadline (the LINE webhook cancels an event
+    /// after 8 seconds) still get a reply within it.
+    ///
+    /// Cancellation requested by the caller is deliberately NOT swallowed -- that means
+    /// the caller has given up on the whole request, not just on Fabric.
+    /// </summary>
+    private async Task<FabricAnswer?> TryAskFabricAsync(string question, CancellationToken ct)
+    {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(_fabricBudget);
+
+        try
+        {
+            return await fabric.AskAsync(question, budget.Token);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Budget elapsed: fall through to the local answer.
+            return null;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
     }
 
     /// <summary>

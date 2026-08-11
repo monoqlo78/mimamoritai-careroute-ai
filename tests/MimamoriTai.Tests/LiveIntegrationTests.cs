@@ -42,10 +42,15 @@ public class LiveIntegrationTests(ITestOutputHelper output)
         .AddEnvironmentVariables()
         .Build();
 
-    private static OrcaRouterClient CreateAi(IConfiguration config)
+    private static OrcaRouterClient CreateAi(IConfiguration config, string? summaryModel = null)
     {
         var options = new OrcaRouterOptions();
         config.GetSection(OrcaRouterOptions.SectionName).Bind(options);
+
+        if (summaryModel is not null)
+        {
+            options.SummaryModel = summaryModel;
+        }
 
         // Mirrors the AddHttpClient configuration in ServiceCollectionExtensions:
         // the client issues relative URIs, so BaseAddress must be set here too.
@@ -417,6 +422,89 @@ public class LiveIntegrationTests(ITestOutputHelper output)
         Assert.DoesNotContain("記録がありませんでした", response.Reply);
         Assert.DoesNotContain("確認できませんでした", response.Reply);
         Assert.DoesNotContain("不具合", response.Reply);
+    }
+
+    /// <summary>
+    /// Measures the summary against the budget the LINE webhook actually enforces,
+    /// using the SAME wiring production uses -- the real Fabric client included.
+    ///
+    /// WebhookEndpoints caps processing of a single LINE event at 8 seconds
+    /// (EventProcessingTimeout) and replies with a fixed "時間がかかっています" style
+    /// message when that elapses. The summary is the demo's headline feature, so if it
+    /// cannot finish inside that budget it is never actually seen over LINE -- the
+    /// family only ever gets the timeout text. That failure is invisible from the web
+    /// UI, which has no such cap, and from any test that stubs Fabric out.
+    ///
+    /// It asserts nothing about the wall-clock numbers on purpose: they depend on a
+    /// third-party router and would make the suite flaky. The verdict lines are the
+    /// deliverable.
+    /// </summary>
+    [Fact]
+    public async Task Summary_Live_Reports_Whether_It_Fits_The_Line_Webhook_Budget()
+    {
+        if (!LiveEnabled)
+        {
+            return;
+        }
+
+        // Keep in step with WebhookEndpoints.EventProcessingTimeout.
+        var budget = TimeSpan.FromSeconds(8);
+        var config = Config();
+
+        var fabricElapsed = await MeasureAsync(async () =>
+        {
+            var answer = await CreateFabric(config).AskAsync("今日の家電の利用状況を教えてください。");
+            return answer.Success ? "accepted" : "rejected -> local fallback";
+        });
+
+        output.WriteLine($"[BUDGET] fabric alone, unbounded   {fabricElapsed.Elapsed,6:0}ms  ({fabricElapsed.Result})");
+
+        foreach (var (label, summaryModel, useRealFabric, fabricBudget) in new (string, string?, bool, TimeSpan?)[]
+        {
+            ("auto  + real fabric  ", null, true, null),
+            ("mini  + real fabric  ", "openai/gpt-4.1-mini", true, null),
+            ("mini  + fabric off   ", "openai/gpt-4.1-mini", false, null)
+        })
+        {
+            using var db = await new TestDb().SeedAsync(TestDb.Light());
+            await SeedTodaysActivityAsync(db);
+
+            IFabricDataAgentClient fabric = useRealFabric
+                ? CreateFabric(config)
+                : new MockFabricDataAgentClient();
+
+            var orchestrator = new AssistantOrchestrator(
+                db.Context,
+                CreateAi(config, summaryModel),
+                new MockDeviceProvider(),
+                fabric,
+                new LocalDataQuestionService(db.Context, TimeProvider.System),
+                TimeProvider.System,
+                new InMemoryPendingActionStore(),
+                fabricBudget);
+
+            var run = await MeasureAsync(async () =>
+            {
+                var response = await orchestrator.HandleAsync(
+                    new AssistantRequest(db.HouseholdId, null, "今日の様子をまとめて教えて", CommandSource.Web));
+
+                return response.ResolvedModel;
+            });
+
+            var verdict = run.Elapsed <= budget.TotalMilliseconds ? "FITS" : "OVER BUDGET -> LINE shows the timeout text";
+            output.WriteLine($"[BUDGET] {label} {run.Elapsed,6:0}ms  model={run.Result}  {verdict}");
+        }
+
+        output.WriteLine($"[BUDGET] LINE allows {budget.TotalSeconds:0}s per event (WebhookEndpoints.EventProcessingTimeout).");
+    }
+
+    private static async Task<(long Elapsed, T Result)> MeasureAsync<T>(Func<Task<T>> work)
+    {
+        var started = Stopwatch.StartNew();
+        var result = await work();
+        started.Stop();
+
+        return (started.ElapsedMilliseconds, result);
     }
 
     /// <summary>
