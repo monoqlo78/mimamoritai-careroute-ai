@@ -67,12 +67,71 @@ public static class BarChartGeometry
     public static double Max(IReadOnlyList<BarChartPoint> points) =>
         points.Count == 0 ? 0 : points.Max(p => p.Value);
 
+    /// <summary>Horizontal centre of a bar - where the trend line and its dots sit.</summary>
+    public static double CenterX(int index, int count) => BarX(index, count) + (BarWidth(count) / 2);
+
+    /// <summary>
+    /// The trend line threading the tops of the bars. Bars answer "how much on that day";
+    /// the line answers "which way is it going", which is the question a family actually asks.
+    /// </summary>
+    public static string LinePoints(IReadOnlyList<BarChartPoint> points, double max)
+    {
+        if (points.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        return string.Join(' ', points.Select((p, i) =>
+            $"{F(CenterX(i, points.Count))},{F(BarTop(p.Value, max))}"));
+    }
+
+    /// <summary>The same line closed down to the baseline, so it can be filled with a soft wash.</summary>
+    public static string AreaPath(IReadOnlyList<BarChartPoint> points, double max)
+    {
+        if (points.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var line = string.Join(' ', points.Select((p, i) =>
+            $"L{F(CenterX(i, points.Count))},{F(BarTop(p.Value, max))}"));
+
+        var first = F(CenterX(0, points.Count));
+        var last = F(CenterX(points.Count - 1, points.Count));
+
+        return $"M{first},{F(PlotBottom)} {line} L{last},{F(PlotBottom)} Z";
+    }
+
+    /// <summary>
+    /// Length the trend line is padded to for the draw-on animation. Deliberately generous:
+    /// a dash array shorter than the real path would leave the line visibly cut off.
+    /// </summary>
+    public static double LineDashLength(int count) => Math.Max(count, 1) * ViewHeight;
+
     public static string BarClass(BarChartPoint point) =>
         point.IsHighlighted ? "bar-chart-bar is-highlighted" : "bar-chart-bar";
 
     /// <summary>Tooltip text: the caller's own wording when given, otherwise value + unit.</summary>
     public static string Describe(BarChartPoint point, string unit) =>
         point.Display ?? $"{F(point.Value)}{unit}";
+
+    /// <summary>
+    /// How the top of the scale should be written, borrowing the busiest bar's own wording so
+    /// a wake-up chart reads "8:15" rather than "8.25". Bars are scaled against that busiest
+    /// day, so stating it is what stops one lone bar from being unreadable.
+    /// </summary>
+    public static string ScaleTop(IReadOnlyList<BarChartPoint> points, string unit)
+    {
+        if (points.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var max = Max(points);
+        var top = points.FirstOrDefault(p => p.Value == max) ?? points[0];
+
+        return max <= 0 ? $"0{unit}" : Describe(top, unit);
+    }
 
     /// <summary>
     /// SVG attributes must use a dot decimal separator regardless of the request culture:

@@ -145,4 +145,149 @@ public class BarChartGeometryTests
         Assert.Equal(11, BarChartGeometry.Max(points));
         Assert.Equal(0, BarChartGeometry.Max([]));
     }
+
+    // ---- Trend line ---------------------------------------------------------
+
+    [Fact]
+    public void The_trend_line_threads_the_top_of_every_bar()
+    {
+        BarChartPoint[] points = [new("7/1", 2), new("7/2", 6), new("7/3", 4)];
+
+        var line = BarChartGeometry.LinePoints(points, max: 6);
+        var pairs = line.Split(' ');
+
+        Assert.Equal(3, pairs.Length);
+        for (var i = 0; i < points.Length; i++)
+        {
+            var parts = pairs[i].Split(',');
+            Assert.Equal(BarChartGeometry.CenterX(i, points.Length), double.Parse(parts[0], CultureInfo.InvariantCulture), 2);
+            Assert.Equal(BarChartGeometry.BarTop(points[i].Value, 6), double.Parse(parts[1], CultureInfo.InvariantCulture), 2);
+        }
+    }
+
+    [Fact]
+    public void The_trend_line_sits_over_the_middle_of_its_bar()
+    {
+        const int count = 14;
+        var centre = BarChartGeometry.CenterX(3, count);
+        var left = BarChartGeometry.BarX(3, count);
+
+        Assert.Equal(left + (BarChartGeometry.BarWidth(count) / 2), centre, 3);
+    }
+
+    [Fact]
+    public void The_filled_area_closes_back_down_to_the_baseline()
+    {
+        BarChartPoint[] points = [new("7/1", 2), new("7/2", 6)];
+
+        var path = BarChartGeometry.AreaPath(points, max: 6);
+
+        Assert.StartsWith("M", path);
+        Assert.EndsWith("Z", path);
+        // Both ends must return to the axis or the wash bleeds over the whole card.
+        Assert.Contains($"{BarChartGeometry.F(BarChartGeometry.PlotBottom)}", path);
+    }
+
+    [Fact]
+    public void An_empty_series_produces_no_line_and_no_area()
+    {
+        Assert.Equal(string.Empty, BarChartGeometry.LinePoints([], max: 0));
+        Assert.Equal(string.Empty, BarChartGeometry.AreaPath([], max: 0));
+    }
+
+    [Fact]
+    public void A_single_day_still_draws_a_point_on_the_line()
+    {
+        // A household that signed up yesterday: one bar, and nothing may divide by zero.
+        BarChartPoint[] points = [new("7/1", 3, IsHighlighted: true)];
+
+        var line = BarChartGeometry.LinePoints(points, max: 3);
+
+        Assert.Single(line.Split(' '));
+        Assert.DoesNotContain("NaN", line);
+        Assert.DoesNotContain("NaN", BarChartGeometry.AreaPath(points, max: 3));
+    }
+
+    [Fact]
+    public void An_all_zero_fortnight_still_draws_a_flat_line_rather_than_nothing()
+    {
+        BarChartPoint[] points = [new("7/1", 0), new("7/2", 0), new("7/3", 0)];
+
+        var line = BarChartGeometry.LinePoints(points, max: 0);
+
+        Assert.DoesNotContain("NaN", line);
+        Assert.Equal(3, line.Split(' ').Length);
+    }
+
+    [Fact]
+    public void The_dash_length_covers_the_whole_line()
+    {
+        // Used for the draw-on animation: too short and the line would stay visibly cut off.
+        var count = 14;
+        var longestPossible = count * BarChartGeometry.ViewHeight;
+
+        Assert.True(BarChartGeometry.LineDashLength(count) >= longestPossible);
+        Assert.True(BarChartGeometry.LineDashLength(0) > 0);
+    }
+
+    [Fact]
+    public void Line_coordinates_are_written_with_a_dot_decimal_separator()
+    {
+        var previous = Thread.CurrentThread.CurrentCulture;
+        Thread.CurrentThread.CurrentCulture = new CultureInfo("de-DE");
+        try
+        {
+            var line = BarChartGeometry.LinePoints([new("7/1", 1), new("7/2", 3)], max: 3);
+
+            // "10,5,20,3" - a comma decimal separator would corrupt the x,y pairs themselves.
+            foreach (var pair in line.Split(' '))
+            {
+                Assert.Equal(2, pair.Split(',').Length);
+            }
+        }
+        finally
+        {
+            Thread.CurrentThread.CurrentCulture = previous;
+        }
+    }
+
+    [Fact]
+    public void The_top_of_the_scale_is_stated_so_a_lone_bar_can_be_read()
+    {
+        // A household on its first day has one bar, and a bar drawn against itself always
+        // reaches full height. Without the scale, one visit and twenty look identical.
+        var top = BarChartGeometry.ScaleTop([new("8/12", 1)], "回");
+
+        Assert.Equal("1回", top);
+    }
+
+    [Fact]
+    public void The_top_of_the_scale_borrows_the_busiest_days_own_wording()
+    {
+        // 8.25 hours must read as a clock time, not as a decimal.
+        var top = BarChartGeometry.ScaleTop(
+            [new("8/11", 6.5, Display: "6:30"), new("8/12", 8.25, Display: "8:15")], "");
+
+        Assert.Equal("8:15", top);
+    }
+
+    [Fact]
+    public void The_top_of_the_scale_stays_at_zero_when_nothing_happened()
+    {
+        Assert.Equal("0回", BarChartGeometry.ScaleTop([new("8/12", 0)], "回"));
+        Assert.Equal(string.Empty, BarChartGeometry.ScaleTop([], "回"));
+    }
+
+    [Fact]
+    public void A_single_day_still_produces_a_drawable_bar_line_and_area()
+    {
+        // One day of data is drawn as one bar rather than hidden behind an explanation.
+        List<BarChartPoint> single = [new("8/12", 2, IsHighlighted: true)];
+        var max = BarChartGeometry.Max(single);
+
+        Assert.True(BarChartGeometry.BarWidth(1) > 0);
+        Assert.True(BarChartGeometry.BarHeight(2, max) > BarChartGeometry.MinBarHeight);
+        Assert.NotEmpty(BarChartGeometry.LinePoints(single, max));
+        Assert.StartsWith("M", BarChartGeometry.AreaPath(single, max));
+    }
 }

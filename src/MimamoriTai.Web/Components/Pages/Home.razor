@@ -150,24 +150,37 @@ else
                 <p class="eyebrow">最近の推移</p>
                 <h2>いつもと比べてどうか</h2>
             </div>
-            <span class="summary-meta">直近@(_model.Recent.Count)日間</span>
+            <span class="summary-meta">直近@(TrendDays().Count)日間</span>
         </div>
 
-        <div class="trend-grid">
-            <div class="trend-item">
-                <BarChart Points="UsageTrend()" Caption="家電の利用回数" Unit="回"
-                          AriaLabel="@TrendAriaLabel("家電の利用回数", d => d.DeviceUsageCount, "回")" />
+        @if (!HasTrendData())
+        {
+            @* A brand-new household has a fortnight of empty days. Fourteen flat bars would
+               read as "nothing has ever happened", which is exactly the alarming message
+               this screen must not send by accident. *@
+            <p class="trend-empty">記録がたまると、ここに数日分の移り変わりが出ます。<br />今日の様子は上のカードでご覧ください。</p>
+        }
+        else
+        {
+            <div class="trend-grid">
+                <div class="trend-item">
+                    <BarChart Points="UsageTrend()" Caption="家電の利用回数" Unit="回"
+                              Badge="@UsageVerdict().Text" BadgeClass="@UsageVerdict().Class"
+                              AriaLabel="@TrendAriaLabel("家電の利用回数", d => d.DeviceUsageCount, "回")" />
+                </div>
+                <div class="trend-item">
+                    <BarChart Points="WakeUpTrend()" Caption="起きた時間" ScaleBottom="0:00"
+                              Badge="@WakeUpVerdict().Text" BadgeClass="@WakeUpVerdict().Class"
+                              AriaLabel="@WakeUpAriaLabel()" />
+                </div>
+                <div class="trend-item">
+                    <BarChart Points="NightTrend()" Caption="夜間の動き" Unit="回"
+                              Badge="@NightVerdict().Text" BadgeClass="@NightVerdict().Class"
+                              AriaLabel="@TrendAriaLabel("夜間の動き", d => d.NightActivityCount, "回")" />
+                </div>
             </div>
-            <div class="trend-item">
-                <BarChart Points="WakeUpTrend()" Caption="起きた時間"
-                          AriaLabel="@WakeUpAriaLabel()" />
-            </div>
-            <div class="trend-item">
-                <BarChart Points="NightTrend()" Caption="夜間の動き" Unit="回"
-                          AriaLabel="@TrendAriaLabel("夜間の動き", d => d.NightActivityCount, "回")" />
-            </div>
-        </div>
-        <p class="trend-note">濃い色が今日です。棒にふれると日付と回数が出ます。</p>
+            <p class="trend-note">濃い色が今日です。棒にふれると日付と回数が出ます。</p>
+        }
     </section>
 
     <section class="primary-grid">
@@ -1101,12 +1114,46 @@ else
         TrendPoints(d => d.NightActivityCount);
 
     /// <summary>
-    /// Getting-up time as hours past midnight, so a later start makes a taller bar.
-    /// Days with no activity at all stay at zero rather than being dropped: a missing
-    /// morning is the single most important thing on this screen. The tooltip shows a
-    /// real clock time, because "6.5時" is not how anyone reads a wake-up time.
+    /// One recorded day is enough to draw. A single bar is honest about how little there is
+    /// so far; hiding it behind "データがありません" would be less so. What waits for a second
+    /// day is the wording of a trend - see the verdict badges.
     /// </summary>
-    private IReadOnlyList<BarChartPoint> WakeUpTrend()
+    private bool HasTrendData() =>
+        _model is not null && _model.Recent.Any(d => d.FirstActivityTime is not null);
+
+    private TrendVerdict UsageVerdict() =>
+        TrendVerdicts.ForUsage(
+            TodayValue(d => d.DeviceUsageCount), Baseline(d => d.DeviceUsageCount), HoursIntoToday())
+        ?? EmptyVerdict;
+
+    private TrendVerdict NightVerdict() =>
+        TrendVerdicts.ForNight(
+            TodayValue(d => d.NightActivityCount), Baseline(d => d.NightActivityCount), HoursIntoToday())
+        ?? EmptyVerdict;
+
+    private TrendVerdict WakeUpVerdict() =>
+        TrendVerdicts.ForWakeUp(TodayWakeUpHours(), WakeUpBaseline()) ?? EmptyVerdict;
+
+    /// <summary>How much of today has happened, so a quiet morning is not called a quiet day.</summary>
+    private static double HoursIntoToday() =>
+        HouseholdTime.LocalTime(DateTimeOffset.UtcNow).ToTimeSpan().TotalHours;
+
+    /// <summary>No badge at all, rather than a hedge like "判定できません" on every card.</summary>
+    private static readonly TrendVerdict EmptyVerdict = new(string.Empty, string.Empty);
+
+    private double? TodayValue(Func<DailyActivity, double> value)
+    {
+        var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
+        var match = _model?.Recent.LastOrDefault(d => d.Date == today);
+
+        return match is null ? null : value(match);
+    }
+
+    /// <summary>
+    /// The days before today, and only those with something recorded: a device that was
+    /// offline for a week would otherwise drag the "usual" down to nothing.
+    /// </summary>
+    private IReadOnlyList<double> Baseline(Func<DailyActivity, double> value)
     {
         if (_model is null)
         {
@@ -1115,7 +1162,50 @@ else
 
         var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
 
-        return [.. _model.Recent.Select(d => new BarChartPoint(
+        return [.. _model.Recent
+            .Where(d => d.Date < today && d.FirstActivityTime is not null)
+            .Select(value)];
+    }
+
+    private double? TodayWakeUpHours()
+    {
+        var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
+        var match = _model?.Recent.LastOrDefault(d => d.Date == today);
+
+        return match?.FirstActivityTime is { } t ? t.ToTimeSpan().TotalHours : null;
+    }
+
+    private IReadOnlyList<double> WakeUpBaseline()
+    {
+        if (_model is null)
+        {
+            return [];
+        }
+
+        var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
+
+        return [.. _model.Recent
+            .Where(d => d.Date < today && d.FirstActivityTime is not null)
+            .Select(d => d.FirstActivityTime!.Value.ToTimeSpan().TotalHours)];
+    }
+
+    /// <summary>
+    /// Getting-up time as hours past midnight, so a later start makes a taller bar.
+    /// Days with no activity at all stay at zero rather than being dropped: a missing
+    /// morning is the single most important thing on this screen. The tooltip shows a
+    /// real clock time, because "6.5時" is not how anyone reads a wake-up time.
+    /// </summary>
+    private IReadOnlyList<BarChartPoint> WakeUpTrend()
+    {
+        var days = TrendDays();
+        if (days.Count == 0)
+        {
+            return [];
+        }
+
+        var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
+
+        return [.. days.Select(d => new BarChartPoint(
             d.Date.ToString("M/d"),
             d.FirstActivityTime is { } t ? Math.Round(t.ToTimeSpan().TotalHours, 2) : 0,
             d.Date == today,
@@ -1124,15 +1214,36 @@ else
 
     private IReadOnlyList<BarChartPoint> TrendPoints(Func<DailyActivity, double> value)
     {
-        if (_model is null)
+        var days = TrendDays();
+        if (days.Count == 0)
         {
             return [];
         }
 
         var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
 
-        return [.. _model.Recent.Select(d =>
+        return [.. days.Select(d =>
             new BarChartPoint(d.Date.ToString("M/d"), value(d), d.Date == today))];
+    }
+
+    /// <summary>
+    /// The days worth charting: everything from the first day something was recorded.
+    /// A household that signed up yesterday gets one bar rather than one bar preceded by
+    /// thirteen empty ones - padding the start with days that pre-date the household
+    /// would suggest a fortnight of silence that never actually happened.
+    /// </summary>
+    private IReadOnlyList<DailyActivity> TrendDays()
+    {
+        if (_model is null)
+        {
+            return [];
+        }
+
+        var first = _model.Recent
+            .Select((d, i) => (Day: d, Index: i))
+            .FirstOrDefault(x => x.Day.FirstActivityTime is not null);
+
+        return first.Day is null ? [] : [.. _model.Recent.Skip(first.Index)];
     }
 
     /// <summary>Spells the series out for screen readers, which cannot read the bars.</summary>
