@@ -98,6 +98,7 @@ public class AssistantKnowledgeTests
     [InlineData("カメラで撮られてる？")]
     [InlineData("録音されてるの")]
     [InlineData("部屋が映像で見られていませんか")]
+    [InlineData("写真は残るのですか")]
     public async Task Camera_Worry_Is_Answered_With_What_The_Product_Actually_Records(string question)
     {
         using var db = await new TestDb().SeedAsync(TestDb.Light());
@@ -109,6 +110,22 @@ public class AssistantKnowledgeTests
         // Grounded in the implementation: SwitchBot open/close, motion and power events only.
         Assert.Contains("カメラはありません", response.Reply);
         Assert.Contains("記録していません", response.Reply);
+    }
+
+    /// <summary>
+    /// 「写真」「映像」という語が出ただけでカメラの説明を始めないこと。
+    ///
+    /// 心配していない人に「カメラはありません。盗撮していません」と返すのは、
+    /// こちらから盗撮の可能性を持ち出すことになり、安心させるどころか不安を作ります。
+    /// 撮られる・残る・見られるという心配と組んだときだけ答えます。
+    /// </summary>
+    [Theory]
+    [InlineData("孫の写真が届いてうれしかった")]
+    [InlineData("テレビの映像が乱れるんです")]
+    public async Task Merely_Mentioning_Photos_Does_Not_Trigger_The_Camera_Answer(string message)
+    {
+        Assert.Null(AssistantKnowledgeBase.TryAnswer(message, FaqMatchMode.Strict));
+        Assert.Null(AssistantKnowledgeBase.TryAnswer(message, FaqMatchMode.Loose));
     }
 
     [Fact]
