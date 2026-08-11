@@ -334,6 +334,67 @@ public class AssistantKnowledgeTests
         }
     }
 
+    /// <summary>
+    /// 画面の見出しと同じ文字列を、KB が手順の中でそのまま引用しています。
+    ///
+    /// 引用元のラベルを画面側で変えると、LINE は存在しないボタン名を案内しはじめます。
+    /// 高齢者は書かれたとおりの文字を画面上で探すので、黙って壊れると致命的です。
+    /// 型では繋がらない依存なので、テキストの一致をここで固定します。
+    /// 片方だけ変えたときは、このテストが両方を直すよう促します。
+    /// </summary>
+    [Theory]
+    [InlineData("SwitchBot設定", "src/MimamoriTai.Web/Components/Pages/Home.razor")]
+    [InlineData("LINEでお知らせを受け取る", "src/MimamoriTai.Web/Components/Pages/SwitchBotSettings.razor")]
+    [InlineData("連携コードを発行する", "src/MimamoriTai.Web/Components/Pages/SwitchBotSettings.razor")]
+    public void Screen_Labels_Quoted_By_The_Knowledge_Base_Still_Exist_On_The_Screen(
+        string label, string uiPath)
+    {
+        var root = RepoRoot();
+
+        var knowledgeBase = File.ReadAllText(
+            Path.Combine(root, "src/MimamoriTai.Core/Application/AssistantKnowledgeBase.cs"));
+        Assert.Contains($"「{label}」", knowledgeBase);
+
+        var ui = File.ReadAllText(Path.Combine(root, uiPath));
+        Assert.Contains(label, ui);
+    }
+
+    /// <summary>
+    /// KB は「LINEで使えるボタン」としてリッチメニューのラベルを列挙しています。
+    /// メニュー側を変えたら、案内も一緒に変える必要があります。
+    /// </summary>
+    [Theory]
+    [InlineData("助けて")]
+    [InlineData("体調が悪い")]
+    [InlineData("大丈夫")]
+    [InlineData("今日の様子")]
+    [InlineData("家族に連絡")]
+    public void Line_Button_Labels_Quoted_By_The_Knowledge_Base_Still_Exist_In_The_Rich_Menu(string label)
+    {
+        var root = RepoRoot();
+
+        var knowledgeBase = File.ReadAllText(
+            Path.Combine(root, "src/MimamoriTai.Core/Application/AssistantKnowledgeBase.cs"));
+        Assert.Contains($"「{label}」", knowledgeBase);
+
+        var richMenu = File.ReadAllText(Path.Combine(root, "scripts/setup-line-rich-menu.ps1"));
+        Assert.Contains($"'{label}'", richMenu);
+    }
+
+    /// <summary>Walks up from the test binaries until the solution file is found.</summary>
+    private static string RepoRoot()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "MimamoriTai.slnx")))
+        {
+            dir = dir.Parent;
+        }
+
+        Assert.NotNull(dir);
+        return dir!.FullName;
+    }
+
     private sealed class RecordingAiRouterClient : IAiRouterClient
     {
         private readonly MockAiRouterClient _inner = new();
