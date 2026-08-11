@@ -24,7 +24,13 @@ public sealed class MockAiRouterClient : IAiRouterClient
     {
         var userMessage = messages.LastOrDefault(m => m.Role == "user")?.Content ?? string.Empty;
 
-        var content = purpose switch
+        // The purpose can carry a routing suffix (e.g. "summary-fast" for the LINE
+        // deadline); the intent behind it is unchanged, so match on the base name.
+        var basePurpose = purpose.EndsWith(OrcaRouterOptions.FastSuffix, StringComparison.Ordinal)
+            ? purpose[..^OrcaRouterOptions.FastSuffix.Length]
+            : purpose;
+
+        var content = basePurpose switch
         {
             "summary" => BuildSummary(userMessage),
             _ when jsonMode => BuildIntentJson(userMessage),
@@ -72,7 +78,13 @@ public sealed class MockAiRouterClient : IAiRouterClient
 
         if (ContainsAny(message, "どう", "様子", "何時", "回数", "活動", "昨日", "夜中", "最後", "何回", "少な"))
         {
-            return Json("query_data", null, null, 0.9, message);
+            // Comparison / trend wording is what makes a data agent worth the wait;
+            // "今日どう?" is answered from the local database alone.
+            var scope = ContainsAny(message, "先週", "先月", "今週", "今月", "比べ", "比較", "平均", "傾向", "最近", "いつも", "推移", "変化")
+                ? "analysis"
+                : "recent";
+
+            return Json("query_data", null, null, 0.9, message, scope);
         }
 
         if (alias is not null)
@@ -130,12 +142,13 @@ public sealed class MockAiRouterClient : IAiRouterClient
         return "承知しました。何かあればいつでも教えてください。";
     }
 
-    private static string Json(string intent, string? alias, string? action, double confidence, string? question) =>
+    private static string Json(string intent, string? alias, string? action, double confidence, string? question, string scope = "recent") =>
         JsonSerializer.Serialize(new
         {
             intent,
             deviceAlias = alias,
             action,
+            scope,
             confidence,
             question
         });

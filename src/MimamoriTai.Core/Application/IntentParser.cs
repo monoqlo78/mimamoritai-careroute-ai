@@ -13,8 +13,23 @@ public sealed class IntentPayload
     [JsonPropertyName("intent")] public string? Intent { get; set; }
     [JsonPropertyName("deviceAlias")] public string? DeviceAlias { get; set; }
     [JsonPropertyName("action")] public string? Action { get; set; }
+    [JsonPropertyName("scope")] public string? Scope { get; set; }
     [JsonPropertyName("confidence")] public double Confidence { get; set; }
     [JsonPropertyName("question")] public string? Question { get; set; }
+}
+
+/// <summary>
+/// How far back a data question reaches. Decides whether the Fabric Data Agent is
+/// worth consulting: it answers analytical questions the local database cannot,
+/// but costs seconds, so questions about the current state are served locally.
+/// </summary>
+public enum QueryScope
+{
+    /// <summary>Current or same-day state. Answerable from the local database alone.</summary>
+    Recent = 0,
+
+    /// <summary>Comparison, trend or aggregate spanning multiple days.</summary>
+    Analysis = 1
 }
 
 public sealed record AssistantPlan(
@@ -22,7 +37,8 @@ public sealed record AssistantPlan(
     string? DeviceAlias,
     DeviceAction? Action,
     double Confidence,
-    string? Question);
+    string? Question,
+    QueryScope Scope = QueryScope.Recent);
 
 public static class IntentParser
 {
@@ -108,7 +124,16 @@ public static class IntentParser
             ? null
             : payload.Question.Trim();
 
-        return new AssistantPlan(intent.Value, alias, action, confidence, question);
+        // Unknown or missing scope means the model gave no usable signal. Defaulting
+        // to Recent keeps the fast local-only path: a missed analytical question loses
+        // enrichment, while a wrong Analysis would spend the budget on every "元気?".
+        var scope = payload.Scope?.Trim().ToLowerInvariant() switch
+        {
+            "analysis" => QueryScope.Analysis,
+            _ => QueryScope.Recent
+        };
+
+        return new AssistantPlan(intent.Value, alias, action, confidence, question, scope);
     }
 
     /// <summary>Pulls the first balanced JSON object out of a response that may contain prose or fences.</summary>

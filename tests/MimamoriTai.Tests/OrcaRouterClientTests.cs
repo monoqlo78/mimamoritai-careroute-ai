@@ -280,47 +280,73 @@ public sealed class OrcaRouterClientTests(Xunit.Abstractions.ITestOutputHelper o
         {
             Model = "orcarouter/auto",
             JsonModel = "openai/gpt-4.1-mini",
-            SummaryModel = "openai/gpt-4o-mini"
+            FastModel = "openai/gpt-4o-mini"
         };
 
-        Assert.Equal("openai/gpt-4.1-mini", options.ResolveModel(jsonMode: true, purpose: "summary"));
+        Assert.Equal("openai/gpt-4.1-mini", options.ResolveModel(jsonMode: true, purpose: "summary-fast"));
     }
 
+    /// <summary>
+    /// Only the deadline-bound variant is pinned. The plain summary keeps the auto
+    /// router, which is what surfaces a different provider per request in the UI.
+    /// </summary>
     [Fact]
-    public void Summary_uses_its_pinned_model_when_one_is_configured()
+    public void Only_a_fast_purpose_takes_the_pinned_model()
     {
-        var options = new OrcaRouterOptions { Model = "orcarouter/auto", SummaryModel = "openai/gpt-4.1-mini" };
+        var options = new OrcaRouterOptions { Model = "orcarouter/auto", FastModel = "openai/gpt-4.1-mini" };
 
-        Assert.Equal("openai/gpt-4.1-mini", options.ResolveModel(jsonMode: false, purpose: "summary"));
+        Assert.Equal("openai/gpt-4.1-mini", options.ResolveModel(jsonMode: false, purpose: "summary-fast"));
+        Assert.Equal("orcarouter/auto", options.ResolveModel(jsonMode: false, purpose: "summary"));
         Assert.Equal("orcarouter/auto", options.ResolveModel(jsonMode: false, purpose: "conversation"));
     }
 
     /// <summary>
-    /// Unset by default: the auto router keeps choosing unless an operator opts in.
+    /// Clearing the pin is a supported way to force the auto router everywhere; the
+    /// suffix must then be inert rather than resolving to an empty model name.
     /// </summary>
     [Fact]
-    public void Summary_falls_back_to_the_general_model_when_unpinned()
+    public void Fast_purpose_falls_back_to_the_general_model_when_unpinned()
     {
-        var options = new OrcaRouterOptions { Model = "orcarouter/auto" };
+        var options = new OrcaRouterOptions { Model = "orcarouter/auto", FastModel = string.Empty };
 
-        Assert.Equal(string.Empty, options.SummaryModel);
-        Assert.Equal("orcarouter/auto", options.ResolveModel(jsonMode: false, purpose: "summary"));
+        Assert.Equal("orcarouter/auto", options.ResolveModel(jsonMode: false, purpose: "summary-fast"));
     }
 
     [Fact]
-    public async Task Summary_pin_is_sent_to_the_api()
+    public async Task Fast_pin_is_sent_to_the_api()
     {
         var handler = new ScriptedHandler().Then(HttpStatusCode.OK, Ok());
         var client = Create(handler, new OrcaRouterOptions
         {
             ApiKey = ApiKey,
             Model = "orcarouter/auto",
-            SummaryModel = "openai/gpt-4.1-mini"
+            FastModel = "openai/gpt-4.1-mini"
+        });
+
+        await client.CompleteAsync(Prompt(), "summary-fast");
+
+        var body = JsonDocument.Parse(handler.Bodies[0]).RootElement;
+        Assert.Equal("openai/gpt-4.1-mini", body.GetProperty("model").GetString());
+    }
+
+    /// <summary>
+    /// The web path must keep reaching the auto router: the resolved model name is
+    /// shown to the user and is the visible evidence of OrcaRouter routing.
+    /// </summary>
+    [Fact]
+    public async Task Plain_summary_still_sends_the_auto_router_to_the_api()
+    {
+        var handler = new ScriptedHandler().Then(HttpStatusCode.OK, Ok());
+        var client = Create(handler, new OrcaRouterOptions
+        {
+            ApiKey = ApiKey,
+            Model = "orcarouter/auto",
+            FastModel = "openai/gpt-4.1-mini"
         });
 
         await client.CompleteAsync(Prompt(), "summary");
 
         var body = JsonDocument.Parse(handler.Bodies[0]).RootElement;
-        Assert.Equal("openai/gpt-4.1-mini", body.GetProperty("model").GetString());
+        Assert.Equal("orcarouter/auto", body.GetProperty("model").GetString());
     }
 }

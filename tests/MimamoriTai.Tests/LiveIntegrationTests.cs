@@ -42,14 +42,14 @@ public class LiveIntegrationTests(ITestOutputHelper output)
         .AddEnvironmentVariables()
         .Build();
 
-    private static OrcaRouterClient CreateAi(IConfiguration config, string? summaryModel = null)
+    private static OrcaRouterClient CreateAi(IConfiguration config, string? fastModel = null)
     {
         var options = new OrcaRouterOptions();
         config.GetSection(OrcaRouterOptions.SectionName).Bind(options);
 
-        if (summaryModel is not null)
+        if (fastModel is not null)
         {
-            options.SummaryModel = summaryModel;
+            options.FastModel = fastModel;
         }
 
         // Mirrors the AddHttpClient configuration in ServiceCollectionExtensions:
@@ -459,11 +459,11 @@ public class LiveIntegrationTests(ITestOutputHelper output)
 
         output.WriteLine($"[BUDGET] fabric alone, unbounded   {fabricElapsed.Elapsed,6:0}ms  ({fabricElapsed.Result})");
 
-        foreach (var (label, summaryModel, useRealFabric, fabricBudget) in new (string, string?, bool, TimeSpan?)[]
+        foreach (var (label, source, useRealFabric) in new (string, CommandSource, bool)[]
         {
-            ("auto  + real fabric  ", null, true, null),
-            ("mini  + real fabric  ", "openai/gpt-4.1-mini", true, null),
-            ("mini  + fabric off   ", "openai/gpt-4.1-mini", false, null)
+            ("LINE  + real fabric  ", CommandSource.Line, true),
+            ("web   + real fabric  ", CommandSource.Web, true),
+            ("LINE  + fabric off   ", CommandSource.Line, false)
         })
         {
             using var db = await new TestDb().SeedAsync(TestDb.Light());
@@ -473,20 +473,22 @@ public class LiveIntegrationTests(ITestOutputHelper output)
                 ? CreateFabric(config)
                 : new MockFabricDataAgentClient();
 
+            // No overrides: this measures exactly what appsettings/user-secrets ship,
+            // so the numbers are the ones a demo will actually see.
             var orchestrator = new AssistantOrchestrator(
                 db.Context,
-                CreateAi(config, summaryModel),
+                CreateAi(config),
                 new MockDeviceProvider(),
                 fabric,
                 new LocalDataQuestionService(db.Context, TimeProvider.System),
                 TimeProvider.System,
                 new InMemoryPendingActionStore(),
-                fabricBudget);
+                TimeSpan.FromSeconds(2));
 
             var run = await MeasureAsync(async () =>
             {
                 var response = await orchestrator.HandleAsync(
-                    new AssistantRequest(db.HouseholdId, null, "今日の様子をまとめて教えて", CommandSource.Web));
+                    new AssistantRequest(db.HouseholdId, null, "今日の様子をまとめて教えて", source));
 
                 return response.ResolvedModel;
             });

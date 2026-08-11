@@ -56,6 +56,7 @@ public sealed class AssistantOrchestrator(
           "intent": "control_device | device_status | query_data | conversation",
           "deviceAlias": "文字列 または null",
           "action": "turn_on | turn_off | toggle | get_status | null",
+          "scope": "recent | analysis",
           "confidence": 0.0,
           "question": "文字列 または null"
         }
@@ -67,6 +68,13 @@ public sealed class AssistantOrchestrator(
         - それ以外の会話 -> conversation
         - 機器が特定できない場合 deviceAlias は null にし、推測しないこと。
         - confidence は 0.0〜1.0 の確信度。
+
+        scope の判定 (query_data のときのみ意味を持つ):
+        - "recent" = 今・今日・直近の状態を尋ねている。
+          例:「今どうしてる」「今日の様子は」「変わりない?」「起きてる?」
+        - "analysis" = 複数日をまたぐ比較・傾向・集計・原因の分析を求めている。
+          例:「先週と比べてどう」「今月の平均は」「最近増えている?」「いつも何時に寝ている」
+        - 迷った場合は "recent" にすること。
         """;
 
     private const string RepairPrompt = "JSONとして解析できませんでした。指定したスキーマのJSONオブジェクトのみを、余計な文字なしで返してください。";
@@ -318,7 +326,12 @@ public sealed class AssistantOrchestrator(
         var local = await localData.AnswerAsync(request.HouseholdId, question, ct);
         var answer = local;
 
-        if (fabric.IsConfigured)
+        // Fabric is consulted only for questions the local database cannot answer well:
+        // comparisons, trends and aggregates spanning days. For "今どうしてる" the local
+        // answer is already complete and correct, so paying seconds for an enrichment
+        // that adds nothing is pure latency. The scope comes from the intent call that
+        // has already happened, so this costs no extra model round trip.
+        if (fabric.IsConfigured && plan.Scope == QueryScope.Analysis)
         {
             var remote = await TryAskFabricAsync(question, ct);
             if (remote is { Success: true } && !string.IsNullOrWhiteSpace(remote.Answer))
@@ -407,14 +420,28 @@ public sealed class AssistantOrchestrator(
             AiMessage.User($"ご家族からの質問: {question}\n\nデータ({answer.Source}):\n{facts}")
         };
 
-        var summary = await ai.CompleteAsync(messages, "summary", jsonMode: false, ct);
-        await LogAiAsync(request.HouseholdId, "summary", summary, ct);
+        var purpose = SummaryPurpose(request.Source);
+        var summary = await ai.CompleteAsync(messages, purpose, jsonMode: false, ct);
+        await LogAiAsync(request.HouseholdId, purpose, summary, ct);
 
         var text = summary.Success ? summary.Content.Trim() : string.Empty;
 
         // Never let the model replace the facts with nothing.
         return text.Length == 0 ? (facts, summary) : (text, summary);
     }
+
+    /// <summary>
+    /// Marks the summary request as deadline-bound when it came from LINE.
+    ///
+    /// LINE cancels an event after 8 seconds, so that path needs a model whose
+    /// latency is predictable. Every other entry point (web UI, API) has no such
+    /// limit and keeps the auto router, which is the whole point of routing through
+    /// OrcaRouter and is surfaced to the user as the resolved model name. The
+    /// suffix is interpreted by OrcaRouterOptions.ResolveModel; a client that does
+    /// not pin a fast model simply ignores it.
+    /// </summary>
+    private static string SummaryPurpose(CommandSource source) =>
+        source == CommandSource.Line ? "summary-fast" : "summary";
 
     private async Task<AssistantResponse> HandleConversationAsync(
         AssistantRequest request, AiCompletionResult intentCompletion, CancellationToken ct)

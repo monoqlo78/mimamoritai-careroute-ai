@@ -33,16 +33,22 @@ public sealed class OrcaRouterOptions
     public string JsonModel { get; set; } = "openai/gpt-4.1-mini";
 
     /// <summary>
-    /// Optional model pinned for the family-facing summary.
+    /// Model used only on paths that carry a hard deadline, selected by a purpose
+    /// ending in "-fast".
     ///
-    /// Empty by default so the auto router keeps choosing. Measured against this
-    /// account, "orcarouter/auto" resolves the summary to reasoning models
-    /// (qwen3.7-plus, deepseek-v4-pro) and takes 20-30s end to end, which is a long
-    /// time for someone waiting on a phone. Pinning a fast chat model here (for
-    /// example "openai/gpt-4.1-mini", measured at ~2s) trades model choice for
-    /// responsiveness. See docs/AI_DEVICE_SETUP.md.
+    /// The auto router is kept everywhere else on purpose: routing each request to a
+    /// different provider is the point of OrcaRouter, and the resolved model name is
+    /// shown to the user. But "orcarouter/auto" resolves the summary to reasoning
+    /// models (qwen3.7-plus, deepseek-v4-pro, glm-5.2) with a very wide spread --
+    /// measured between 5.6s and 51s for the same prompt. The LINE webhook cancels an
+    /// event after 8s, so that spread cannot be carried there: a slow draw silently
+    /// replaces the summary with a generic timeout message.
+    ///
+    /// Pinning a fast chat model here (openai/gpt-4.1-mini, measured 3-5s end to end)
+    /// buys predictability where a deadline exists, without taking the auto router
+    /// away from the screens that can afford to wait. See docs/AI_DEVICE_SETUP.md.
     /// </summary>
-    public string SummaryModel { get; set; } = string.Empty;
+    public string FastModel { get; set; } = "openai/gpt-4.1-mini";
 
     /// <summary>
     /// Optional ordered fallback chain (max 5, enforced by OrcaRouter) sent as
@@ -68,8 +74,9 @@ public sealed class OrcaRouterOptions
 
     /// <summary>
     /// Model actually used for a request. JSON mode wins over everything (intent
-    /// parsing must stay deterministic); otherwise a purpose-specific pin is used
-    /// when configured, falling back to the general model.
+    /// parsing must stay deterministic). Otherwise a purpose ending in "-fast" marks
+    /// a caller that has a deadline and gets the pinned fast model; every other
+    /// purpose keeps the general model so the auto router stays in play.
     /// </summary>
     public string ResolveModel(bool jsonMode, string? purpose = null)
     {
@@ -78,12 +85,16 @@ public sealed class OrcaRouterOptions
             return JsonModel;
         }
 
-        if (string.Equals(purpose, "summary", StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(SummaryModel))
+        if (purpose is not null
+            && purpose.EndsWith(FastSuffix, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(FastModel))
         {
-            return SummaryModel;
+            return FastModel;
         }
 
         return Model;
     }
+
+    /// <summary>Purpose suffix marking a caller that cannot wait for the auto router.</summary>
+    public const string FastSuffix = "-fast";
 }
