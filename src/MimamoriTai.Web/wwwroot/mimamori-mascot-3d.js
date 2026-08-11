@@ -3,6 +3,13 @@ import { GLTFLoader } from "./vendor/three/GLTFLoader.js";
 
 const controllers = new Set();
 
+// 顔寄せのときに画面に入れる高さ（モデルは最大辺が 3.45 になるよう正規化される）。
+// 円で切り抜かれるので、頭がちょうど収まる大きさに合わせてある。
+const faceWindow = 2.12;
+
+// 頭のてっぺんを画面の上端ぴったりに置くと窮屈なので、少しだけ空ける。
+const headroom = 0.06;
+
 // The GLB ships four named clips: MimamoIdle / MimamoFaceIdle (looping) and
 // MimamoWave / MimamoBanzai (one-shot reactions).
 const idleClip = "MimamoIdle";
@@ -132,8 +139,17 @@ class MascotController {
         // data-mascot-frame="face" のときは頭のあたりまで寄る。
         // 円で切り抜かれるぶん、四隅は捨てる前提で近づける。
         if (this.host.dataset.mascotFrame === "face") {
-            const headY = (bounds.max.y - center.y) * scale * 0.34;
-            this.camera.position.set(0, headY, 4.7);
+            // 距離を決め打ちにするとCGを作り直すたびに寄りすぎ・引きすぎになる。
+            // 見せたい高さ（faceWindow）から必要な距離を画角で逆算する。
+            const half = THREE.MathUtils.degToRad(this.camera.fov) / 2;
+            const z = faceWindow / (2 * Math.tan(half));
+
+            // 頭の上（アンテナの先）を基準にする。顔の位置を割合で決めると、
+            // アンテナが伸びただけで頭のてっぺんが切れてしまう。
+            const top = bounds.max.y * scale + this.model.position.y;
+            const headY = top - faceWindow / 2 + headroom;
+
+            this.camera.position.set(0, headY, z);
             this.camera.lookAt(0, headY, 0);
             return;
         }
