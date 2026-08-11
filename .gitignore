@@ -57,6 +57,8 @@ scripts/generated/
 assets/opus-work/*.png
 assets/opus-work/*.glb
 assets/opus-work/*.blend
+assets/opus-work/__pycache__/
+assets/opus-work/sweep/
 assets/sol-work/
 assets/*.gif
 assets/*-traced.*
