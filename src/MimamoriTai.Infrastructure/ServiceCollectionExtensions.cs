@@ -183,6 +183,14 @@ public static class ServiceCollectionExtensions
             services.AddSingleton<ILineMessagingClient, MockLineMessagingClient>();
         }
 
+        // Registered unconditionally: the verifier is what makes a LIFF view refuse to
+        // show data, so it must exist even when LINE sending is not configured. With no
+        // LiffChannelId it simply reports CanVerify=false and every token fails closed.
+        services.AddHttpClient<ILineIdTokenVerifier, LineIdTokenVerifier>(client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(10);
+        });
+
         // --- Fabric Eventstream / Eventhouse (real-time streaming ingestion) --
         // Preference order: EventStream (Event Hubs-protocol custom endpoint,
         // the primary ingestion path) > Eventhouse (direct KQL REST ingestion)

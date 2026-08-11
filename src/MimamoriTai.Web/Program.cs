@@ -18,6 +18,7 @@ builder.Services.AddScoped<DashboardService>();
 builder.Services.AddScoped<DeviceDetailService>();
 builder.Services.AddScoped<DeviceSettingsService>();
 builder.Services.AddScoped<AdminConsoleService>();
+builder.Services.AddScoped<LiffSessionService>();
 builder.Services.AddOpenApi();
 builder.Services.AddHostedService<WatchAlertBackgroundService>();
 builder.Services.AddHostedService<SwitchBotPollingBackgroundService>();
