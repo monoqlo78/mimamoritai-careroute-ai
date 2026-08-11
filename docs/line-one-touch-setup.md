@@ -110,7 +110,13 @@ dotnet user-secrets set "Line:LiffChannelId" "<チャネルID（数字）>"
 - `Line:LiffChannelId` はブラウザーから受け取ったIDトークンを LINE の `/oauth2/v2.1/verify` で検証するために使います。**未設定だと検証できないため、`/liff` は常に「LINEからひらいてください」の状態のまま**になり、世帯データは一切表示されません。ブラウザーが自称するユーザーIDを信用しない、という設計です。
 - 世帯の特定は既存の `LineRecipient`（連携コードで紐づけた行）をそのまま使います。未連携のユーザーには連携コードの案内だけが出ます。
 - 3Dモデル（GLB）は7.6MBあります。まず静止画（`mimamo-robot-opus.png`）を表示し、そのあと3Dに差し替えます。端末が「視差効果を減らす」設定のときはGLBを取得せず静止画のままにし、タップしたときだけ3Dを読み込みます。
-- リッチメニューからLIFFを開きたい場合は、`assets/create-line-rich-menu.ps1` のURIアクション先を `https://liff.line.me/<LIFF ID>` に変更してメニューを作り直してください。
+- リッチメニューの「Web版」タイルからLIFFを開きたい場合は、メニュー作成時に `-WebAppUrl` を渡してください。URIアクション先を持っているのは `scripts/setup-line-rich-menu.ps1` です（`assets/create-line-rich-menu.ps1` は画像を描くだけで、リンク先は持っていません）。
+
+  ```powershell
+  ./scripts/setup-line-rich-menu.ps1 -ChannelAccessToken "…" -WebAppUrl "https://liff.line.me/<LIFF ID>"
+  ```
+
+  **LIFF ID を発行するまでは差し替えないでください。** `Line:LiffId` が未設定のあいだ `/liff` は案内文しか出さないため、タイルを押しても何も起きない状態になります。既定の `/one-touch` は設定なしで動くので、それまではそのままにしておきます。なお指定するのは `https://liff.line.me/<LIFF ID>` であって `https://…/liff` ではありません。後者を直接開くとLINEのログイン文脈が無く、IDトークンを取得できません。
 
 ## 5. ボタンの動作
 
