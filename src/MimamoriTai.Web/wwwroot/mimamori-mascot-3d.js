@@ -13,7 +13,35 @@ const headroom = 0.06;
 // The GLB ships four named clips: MimamoIdle / MimamoFaceIdle (looping) and
 // MimamoWave / MimamoBanzai (one-shot reactions).
 const idleClip = "MimamoIdle";
-const faceIdleClip = "MimamoFaceIdle";
+
+// 顔だけはGLBのクリップを使わず、ここでボーンを直接動かす。
+// MimamoFaceIdle は 5.04 秒の決まった繰り返しなので、見ているうちに
+// 「同じ動きの置物」に見えてくる。瞬きの間隔をその都度変え、
+// 話しかけられたときだけ口を動かすほうが、生きているように見える。
+//
+// GLB の Blink / MouthOpen / Talk モーフは使わない。Blink は影響値を
+// -1〜10 まで振って確認したが、まぶたが下りるのではなく目そのものの
+// 形が変わるだけで、閉じているようには見えなかったため。
+// 代わりにリグの eye_L / eye_R（目の中心にある）と jaw を動かす。
+
+// まぶたを閉じたときに目を縦へ何割つぶすか。1.0 だと線になって消えるので少し残す。
+const blinkSquash = 0.93;
+
+// 口は閉じる方向に動かす。このモデルは初期状態が「開いた笑顔」なので、
+// jaw を負に回すと閉じ、0 で元の笑顔に戻る（-1.2〜+0.65 で目視確認）。
+// しゃべっている間だけ閉じ開きを繰り返し、黙っているときは笑顔のまま。
+const jawCloseRad = 0.30;
+
+// しゃべっているとき眉をどれだけ持ち上げるか（モデル座標）。
+const browLift = 0.018;
+
+// 人のまばたきは 2〜6 秒に1回くらい。たまに2回続けて閉じる。
+const blinkGapMin = 2.2;
+const blinkGapMax = 6.4;
+const blinkCloseSec = 0.09;
+const blinkHoldSec = 0.05;
+const blinkOpenSec = 0.14;
+const doubleBlinkChance = 0.18;
 const reactions = {
     status: { clip: "MimamoWave", speed: 1 },
     contact_family: { clip: "MimamoWave", speed: 0.9 },
@@ -67,6 +95,7 @@ class MascotController {
                 this.model = gltf.scene;
                 this.stage.add(this.model);
                 this.frameModel();
+                this.collectFaceBones();
 
                 if (gltf.animations.length > 0) {
                     this.setupAnimations(gltf.animations);
@@ -91,12 +120,8 @@ class MascotController {
         this.actions = new Map();
         clips.forEach((clip) => this.actions.set(clip.name, this.mixer.clipAction(clip)));
 
-        // Face idle runs continuously alongside whichever body clip is active.
-        const face = this.actions.get(faceIdleClip);
-        if (face) {
-            face.setLoop(THREE.LoopRepeat, Infinity).play();
-        }
-
+        // MimamoFaceIdle はあえて再生しない。ミキサーが毎フレーム表情の値を
+        // 上書きしてしまい、こちらで動かした瞬きが打ち消されるため。
         this.idleAction = this.actions.get(idleClip) ?? this.mixer.clipAction(clips[0]);
         this.idleAction.setLoop(THREE.LoopRepeat, Infinity);
         this.idleAction.timeScale = 0.72;
@@ -106,6 +131,109 @@ class MascotController {
         this.mixer.addEventListener("finished", (event) => {
             if (event.action === this.bodyAction) this.playIdle();
         });
+    }
+
+    // 表情はボーンで動かす。GLB の Blink モーフは目の形を変えるだけで
+    // まぶたが閉じないため使わない（-1〜10 まで振って目視確認済み）。
+    // eye_L / eye_R は目の中心に置かれているので、Y を潰すとその場で閉じる。
+    collectFaceBones() {
+        this.faceBones = { eyes: [], brows: [], jaw: null };
+        this.model.traverse((node) => {
+            if (!node.isBone) return;
+            if (node.name === 'eye_L' || node.name === 'eye_R') {
+                this.faceBones.eyes.push(node);
+            } else if (node.name === 'eyebrow_L' || node.name === 'eyebrow_R') {
+                this.faceBones.brows.push({ bone: node, baseY: node.position.y });
+            } else if (node.name === 'jaw') {
+                this.faceBones.jaw = { bone: node, baseX: node.rotation.x };
+            }
+        });
+
+        this.blinkAt = this.nextBlinkDelay();
+        this.blinkPhase = 0;
+        this.blinkQueued = 0;
+        this.speakUntil = 0;
+        this.faceTime = 0;
+    }
+
+    nextBlinkDelay() {
+        // ゆっくり見せたい設定のときは、動きが目立たないよう間隔を広げる。
+        const scale = this.reducedMotion ? 1.8 : 1;
+        return (blinkGapMin + Math.random() * (blinkGapMax - blinkGapMin)) * scale;
+    }
+
+    // 0（開いている）〜1（閉じている）を、閉じる→保つ→開くの順に返す。
+    blinkValue(t) {
+        if (t < blinkCloseSec) return t / blinkCloseSec;
+        if (t < blinkCloseSec + blinkHoldSec) return 1;
+        const open = (t - blinkCloseSec - blinkHoldSec) / blinkOpenSec;
+        return open >= 1 ? -1 : 1 - open;
+    }
+
+    updateFace(delta) {
+        if (!this.faceBones) return;
+        this.faceTime += delta;
+
+        // まばたき
+        let blink = 0;
+        if (this.blinkPhase > 0) {
+            this.blinkPhase += delta;
+            const value = this.blinkValue(this.blinkPhase);
+            if (value < 0) {
+                this.blinkPhase = 0;
+                if (this.blinkQueued > 0) {
+                    this.blinkQueued--;
+                    this.blinkPhase = 0.0001;
+                } else {
+                    this.blinkAt = this.nextBlinkDelay();
+                }
+            } else {
+                blink = value;
+            }
+        } else {
+            this.blinkAt -= delta;
+            if (this.blinkAt <= 0) {
+                this.blinkPhase = 0.0001;
+                this.blinkQueued = Math.random() < doubleBlinkChance ? 1 : 0;
+            }
+        }
+
+        this.faceBones.eyes.forEach((bone) => {
+            bone.scale.y = 1 - blink * blinkSquash;
+        });
+
+        // 口。話している間だけ動かす。ずっとぱくぱくさせると落ち着かない。
+        // open = 1 が元の笑顔、0 が閉じた口。
+        let open = 1;
+        let speaking = 0;
+        if (this.faceTime < this.speakUntil && !this.reducedMotion) {
+            // 一定の周期だと機械的なので、速さの違う波を重ねて音節のようにする。
+            const t = this.faceTime * 2 * Math.PI;
+            const wave = 0.5 + 0.32 * Math.sin(t * 7.3) + 0.18 * Math.sin(t * 3.1 + 1.7);
+            speaking = 1;
+
+            // 言い終わりは笑顔に戻す。
+            const left = this.speakUntil - this.faceTime;
+            if (left < 0.25) speaking = left / 0.25;
+
+            open = 1 - speaking * (1 - Math.max(0, Math.min(1, wave)));
+        }
+
+        if (this.faceBones.jaw) {
+            const { bone, baseX } = this.faceBones.jaw;
+            bone.rotation.x = baseX - (1 - open) * jawCloseRad;
+        }
+        // しゃべっているときだけ眉をわずかに上げる。表情がついて見える。
+        this.faceBones.brows.forEach(({ bone, baseY }) => {
+            bone.position.y = baseY + speaking * browLift;
+        });
+    }
+
+    // 返事の長さに合わせて口を動かす。読み上げているように見せるだけで、
+    // 音は出さない（音が急に鳴ると驚かせてしまうため）。
+    speak(seconds = 2.2) {
+        if (!this.faceBones) return;
+        this.speakUntil = this.faceTime + Math.max(0.6, Math.min(seconds, 8));
     }
 
     // 画面を開いた瞬間に、今日の様子に合った出迎え方をする。
@@ -183,6 +311,9 @@ class MascotController {
     }
 
     react(name) {
+        // 表情は「動きを控えめに」の設定でも動かす。まばたきまで止めると
+        // 具合が悪そうに見えてしまい、伝えたいことと食い違う。
+        this.speak(1.8);
         if (!this.mixer || this.reducedMotion) return;
         const reaction = reactions[name] ?? reactions.status;
         const next = this.actions.get(reaction.clip);
@@ -202,6 +333,7 @@ class MascotController {
 
         const delta = Math.min(this.clock.getDelta(), 0.05);
         if (!this.reducedMotion && this.mixer) this.mixer.update(delta);
+        this.updateFace(delta);
 
         this.stage.rotation.y += ((this.pointerX ?? 0) - this.stage.rotation.y) * 0.055;
         this.stage.rotation.x += ((this.pointerY ?? 0) - this.stage.rotation.x) * 0.055;
@@ -218,6 +350,13 @@ window.mimamoriMascot = {
     },
     react(name) {
         controllers.forEach((controller) => controller.react(name));
+    },
+    // 見守りAIが返事をしたときに呼ぶ。文字数から読み上げにかかる時間を
+    // ざっくり見積もって、その間だけ口を動かす。
+    speak(text) {
+        const length = typeof text === "string" ? text.length : Number(text) || 0;
+        const seconds = typeof text === "string" ? 0.9 + length * 0.09 : length;
+        controllers.forEach((controller) => controller.speak(seconds));
     }
 };
 

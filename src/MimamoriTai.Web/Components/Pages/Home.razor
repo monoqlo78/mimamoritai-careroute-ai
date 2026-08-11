@@ -186,9 +186,20 @@ else
     <section class="primary-grid">
         <article class="card assistant-card">
             <div class="section-head">
-                <div>
-                    <p class="eyebrow">見守りAI</p>
-                    <h2>気になることを聞いてください</h2>
+                <div class="assistant-head">
+                    @* 顔だけだと誰に話しかけているのか分かりにくいので、ここは全身で立たせる。
+                       上のカードと同じGLBなので、読み込みは1回で済む。 *@
+                    <div class="assistant-mascot mascot-viewer"
+                         aria-hidden="true"
+                         data-mascot-greeting="@MascotGreeting(_model.Risk.Level)"
+                         data-mascot-model="/models/mimamo-robot-opus-rigged.glb">
+                        <canvas></canvas>
+                        <img class="mascot-poster" src="/images/mimamo-robot-opus.png" alt="" />
+                    </div>
+                    <div>
+                        <p class="eyebrow">見守りAI</p>
+                        <h2>気になることを聞いてください</h2>
+                    </div>
                 </div>
                 @if (_chatLog.Count > 0)
                 {
@@ -864,11 +875,33 @@ else
                 new AssistantRequest(_model.HouseholdId, personId, text, source));
 
             _chatLog.Add(new FeedItem(DateTimeOffset.UtcNow, "見守りAI", response.Reply, true));
+
+            // 返事が出た瞬間にミマモの口を動かす。文字だけだと、誰が答えたのかが
+            // 伝わりにくい。
+            await SpeakMascotAsync(response.Reply);
             await ReloadAsync();
         }
         finally
         {
             _busy = false;
+        }
+    }
+
+    /// <summary>
+    /// Mouth movement is decoration: if the browser has no WebGL, or the script has not
+    /// loaded yet, the reply is already on screen and nothing here needs to be retried.
+    /// </summary>
+    private async Task SpeakMascotAsync(string reply)
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("mimamoriMascot.speak", reply);
+        }
+        catch (JSException)
+        {
+        }
+        catch (InvalidOperationException)
+        {
         }
     }
 
