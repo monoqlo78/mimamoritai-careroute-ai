@@ -106,10 +106,10 @@ static async Task InitializeDatabaseAsync(WebApplication app)
             await db.Database.EnsureCreatedAsync();
 
             // EnsureCreated never upgrades an existing file, so a demo database
-            // created before a model change is missing the new tables and every
-            // query against them throws at runtime. The SQLite database is a
+            // created before a model change is missing the new tables or columns and
+            // every query against them throws at runtime. The SQLite database is a
             // disposable demo artifact, so recreate it when it is out of date.
-            var missing = await GetMissingSqliteTablesAsync(db);
+            var missing = await GetMissingSqliteObjectsAsync(db);
             if (missing.Count > 0)
             {
                 logger.LogWarning(
@@ -131,26 +131,52 @@ static async Task InitializeDatabaseAsync(WebApplication app)
 }
 
 /// <summary>
-/// Table names that the model expects but the SQLite demo file does not contain.
+/// Tables and columns the model expects but the SQLite demo file does not contain.
+///
+/// Checking tables alone is not enough: adding a property to an existing entity
+/// leaves the table present but the column absent, and the failure then surfaces
+/// only when a query touches it ("no such column: d.DisplayNameOverride"), long
+/// after startup reported success.
 /// </summary>
-static async Task<List<string>> GetMissingSqliteTablesAsync(AppDbContext db)
+static async Task<List<string>> GetMissingSqliteObjectsAsync(AppDbContext db)
 {
     var expected = db.Model.GetEntityTypes()
-        .Select(t => t.GetTableName())
-        .Where(n => !string.IsNullOrEmpty(n))
-        .Distinct(StringComparer.Ordinal)
+        .Select(t => (Table: t.GetTableName(), Type: t))
+        .Where(x => !string.IsNullOrEmpty(x.Table))
         .ToList();
 
-    var actual = new HashSet<string>(StringComparer.Ordinal);
-    await using var command = db.Database.GetDbConnection().CreateCommand();
-    command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table'";
+    var actual = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+
     await db.Database.OpenConnectionAsync();
     try
     {
-        await using var reader = await command.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
+        await using (var command = db.Database.GetDbConnection().CreateCommand())
         {
-            actual.Add(reader.GetString(0));
+            command.CommandText = "SELECT name FROM sqlite_master WHERE type = 'table'";
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                actual[reader.GetString(0)] = new HashSet<string>(StringComparer.Ordinal);
+            }
+        }
+
+        foreach (var table in actual.Keys.ToList())
+        {
+            await using var command = db.Database.GetDbConnection().CreateCommand();
+
+            // pragma_table_info takes the name as a value, so it can be parameterised
+            // instead of concatenated.
+            command.CommandText = "SELECT name FROM pragma_table_info($table)";
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = "$table";
+            parameter.Value = table;
+            command.Parameters.Add(parameter);
+
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                actual[table].Add(reader.GetString(0));
+            }
         }
     }
     finally
@@ -158,7 +184,25 @@ static async Task<List<string>> GetMissingSqliteTablesAsync(AppDbContext db)
         await db.Database.CloseConnectionAsync();
     }
 
-    return expected.Where(name => !actual.Contains(name!)).Select(n => n!).ToList();
+    var missing = new List<string>();
+
+    foreach (var (table, entity) in expected)
+    {
+        if (!actual.TryGetValue(table!, out var columns))
+        {
+            missing.Add(table!);
+            continue;
+        }
+
+        // Owned/split entities can share a table, so report per column rather than
+        // assuming one entity owns every column of its table.
+        missing.AddRange(entity.GetProperties()
+            .Select(p => p.GetColumnName())
+            .Where(c => !string.IsNullOrEmpty(c) && !columns.Contains(c))
+            .Select(c => $"{table}.{c}"));
+    }
+
+    return missing.Distinct(StringComparer.Ordinal).ToList();
 }
 
 /// <summary>Exposed so tests can reference the generated entry point assembly.</summary>

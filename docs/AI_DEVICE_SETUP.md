@@ -34,7 +34,7 @@ dotnet user-secrets init   # 初回のみ（csproj に UserSecretsId は設定�
 | `OrcaRouter:BaseUrl` | 任意 | 既定 `https://api.orcarouter.ai/v1`（検証済み） |
 | `OrcaRouter:Model` | 任意 | 既定 `orcarouter/auto` |
 | `OrcaRouter:JsonModel` | 任意 | 既定 `openai/gpt-4.1-mini`（後述の理由で重要） |
-| `OrcaRouter:SummaryModel` | 任意 | 既定は空（＝`Model` を使う）。要約だけ速いモデルに固定したい時に指定（6-4） |
+| `OrcaRouter:FastModel` | 任意 | 既定 `openai/gpt-4.1-mini`。締切のある経路（LINE webhook）専用。Web UI / API は `Model` の自動ルーティングのまま（6-4） |
 | `OrcaRouter:FallbackModels` | 任意 | 主モデルが落ちた時の代替（最大5件） |
 
 ### 取得手順
@@ -335,19 +335,30 @@ LINE の webhook 処理は **1 イベントあたり 8 秒**でキャンセル�
 | 用途 | モデル | 実測 |
 |---|---|---|
 | 意図分類（JSON） | `openai/gpt-4.1-mini`（ピン留め） | 約 2 秒 |
-| 状況要約 | `orcarouter/auto` → `qwen3.7-plus` / `deepseek-v4-pro` / `glm-5.2` | **13〜51 秒** |
+| 状況要約 | `orcarouter/auto` → `qwen3.7-plus` / `deepseek-v4-pro` / `glm-5.2` | **5.6〜51 秒（分散が大きい）** |
 | 状況要約 | `openai/gpt-4.1-mini`（ピン留め） | **3〜5 秒** |
 
 `orcarouter/auto` は推論（thinking）系モデルに解決されることがあり、要約が
-20〜50 秒かかります。**この状態では LINE 経由の要約は必ずタイムアウトします。**
-そのため既定値を `openai/gpt-4.1-mini` にピン留めしています。
+20〜50 秒かかります。速いときは 5.6 秒で返るので**平均ではなく分散が問題**で、
+この状態では LINE 経由の要約はいずれ必ずタイムアウトします。
+
+一方で `orcarouter/auto` は、毎回違うモデルに解決される様子を
+ホーム画面の「AIモデル」表示（`Home.razor`）で見せられるという価値があります。
+そこで**モデルは経路ごとに選びます**。
+
+| 経路 | `purpose` | 使うモデル | 理由 |
+|---|---|---|---|
+| LINE webhook | `summary-fast` | `OrcaRouter:FastModel` | 8 秒の締切がある |
+| Web UI / API | `summary` | `OrcaRouter:Model`（`orcarouter/auto`） | 締切が無く、自動ルーティングを見せられる |
 
 ```json
-"OrcaRouter": { "SummaryModel": "openai/gpt-4.1-mini" }
+"OrcaRouter": { "FastModel": "openai/gpt-4.1-mini" }
 ```
 
-自動ルーティングに戻したい場合は空文字にできますが、**その場合 LINE では要約が
+`FastModel` を空にすると LINE も `Model` に落ちます。その場合 **LINE では要約が
 成立しません**（Web UI / API のみで使う前提にしてください）。
+なお `-fast` は「締切がある呼び出し」を表す接尾辞で、チャネル名ではありません。
+他の用途にも同じ規則で展開できます（例 `intent-fast`）。
 
 #### Fabric の待ち時間予算（`Fabric:QueryTimeoutSeconds`、既定 2 秒）
 
@@ -360,13 +371,24 @@ Fabric Data Agent に問い合わせ、成功すればそれを併記します�
 使い切って答えごと失われる**という不具合がありました。現在は予算を超えると
 Fabric を諦めてローカルの答えを返します。
 
+#### Fabric を呼ぶ質問の限定（`scope`）
+
+予算を切っても、Fabric に聞く価値の無い質問で 2 秒を捨てるのは無駄です。
+そこで意図分類の JSON に `scope` を追加し、**分析・集計・期間をまたぐ質問
+（`analysis`）のときだけ** Fabric を呼びます。「今どう?」「今日の様子は?」の
+ような直近状態の質問（`recent`）はローカル DB だけで即答します。
+
+- 判定は**既存の意図分類 1 往復の中で**行うため、LLM の呼び出しは増えません。
+- `scope` が欠落・不正値のときは `recent` に倒します。取りこぼしても失うのは
+  追加情報だけですが、逆に倒すと全質問が予算を消費するためです。
+
 エンドツーエンドの実測（`POST /api/assistant/message`、要約）:
 
 | 構成 | 実測 | 8 秒予算 |
 |---|---|---|
 | `auto` + Fabric 無制限（修正前） | 19〜51 秒 | 超過 |
 | `mini` + Fabric 4 秒 | 6.9〜8.1 秒 | ぎりぎり／たまに超過 |
-| **`mini` + Fabric 2 秒（現在の既定）** | **4.8〜6.9 秒** | 収まる |
+| **`mini` + Fabric 2 秒（現在の LINE 既定）** | **4.8〜6.9 秒** | 収まる |
 
 Fabric がデータソースに到達できるようになり、待つ価値が出たら
 `Fabric:QueryTimeoutSeconds` を上げてください。ただし
@@ -390,7 +412,8 @@ ON と Toggle は拒否** されます。ヒーター等が挿さっていた場
 1. Fabric Data Agent のデータソースをサービスプリンシパル対応の構成に直す（6-3）。
    直さない場合もローカル DB へフォールバックするため、デモは実施可能です。
 2. デモで照明を操作したい場合、照明を Plug Mini に挿して別名を合わせる（6-5）。
-3. 本番（App Service）にも `OrcaRouter__SummaryModel=openai/gpt-4.1-mini` を
-   設定する。未設定だと自動ルーティングになり、LINE 経由の要約が 8 秒を超えて
-   タイムアウトします（6-4）。
+3. 本番（App Service）の環境変数を `OrcaRouter__FastModel=openai/gpt-4.1-mini` に
+   する。**キー名が `OrcaRouter__SummaryModel` から変わりました**（旧名は削除して
+   ください）。未設定でも `appsettings.json` の既定値で動きますが、旧名だけが
+   残っていると無視されます（6-4）。
 

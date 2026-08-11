@@ -688,7 +688,7 @@ public class FabricBudgetTests
 
         var started = System.Diagnostics.Stopwatch.StartNew();
         var response = await orchestrator.HandleAsync(
-            new AssistantRequest(db.HouseholdId, null, "今日の様子を教えて", CommandSource.Line));
+            new AssistantRequest(db.HouseholdId, null, "先週と比べて様子はどうですか", CommandSource.Line));
         started.Stop();
 
         Assert.Equal(AssistantIntent.QueryData, response.Intent);
@@ -708,7 +708,7 @@ public class FabricBudgetTests
         var orchestrator = Create(db, new ThrowingFabricClient(), TimeSpan.FromSeconds(4));
 
         var response = await orchestrator.HandleAsync(
-            new AssistantRequest(db.HouseholdId, null, "今日の様子を教えて", CommandSource.Line));
+            new AssistantRequest(db.HouseholdId, null, "先週と比べて様子はどうですか", CommandSource.Line));
 
         Assert.Equal(AssistantIntent.QueryData, response.Intent);
         Assert.False(string.IsNullOrWhiteSpace(response.Reply));
@@ -721,7 +721,7 @@ public class FabricBudgetTests
         var orchestrator = Create(db, new SlowFabricClient(TimeSpan.Zero), TimeSpan.FromSeconds(4));
 
         var response = await orchestrator.HandleAsync(
-            new AssistantRequest(db.HouseholdId, null, "今日の様子を教えて", CommandSource.Line));
+            new AssistantRequest(db.HouseholdId, null, "先週と比べて様子はどうですか", CommandSource.Line));
 
         // MockAiRouterClient echoes the facts it is given, so the Fabric text survives.
         Assert.Contains("Fabric からの詳細な内訳です。", response.Reply, StringComparison.Ordinal);
@@ -740,7 +740,160 @@ public class FabricBudgetTests
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => orchestrator.HandleAsync(
-            new AssistantRequest(db.HouseholdId, null, "今日の様子を教えて", CommandSource.Line), cts.Token));
+            new AssistantRequest(db.HouseholdId, null, "先週と比べて様子はどうですか", CommandSource.Line), cts.Token));
+    }
+}
+
+/// <summary>
+/// The data agent is only worth its latency for questions the local database cannot
+/// answer well. Asking it "how is she today?" spends seconds to add nothing, so the
+/// scope decided during intent classification gates the call.
+/// </summary>
+public class FabricScopeTests
+{
+    private sealed class RecordingFabricClient : IFabricDataAgentClient
+    {
+        public int Calls { get; private set; }
+
+        public bool IsConfigured => true;
+
+        public Task<FabricAnswer> AskAsync(string question, CancellationToken ct = default)
+        {
+            Calls++;
+            return Task.FromResult(new FabricAnswer(true, "Fabric からの詳細な内訳です。", "Fabric", null));
+        }
+    }
+
+    private static AssistantOrchestrator Create(TestDb db, IFabricDataAgentClient fabric) =>
+        new(db.Context,
+            new MockAiRouterClient(),
+            new MockDeviceProvider(),
+            fabric,
+            new LocalDataQuestionService(db.Context, TimeProvider.System),
+            TimeProvider.System);
+
+    [Theory]
+    [InlineData("今日の様子を教えて")]
+    [InlineData("今どうしてる?")]
+    [InlineData("昨日は何時に起きた?")]
+    public async Task Questions_about_the_current_state_do_not_call_the_data_agent(string message)
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var fabric = new RecordingFabricClient();
+        var orchestrator = Create(db, fabric);
+
+        var response = await orchestrator.HandleAsync(
+            new AssistantRequest(db.HouseholdId, null, message, CommandSource.Line));
+
+        Assert.Equal(0, fabric.Calls);
+
+        // Skipping the agent must not degrade the answer: the local facts still reply.
+        Assert.Equal(AssistantIntent.QueryData, response.Intent);
+        Assert.False(string.IsNullOrWhiteSpace(response.Reply));
+    }
+
+    [Theory]
+    [InlineData("先週と比べて活動はどうですか")]
+    [InlineData("今月の平均は何時に起きていますか")]
+    [InlineData("最近、夜中の活動は増えていますか")]
+    public async Task Analytical_questions_still_reach_the_data_agent(string message)
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var fabric = new RecordingFabricClient();
+        var orchestrator = Create(db, fabric);
+
+        await orchestrator.HandleAsync(
+            new AssistantRequest(db.HouseholdId, null, message, CommandSource.Line));
+
+        Assert.Equal(1, fabric.Calls);
+    }
+
+    /// <summary>
+    /// A model that omits the field, or invents a value for it, must not silently turn
+    /// every question into a paid round trip to the data agent.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"intent":"query_data","confidence":0.9,"question":"x"}""")]
+    [InlineData("""{"intent":"query_data","scope":"weekly","confidence":0.9,"question":"x"}""")]
+    [InlineData("""{"intent":"query_data","scope":null,"confidence":0.9,"question":"x"}""")]
+    public void An_unusable_scope_falls_back_to_the_local_only_path(string json)
+    {
+        var plan = IntentParser.TryParse(json);
+
+        Assert.NotNull(plan);
+        Assert.Equal(QueryScope.Recent, plan!.Scope);
+    }
+
+    [Fact]
+    public void An_analysis_scope_is_parsed()
+    {
+        var plan = IntentParser.TryParse(
+            """{"intent":"query_data","scope":"analysis","confidence":0.9,"question":"x"}""");
+
+        Assert.Equal(QueryScope.Analysis, plan!.Scope);
+    }
+}
+
+/// <summary>
+/// LINE cancels an event after 8 seconds; the web UI has no such limit and shows the
+/// resolved model name, which is the visible evidence that OrcaRouter routed the
+/// request. So the deadline-bound model pin is applied per entry point, not globally.
+/// </summary>
+public class SummaryRoutingTests
+{
+    private sealed class RecordingAiClient : IAiRouterClient
+    {
+        private readonly MockAiRouterClient _inner = new();
+
+        public List<string> Purposes { get; } = [];
+
+        public bool IsConfigured => true;
+
+        public string DisplayName => "Recording";
+
+        public Task<AiCompletionResult> CompleteAsync(
+            IReadOnlyList<AiMessage> messages, string purpose, bool jsonMode = false, CancellationToken ct = default)
+        {
+            Purposes.Add(purpose);
+            return _inner.CompleteAsync(messages, purpose, jsonMode, ct);
+        }
+    }
+
+    private static async Task<List<string>> PurposesForAsync(CommandSource source)
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var ai = new RecordingAiClient();
+
+        var orchestrator = new AssistantOrchestrator(
+            db.Context,
+            ai,
+            new MockDeviceProvider(),
+            new MockFabricDataAgentClient(),
+            new LocalDataQuestionService(db.Context, TimeProvider.System),
+            TimeProvider.System);
+
+        await orchestrator.HandleAsync(new AssistantRequest(db.HouseholdId, null, "今日の様子を教えて", source));
+        return ai.Purposes;
+    }
+
+    [Fact]
+    public async Task Line_asks_for_the_deadline_bound_model()
+    {
+        var purposes = await PurposesForAsync(CommandSource.Line);
+
+        Assert.Contains("summary-fast", purposes);
+        Assert.EndsWith(OrcaRouterOptions.FastSuffix, "summary-fast", StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(CommandSource.Web)]
+    [InlineData(CommandSource.System)]
+    public async Task Other_entry_points_keep_the_auto_router(CommandSource source)
+    {
+        var purposes = await PurposesForAsync(source);
+
+        Assert.Contains("summary", purposes);
+        Assert.DoesNotContain("summary-fast", purposes);
     }
     /// <summary>
     /// The number in the reply is the one thing a family acts on. A smaller summarising
