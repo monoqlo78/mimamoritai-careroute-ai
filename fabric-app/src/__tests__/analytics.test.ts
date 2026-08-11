@@ -209,6 +209,11 @@ describe('pipelineStats', () => {
     expect(stats.activityEvents).toBe(8);
     expect(stats.fabricRows).toBe(2);
   });
+
+  it('carries the data origin so the diagram cannot claim to be live', () => {
+    expect(pipelineStats([household()], []).origin).toBe('fabric');
+    expect(pipelineStats([household()], [], [], 'snapshot').origin).toBe('snapshot');
+  });
 });
 
 describe('dailyActivity', () => {

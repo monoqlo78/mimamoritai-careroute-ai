@@ -1,4 +1,4 @@
-import type { ActivityRow, AlertRow, HouseholdRow } from './monitoring';
+import type { ActivityRow, AlertRow, DataOrigin, HouseholdRow } from './monitoring';
 
 /** Rayfin returns datetimes as `Date`, but a rehydrated JSON payload may hand back a string. */
 export function toDate(value: Date | string): Date {
@@ -305,6 +305,8 @@ export interface PipelineStats {
   /** Most recent device event across all households, or `null` when unknown. */
   lastEvent: Date | null;
   lastSync: Date | null;
+  /** Where the rendered rows came from. Drives the console node's label. */
+  origin: DataOrigin;
 }
 
 /**
@@ -314,7 +316,8 @@ export interface PipelineStats {
 export function pipelineStats(
   rows: HouseholdRow[],
   alerts: AlertRow[],
-  activity: ActivityRow[] = []
+  activity: ActivityRow[] = [],
+  origin: DataOrigin = 'fabric'
 ): PipelineStats {
   let lastEvent: Date | null = null;
   let lastSync: Date | null = null;
@@ -343,5 +346,6 @@ export function pipelineStats(
     fabricRows: activity.length,
     lastEvent,
     lastSync,
+    origin,
   };
 }

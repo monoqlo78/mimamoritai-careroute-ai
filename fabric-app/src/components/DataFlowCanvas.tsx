@@ -109,7 +109,7 @@ const NODES: FlowNode[] = [
     y: 0.78,
     title: '同期ジョブ',
     subtitle: 'sync-to-fabric.ps1',
-    metric: () => '読み取り専用',
+    metric: (s) => (s.origin === 'fabric' ? '読み取り専用' : '停止中'),
     accent: 'fabric',
   },
   {
@@ -118,7 +118,8 @@ const NODES: FlowNode[] = [
     y: 0.78,
     title: 'Fabric SQL Database',
     subtitle: 'Rayfin プロビジョニング',
-    metric: (s) => `${s.households + s.alerts + s.fabricRows} 行`,
+    metric: (s) =>
+      s.origin === 'fabric' ? `${s.households + s.alerts + s.fabricRows} 行` : '接続不可',
     accent: 'fabric',
   },
   {
@@ -127,7 +128,7 @@ const NODES: FlowNode[] = [
     y: 0.78,
     title: 'この運用コンソール',
     subtitle: 'Rayfin + Fabric SSO',
-    metric: () => 'ライブ',
+    metric: (s) => (s.origin === 'fabric' ? 'ライブ' : 'スナップショット'),
     accent: 'fabric',
   },
 ];

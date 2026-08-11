@@ -72,7 +72,7 @@ export function HomePage() {
   }, [refresh]);
 
   const totals = summarize(households);
-  const flow = pipelineStats(households, alerts, activity);
+  const flow = pipelineStats(households, alerts, activity, origin);
   const timeline = alertsByDay(alerts);
   const risks = riskDistribution(alerts);
   const delivery = deliveryStats(alerts);
