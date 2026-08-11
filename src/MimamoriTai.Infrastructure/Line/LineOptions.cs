@@ -34,6 +34,16 @@ public sealed class LineOptions
     public double AlertPollIntervalMinutes { get; set; } = 5;
 
     /// <summary>
+    /// Absolute https origin of this deployment, used to build the image and button
+    /// URLs of the mascot alert card (LINE fetches them from its own servers, so a
+    /// relative path or http://localhost cannot work).
+    ///
+    /// Empty by default: alerts are then sent as plain text, which is the correct
+    /// behaviour for a local run and for any environment without a public hostname.
+    /// </summary>
+    public string PublicBaseUrl { get; set; } = string.Empty;
+
+    /// <summary>
     /// Controls the webhook's behavior for a LINE source (userId/groupId) that has
     /// never been linked to any household via a link code or an existing active
     /// LineRecipient row. When true, that source is bound to

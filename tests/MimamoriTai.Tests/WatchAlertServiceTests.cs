@@ -9,6 +9,9 @@ public sealed class FakeLineMessagingClient : ILineMessagingClient
 {
     public List<(string To, string Text)> Pushed { get; } = [];
 
+    /// <summary>Cards passed to <see cref="PushAlertAsync"/>, so tests can assert the illustration and link.</summary>
+    public List<(string To, LineAlertCard Card)> PushedCards { get; } = [];
+
     public bool IsConfigured { get; init; } = true;
 
     public bool FailNext { get; set; }
@@ -27,6 +30,16 @@ public sealed class FakeLineMessagingClient : ILineMessagingClient
         }
 
         return Task.FromResult(new LineSendResult(true));
+    }
+
+    /// <summary>
+    /// Records the card and then delegates to <see cref="PushAsync"/>, so every existing
+    /// assertion about the delivered text keeps holding for the card path too.
+    /// </summary>
+    public Task<LineSendResult> PushAlertAsync(string to, LineAlertCard card, CancellationToken ct = default)
+    {
+        PushedCards.Add((to, card));
+        return PushAsync(to, card.Text, ct);
     }
 
     public bool VerifySignature(string rawBody, string? signatureHeader) => false;
@@ -87,6 +100,67 @@ public class WatchAlertServiceTests
         Assert.Contains(outcome.Risk.Score.ToString(), line.Pushed[0].Text);
         Assert.Single(db.Context.WatchAlerts);
         Assert.True(db.Context.WatchAlerts.Single().Success);
+    }
+
+    /// <summary>
+    /// The alert must arrive as a mascot card, not a bare line of text: the family
+    /// recognises the character before they read anything, which is the point of
+    /// having one. The link takes them straight to the dashboard.
+    /// </summary>
+    [Fact]
+    public async Task Alert_Card_Carries_The_Mascot_And_A_Link_When_A_Public_Origin_Is_Configured()
+    {
+        using var db = await SeedHighRiskHouseholdAsync();
+        var clock = new FakeTimeProvider(NoActivityMorningUtc);
+        var line = new FakeLineMessagingClient();
+        var service = Create(db, clock, line, new WatchAlertSettings
+        {
+            ToId = "test-family-group",
+            Threshold = RiskLevel.Medium,
+            Cooldown = TimeSpan.FromHours(1),
+            // Trailing slash on purpose: the URL must not end up with a double slash.
+            PublicBaseUrl = "https://example.invalid/"
+        });
+
+        var outcome = await service.EvaluateAsync(db.HouseholdId);
+
+        Assert.True(outcome.Sent);
+        var (to, card) = Assert.Single(line.PushedCards);
+        Assert.Equal("test-family-group", to);
+        Assert.Equal("https://example.invalid/images/mimamo-line-alert.png", card.ImageUrl);
+        Assert.Equal("https://example.invalid", card.LinkUrl);
+        Assert.Equal(outcome.Message, card.Text);
+        Assert.False(string.IsNullOrWhiteSpace(card.RiskLabel));
+    }
+
+    /// <summary>
+    /// LINE fetches the hero image from its own servers, so a host it cannot reach
+    /// would render the bubble as a grey box. Without a public https origin the card
+    /// must therefore carry no image and no link, and the alert still goes out.
+    /// </summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("http://localhost:5234")]
+    public async Task Alert_Card_Has_No_Image_When_The_Origin_Is_Not_Publicly_Reachable(string origin)
+    {
+        using var db = await SeedHighRiskHouseholdAsync();
+        var clock = new FakeTimeProvider(NoActivityMorningUtc);
+        var line = new FakeLineMessagingClient();
+        var service = Create(db, clock, line, new WatchAlertSettings
+        {
+            ToId = "test-family-group",
+            Threshold = RiskLevel.Medium,
+            Cooldown = TimeSpan.FromHours(1),
+            PublicBaseUrl = origin
+        });
+
+        var outcome = await service.EvaluateAsync(db.HouseholdId);
+
+        Assert.True(outcome.Sent);
+        var (_, card) = Assert.Single(line.PushedCards);
+        Assert.Null(card.ImageUrl);
+        Assert.Null(card.LinkUrl);
+        Assert.Single(line.Pushed);
     }
 
     [Fact]

@@ -280,7 +280,8 @@ public static class ServiceCollectionExtensions
             {
                 ToId = options.AlertToId,
                 Threshold = threshold,
-                Cooldown = TimeSpan.FromHours(Math.Max(options.AlertCooldownHours, 0))
+                Cooldown = TimeSpan.FromHours(Math.Max(options.AlertCooldownHours, 0)),
+                PublicBaseUrl = options.PublicBaseUrl
             };
         });
         services.AddScoped<ILineRecipientResolver, LineRecipientResolver>();
