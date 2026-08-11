@@ -135,17 +135,31 @@ public sealed class DeviceControlService(
         command.Status = CommandStatus.Succeeded;
         db.DeviceCommands.Add(command);
 
-        db.DeviceEvents.Add(new DeviceEvent
+        // Only record an event when the state actually changed. Asking to turn on a
+        // device that is already on is a no-op for the resident: writing an event
+        // regardless made "家電の利用" climb every time someone spoke to the
+        // assistant, so the dashboard reported activity that never happened. This
+        // mirrors the guard the polling cycle already applies.
+        var lastState = await db.DeviceEvents
+            .Where(e => e.DeviceId == device.Id)
+            .OrderByDescending(e => e.OccurredAtUtc)
+            .Select(e => e.State)
+            .FirstOrDefaultAsync(ct);
+
+        if (!string.Equals(lastState, newState, StringComparison.OrdinalIgnoreCase))
         {
-            HouseholdId = householdId,
-            DeviceId = device.Id,
-            EventType = "PowerState",
-            State = newState,
-            PowerWatts = newStatus?.PowerWatts,
-            Source = EventSource.AppCommand,
-            OccurredAtUtc = command.ExecutedAtUtc.Value,
-            ReceivedAtUtc = clock.GetUtcNow()
-        });
+            db.DeviceEvents.Add(new DeviceEvent
+            {
+                HouseholdId = householdId,
+                DeviceId = device.Id,
+                EventType = "PowerState",
+                State = newState,
+                PowerWatts = newStatus?.PowerWatts,
+                Source = EventSource.AppCommand,
+                OccurredAtUtc = command.ExecutedAtUtc.Value,
+                ReceivedAtUtc = clock.GetUtcNow()
+            });
+        }
 
         await db.SaveChangesAsync(ct);
 
