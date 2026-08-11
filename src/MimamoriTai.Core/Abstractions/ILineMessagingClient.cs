@@ -21,11 +21,49 @@ public sealed record LineAlertCard(
     string? ImageUrl = null,
     string? LinkUrl = null);
 
+/// <summary>
+/// One tappable choice offered under a reply (a LINE "quick reply" chip).
+///
+/// Typing is the hardest part of this product for its users: an 85 year old with
+/// shaky hands can tap 「家族の追加」 far more reliably than they can type it, and a
+/// visible list of choices also answers the unasked question of what may be asked
+/// at all. Chips are per-reply, so unlike the rich menu they can be offered by any
+/// message without a channel-level deployment step.
+/// </summary>
+/// <param name="Label">What the chip reads, max 20 characters (a LINE limit).</param>
+/// <param name="MessageText">Sent as if the user had typed it, or null for a postback chip.</param>
+/// <param name="PostbackData">Delivered as a postback, or null for a message chip.</param>
+public sealed record LineQuickReply(string Label, string? MessageText = null, string? PostbackData = null)
+{
+    /// <summary>A chip that sends text. Defaults to sending exactly what it reads.</summary>
+    public static LineQuickReply Message(string label, string? text = null) => new(label, text ?? label);
+
+    /// <summary>
+    /// A chip that fires an existing rich-menu action, so tapping it runs the same
+    /// code path as the button rather than a second, drifting implementation.
+    /// </summary>
+    public static LineQuickReply Postback(string label, string data) => new(label, null, data);
+}
+
 public interface ILineMessagingClient
 {
     bool IsConfigured { get; }
 
     Task<LineSendResult> ReplyAsync(string replyToken, string text, CancellationToken ct = default);
+
+    /// <summary>
+    /// Replies with tappable choices attached.
+    ///
+    /// Defaulted to the plain text reply so an implementation that cannot render
+    /// chips still delivers the answer. Losing the choices must never mean losing
+    /// the reply, for the same reason <see cref="PushAlertAsync"/> degrades to text.
+    /// </summary>
+    Task<LineSendResult> ReplyAsync(
+        string replyToken,
+        string text,
+        IReadOnlyList<LineQuickReply> quickReplies,
+        CancellationToken ct = default) =>
+        ReplyAsync(replyToken, text, ct);
     Task<LineSendResult> PushAsync(string to, string text, CancellationToken ct = default);
 
     /// <summary>

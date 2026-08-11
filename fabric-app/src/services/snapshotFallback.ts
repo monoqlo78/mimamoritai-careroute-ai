@@ -7,9 +7,9 @@
 //
 // This is a point-in-time snapshot, NOT live data. Whenever these rows are used
 // the UI says so explicitly. Never present them as a live Fabric read.
-import type { ActivityRow, AlertRow, HouseholdRow } from './monitoring';
+import type { ActivityRow, AiRouterCallRow, AlertRow, HouseholdRow } from './monitoring';
 
-export const SNAPSHOT_CAPTURED_AT = new Date("2026-08-11T15:47:52.393Z");
+export const SNAPSHOT_CAPTURED_AT = new Date("2026-08-11T21:58:17.295Z");
 
 export const SNAPSHOT_HOUSEHOLDS: HouseholdRow[] = [
   {
@@ -20,7 +20,7 @@ export const SNAPSHOT_HOUSEHOLDS: HouseholdRow[] = [
     memberCount: "1",
     residentCount: "1",
     deviceCount: "1",
-    lastEventUtc: "2026-08-11T07:45:03.230Z",
+    lastEventUtc: "2026-08-11T21:30:43.314Z",
     switchBotStatus: "Connected",
     switchBotError: "",
     activeLineRecipients: "1",
@@ -28,7 +28,7 @@ export const SNAPSHOT_HOUSEHOLDS: HouseholdRow[] = [
     failedAlertsInWindow: "1",
     latestRiskLevel: "",
     needsAttention: true,
-    capturedAt: new Date("2026-08-11T15:47:52.393Z"),
+    capturedAt: new Date("2026-08-11T21:58:17.295Z"),
   },
   {
     id: "d6236dd2-c706-4fb6-8384-3fb74af31df2",
@@ -46,7 +46,7 @@ export const SNAPSHOT_HOUSEHOLDS: HouseholdRow[] = [
     failedAlertsInWindow: "1",
     latestRiskLevel: "",
     needsAttention: true,
-    capturedAt: new Date("2026-08-11T15:47:52.393Z"),
+    capturedAt: new Date("2026-08-11T21:58:17.295Z"),
   },
 ];
 
@@ -245,4 +245,21 @@ export const SNAPSHOT_ACTIVITY: ActivityRow[] = [
   { id: "snap-144", householdId: "d6236dd2-c706-4fb6-8384-3fb74af31df2", householdName: "見守り隊デモ世帯", deviceName: "リビング照明", deviceType: "Light", bucketStart: new Date("2026-08-11T00:00:00.000Z"), eventCount: "1", onCount: "1", source: "Seed" },
   { id: "snap-145", householdId: "d6236dd2-c706-4fb6-8384-3fb74af31df2", householdName: "見守り隊デモ世帯", deviceName: "リビング照明", deviceType: "Light", bucketStart: new Date("2026-08-11T05:00:00.000Z"), eventCount: "1", onCount: "0", source: "Seed" },
   { id: "snap-146", householdId: "d6236dd2-c706-4fb6-8384-3fb74af31df2", householdName: "見守り隊デモ世帯", deviceName: "寝室照明", deviceType: "Light", bucketStart: new Date("2026-08-11T05:00:00.000Z"), eventCount: "2", onCount: "1", source: "Seed" },
+  { id: "snap-147", householdId: "18bab55f-27d9-4288-8ea2-5f94af97f5bc", householdName: "わが家", deviceName: "リビングの電気", deviceType: "Plug", bucketStart: new Date("2026-08-11T12:00:00.000Z"), eventCount: "2", onCount: "1", source: "AppCommand" },
+];
+
+export const SNAPSHOT_AI_CALLS: AiRouterCallRow[] = [
+  { id: "snap-ai-0", purpose: "intent", router: "OrcaRouter", resolvedModel: "gpt-4.1-mini-2025-04-14", callCount: "35", successCount: "35", avgDurationMs: "1693", lastCalledAt: new Date("2026-08-11T14:25:55.581Z") },
+  { id: "snap-ai-1", purpose: "summary", router: "OrcaRouter", resolvedModel: "gpt-4.1-mini-2025-04-14", callCount: "15", successCount: "15", avgDurationMs: "1993", lastCalledAt: new Date("2026-08-11T13:24:10.900Z") },
+  { id: "snap-ai-2", purpose: "intent", router: "auto", resolvedModel: "deepseek-v4-pro", callCount: "7", successCount: "7", avgDurationMs: "3856", lastCalledAt: new Date("2026-08-09T04:03:38.907Z") },
+  { id: "snap-ai-3", purpose: "intent", router: "auto", resolvedModel: "qwen3.7-plus", callCount: "6", successCount: "6", avgDurationMs: "4611", lastCalledAt: new Date("2026-08-08T17:38:03.941Z") },
+  { id: "snap-ai-4", purpose: "intent", router: "MockAiRouter", resolvedModel: "mock/local-rules", callCount: "2", successCount: "2", avgDurationMs: "1", lastCalledAt: new Date("2026-08-08T12:54:38.569Z") },
+  { id: "snap-ai-5", purpose: "conversation", router: "auto", resolvedModel: "qwen3.7-plus", callCount: "2", successCount: "2", avgDurationMs: "6241", lastCalledAt: new Date("2026-08-11T14:25:33.073Z") },
+  { id: "snap-ai-6", purpose: "intent", router: "auto", resolvedModel: "glm-5.2", callCount: "2", successCount: "2", avgDurationMs: "5911", lastCalledAt: new Date("2026-08-08T23:42:44.911Z") },
+  { id: "snap-ai-7", purpose: "summary", router: "auto", resolvedModel: "deepseek-v4-pro", callCount: "2", successCount: "2", avgDurationMs: "11777", lastCalledAt: new Date("2026-08-11T06:43:17.911Z") },
+  { id: "snap-ai-8", purpose: "summary", router: "auto", resolvedModel: "glm-5.2", callCount: "2", successCount: "2", avgDurationMs: "14795", lastCalledAt: new Date("2026-08-11T06:21:31.876Z") },
+  { id: "snap-ai-9", purpose: "summary", router: "auto", resolvedModel: "qwen3.7-plus", callCount: "1", successCount: "1", avgDurationMs: "20414", lastCalledAt: new Date("2026-08-11T06:22:08.806Z") },
+  { id: "snap-ai-10", purpose: "conversation", router: "auto", resolvedModel: "deepseek-v4-pro", callCount: "1", successCount: "1", avgDurationMs: "5123", lastCalledAt: new Date("2026-08-11T07:16:41.644Z") },
+  { id: "snap-ai-11", purpose: "conversation", router: "auto", resolvedModel: "glm-5.2", callCount: "1", successCount: "1", avgDurationMs: "12625", lastCalledAt: new Date("2026-08-11T06:43:32.115Z") },
+  { id: "snap-ai-12", purpose: "intent", router: "OrcaRouter", resolvedModel: "auto", callCount: "1", successCount: "0", avgDurationMs: "365", lastCalledAt: new Date("2026-08-08T13:56:09.640Z") },
 ];

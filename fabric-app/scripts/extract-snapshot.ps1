@@ -64,7 +64,8 @@ $payload = [ordered]@{
     households = @(ConvertTo-Rows $ds.Tables[0])
     alerts     = @(ConvertTo-Rows $ds.Tables[1])
     activity   = @(ConvertTo-Rows $ds.Tables[2])
+    aiCalls    = @(ConvertTo-Rows $ds.Tables[3])
 }
 
 $payload | ConvertTo-Json -Depth 6 | Set-Content -Path $OutFile -Encoding utf8
-Write-Host "Wrote $($payload.households.Count) households, $($payload.alerts.Count) alerts and $($payload.activity.Count) activity buckets to $OutFile"
+Write-Host "Wrote $($payload.households.Count) households, $($payload.alerts.Count) alerts, $($payload.activity.Count) activity buckets and $($payload.aiCalls.Count) AI router groups to $OutFile"

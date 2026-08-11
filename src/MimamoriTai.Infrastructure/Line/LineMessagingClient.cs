@@ -30,6 +30,81 @@ public sealed class LineMessagingClient(
             messages = new[] { BuildTextMessage(text) }
         }, ct);
 
+    /// <summary>
+    /// Replies with quick-reply chips. Falls back to the plain reply when nothing
+    /// usable survives <see cref="BuildQuickReplyItems"/>, because LINE rejects the
+    /// whole message for a malformed quickReply block -- and a dropped answer is far
+    /// worse than a missing row of buttons.
+    /// </summary>
+    public Task<LineSendResult> ReplyAsync(
+        string replyToken,
+        string text,
+        IReadOnlyList<LineQuickReply> quickReplies,
+        CancellationToken ct = default)
+    {
+        var items = BuildQuickReplyItems(quickReplies);
+        if (items.Length == 0)
+        {
+            return ReplyAsync(replyToken, text, ct);
+        }
+
+        return PostAsync("/v2/bot/message/reply", new
+        {
+            replyToken,
+            messages = new object[]
+            {
+                new
+                {
+                    type = "text",
+                    text,
+                    quickReply = new { items }
+                }
+            }
+        }, ct);
+    }
+
+    /// <summary>
+    /// LINE caps quick replies at 13 items with labels of at most 20 characters and
+    /// rejects the entire message when either is exceeded, so both are enforced here
+    /// rather than trusted from the caller.
+    /// </summary>
+    private static object[] BuildQuickReplyItems(IReadOnlyList<LineQuickReply> quickReplies)
+    {
+        const int maxItems = 13;
+        const int maxLabel = 20;
+
+        var items = new List<object>();
+        foreach (var chip in quickReplies)
+        {
+            if (items.Count == maxItems || string.IsNullOrWhiteSpace(chip.Label))
+            {
+                break;
+            }
+
+            var label = chip.Label.Length > maxLabel ? chip.Label[..maxLabel] : chip.Label;
+
+            object action;
+            if (!string.IsNullOrWhiteSpace(chip.PostbackData))
+            {
+                // displayText echoes the label into the chat, so the resident sees what
+                // they just asked for instead of a silent, unexplained reply.
+                action = new { type = "postback", label, data = chip.PostbackData, displayText = label };
+            }
+            else if (!string.IsNullOrWhiteSpace(chip.MessageText))
+            {
+                action = new { type = "message", label, text = chip.MessageText };
+            }
+            else
+            {
+                continue;
+            }
+
+            items.Add(new { type = "action", action });
+        }
+
+        return [.. items];
+    }
+
     public Task<LineSendResult> PushAsync(string to, string text, CancellationToken ct = default) =>
         PostAsync("/v2/bot/message/push", new
         {

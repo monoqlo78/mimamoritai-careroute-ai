@@ -10,8 +10,29 @@ import {
   householdBars,
   pipelineStats,
   riskDistribution,
+  routerModels,
+  routerSummary,
 } from '@/services/analytics';
-import type { ActivityRow, AlertRow, HouseholdRow } from '@/services/monitoring';
+import type {
+  ActivityRow,
+  AiRouterCallRow,
+  AlertRow,
+  HouseholdRow,
+} from '@/services/monitoring';
+
+function aiCall(overrides: Partial<AiRouterCallRow> = {}): AiRouterCallRow {
+  return {
+    id: 'ai1',
+    purpose: 'intent',
+    router: 'auto',
+    resolvedModel: 'deepseek-v4-pro',
+    callCount: '7',
+    successCount: '7',
+    avgDurationMs: '3856',
+    lastCalledAt: new Date('2026-08-09T04:03:38.000Z'),
+    ...overrides,
+  };
+}
 
 function bucket(overrides: Partial<ActivityRow> = {}): ActivityRow {
   return {
@@ -293,5 +314,89 @@ describe('activitySummary', () => {
     expect(summary.days).toBe(2);
     expect(summary.sources).toEqual(['AppCommand', 'SwitchBotPoll']);
     expect(summary.from?.toISOString()).toBe('2026-08-10T00:00:00.000Z');
+  });
+});
+
+describe('routerModels', () => {
+  it('collapses purposes into one bar per model and weights latency by call count', () => {
+    const bars = routerModels([
+      aiCall({ purpose: 'intent', resolvedModel: 'qwen3.7-plus', callCount: '6', avgDurationMs: '1000' }),
+      aiCall({ purpose: 'summary', resolvedModel: 'qwen3.7-plus', callCount: '2', avgDurationMs: '5000' }),
+    ]);
+
+    expect(bars).toHaveLength(1);
+    expect(bars[0].calls).toBe(8);
+    expect(bars[0].purposes).toEqual(['intent', 'summary']);
+    // (6*1000 + 2*5000) / 8 -- not the unweighted 3000.
+    expect(bars[0].avgMs).toBe(2000);
+    expect(bars[0].autoRouted).toBe(true);
+  });
+
+  it('marks pinned models separately from the ones OrcaRouter chose', () => {
+    const bars = routerModels([
+      aiCall({ router: 'OrcaRouter', resolvedModel: 'gpt-4.1-mini', callCount: '35' }),
+      aiCall({ router: 'auto', resolvedModel: 'glm-5.2', callCount: '2' }),
+    ]);
+
+    expect(bars.map((bar) => [bar.model, bar.autoRouted])).toEqual([
+      ['gpt-4.1-mini', false],
+      ['glm-5.2', true],
+    ]);
+  });
+
+  it('excludes the offline stub and calls whose model never resolved', () => {
+    const bars = routerModels([
+      aiCall({ router: 'MockAiRouter', resolvedModel: 'mock/local-rules', callCount: '2' }),
+      aiCall({ router: 'OrcaRouter', resolvedModel: 'auto', callCount: '1', successCount: '0' }),
+    ]);
+
+    expect(bars).toEqual([]);
+  });
+});
+
+describe('routerSummary', () => {
+  it('separates OrcaRouter traffic from the local stub', () => {
+    const summary = routerSummary([
+      aiCall({ router: 'OrcaRouter', resolvedModel: 'gpt-4.1-mini', callCount: '50', successCount: '50', avgDurationMs: '1800' }),
+      aiCall({ router: 'auto', resolvedModel: 'glm-5.2', callCount: '10', successCount: '10', avgDurationMs: '6000' }),
+      aiCall({ router: 'MockAiRouter', resolvedModel: 'mock/local-rules', callCount: '2', successCount: '2', avgDurationMs: '1' }),
+    ]);
+
+    expect(summary.calls).toBe(60);
+    expect(summary.mockCalls).toBe(2);
+    expect(summary.autoCalls).toBe(10);
+    expect(summary.pinnedCalls).toBe(50);
+    expect(summary.models).toBe(2);
+    expect(summary.autoAvgMs).toBe(6000);
+    expect(summary.pinnedAvgMs).toBe(1800);
+  });
+
+  it('counts a failed call even though it has no model to attribute', () => {
+    const summary = routerSummary([
+      aiCall({ router: 'OrcaRouter', resolvedModel: 'auto', callCount: '1', successCount: '0' }),
+    ]);
+
+    expect(summary.calls).toBe(1);
+    expect(summary.success).toBe(0);
+    expect(summary.models).toBe(0);
+  });
+});
+
+describe('pipelineStats AI totals', () => {
+  it('feeds the diagram only calls that reached OrcaRouter', () => {
+    const stats = pipelineStats([household()], [alert()], [], 'fabric', [
+      aiCall({ router: 'auto', resolvedModel: 'qwen3.7-plus', callCount: '6' }),
+      aiCall({ router: 'MockAiRouter', resolvedModel: 'mock/local-rules', callCount: '2' }),
+    ]);
+
+    expect(stats.aiCalls).toBe(6);
+    expect(stats.aiModels).toBe(1);
+    expect(stats.aiAutoCalls).toBe(6);
+  });
+
+  it('reports no AI traffic when the table is empty', () => {
+    const stats = pipelineStats([household()], [alert()]);
+    expect(stats.aiCalls).toBe(0);
+    expect(stats.aiModels).toBe(0);
   });
 });
