@@ -19,6 +19,10 @@ dist-ssr
 # Test coverage
 coverage
 
+# Extracted production snapshot (scripts/extract-snapshot.ps1). Contains
+# operational data pulled from the live database -- never commit it.
+snapshot.json
+
 # Local env files (`*.local` matches `.env.local`, `.env.*.local`, etc.)
 *.local
 

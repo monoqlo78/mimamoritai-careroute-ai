@@ -37,9 +37,9 @@ export function AuthPage() {
 
   const buttonLabel = isLoading
     ? fabricAuthEnabled
-      ? 'Opening Fabric...'
-      : 'Signing in...'
-    : 'Sign in with Microsoft';
+      ? 'Fabric を開いています...'
+      : 'サインインしています...'
+    : 'Microsoft アカウントでサインイン';
 
   return (
     <div className="relative min-h-screen flex flex-col overflow-hidden bg-gradient-to-br from-blue-50 via-white to-indigo-50">
@@ -51,9 +51,11 @@ export function AuthPage() {
         <div className="w-full max-w-sm">
           <div className="rounded-3xl border border-white/60 bg-white/80 p-8 shadow-xl backdrop-blur-sm">
             <div className="mb-8 text-center">
-              <h1 className="text-2xl font-bold text-gray-900">Todo App</h1>
+              <h1 className="text-2xl font-bold text-gray-900">
+                見守り隊 運用コンソール
+              </h1>
               <p className="mt-2 text-sm text-gray-500">
-                Sign in to get started.
+                運営者向けの監視ダッシュボードです。サインインしてください。
               </p>
             </div>
 

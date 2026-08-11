@@ -44,6 +44,28 @@ npm run lint
 
 これらが無い場合 `rayfin up` は実行できません。
 
+## データ投入（本番 → Fabric）
+
+`scripts/` に本番 Azure SQL から Fabric へスナップショットを流し込む同期スクリプトがあります。
+`rayfin up` でテーブルが作られた後に実行してください。
+
+```bash
+# 本番DBを読み取り、Fabric の SQL に MERGE する
+pwsh ./scripts/sync-to-fabric.ps1
+```
+
+- `scripts/extract-snapshot.sql` … `AdminConsoleService.LoadAsync` と同じ集計を行う **読み取り専用**クエリ。`mimamori` スキーマのみを参照します
+- `scripts/extract-snapshot.ps1` … 上記を実行して `snapshot.json` を出力（`.gitignore` 済み）
+- `scripts/sync-to-fabric.ps1` … 抽出から Fabric への MERGE までを一括実行
+
+認証は呼び出し元の Entra トークン（`az account get-access-token`）を使うため、
+接続シークレットはリポジトリに保存されません。本番DBへの書き込みは行いません。
+
+行のキーは冪等です（世帯は `householdId` から導出した固定 GUID、通知は元の `WatchAlert.Id`）。
+そのため再実行しても重複しません。
+
+`SwitchBotConnection.Encrypted*` と `WatchAlert.Message` は抽出クエリで**選択していません**。
+
 ## 構成
 
 ```text
@@ -68,7 +90,26 @@ npm run lint
 
 **新しいエンティティは必ず `rayfin/data/schema.ts` に登録してください。** SQL スキーマと GraphQL API はここから生成されるため、未登録のエンティティは実行時に存在しません。
 
+## デプロイ
+
+```bash
+npx rayfin login
+npx rayfin up --workspace-id <Fabric ワークスペース GUID>
+npx rayfin up status
+```
+
+現在のデプロイ先は Fabric ワークスペース `CareRoute-AI-Mimamori`
+(`e2a48a60-0b5f-421f-91bb-51a33fe528bc`) で、.NET 本体の `Fabric__WorkspaceId` と同じです。
+
+`rayfin up` は静的コンテンツのビルド・配信とスキーマ適用を一度に行い、
+デプロイ情報を `rayfin/.deployments.json`（gitignore 済み）に記録します。
+
+デプロイ後は `scripts/sync-to-fabric.ps1` でデータを投入してください。
+
 ## 未決事項
 
-Blazor 側から本アプリの SQL へスナップショットを投入する仕組みは**未実装**です。
-候補は (a) `AdminConsoleService` の出力を定期的に GraphQL API へ POST する HostedService、(b) Eventhouse 経由の疎結合。方式は未合意です。
+- Blazor 側からの**自動**同期は未実装です。現状 `scripts/sync-to-fabric.ps1` を手動実行する運用で、
+  定期実行（HostedService または Fabric パイプライン）は未着手です。
+- 本アプリの `HouseholdSnapshot` / `AlertRecord` は `@role('authenticated', 'read')` の読み取り専用です。
+  書き込みは上記スクリプトが Fabric SQL へ直接 MERGE する経路のみです。
+
