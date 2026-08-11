@@ -62,7 +62,7 @@ public sealed class DeviceInsightQuestionService(
     }
 
     private static string BuildQuestion(Device device) =>
-        $"「{device.Name}」（{device.Room}、{device.DeviceType}）について、直近{DeviceInsightService.DefaultPeriodDays}日間の利用傾向で気づく点があれば、日本語で1〜2文の簡潔な説明をしてください。";
+        $"「{device.DisplayName}」（{device.DisplayRoom}、{device.DeviceType}）について、直近{DeviceInsightService.DefaultPeriodDays}日間の利用傾向で気づく点があれば、日本語で1〜2文の簡潔な説明をしてください。";
 
     /// <summary>
     /// Builds a plain-language summary strictly from real aggregated numbers (no LLM,
@@ -78,13 +78,13 @@ public sealed class DeviceInsightQuestionService(
 
         if (summary.PeriodUsageCount == 0 && summary.LastEventAtUtc is null)
         {
-            return new FabricAnswer(true, $"{device.Name} はまだ利用記録がありません。", SourceName);
+            return new FabricAnswer(true, $"{device.DisplayName} はまだ利用記録がありません。", SourceName);
         }
 
         var text = summary.LastUsedAtUtc is { } lastUsed
-            ? $"直近{summary.PeriodDays}日間で{device.Name}は{summary.PeriodUsageCount}回使用され、1日あたり平均{summary.AveragePerDay:0.#}回です。" +
+            ? $"直近{summary.PeriodDays}日間で{device.DisplayName}は{summary.PeriodUsageCount}回使用され、1日あたり平均{summary.AveragePerDay:0.#}回です。" +
               $"最終利用は{HouseholdTime.ToLocal(lastUsed):M/d HH\\:mm}でした。"
-            : $"直近{summary.PeriodDays}日間で{device.Name}は{summary.PeriodUsageCount}回使用され、1日あたり平均{summary.AveragePerDay:0.#}回です。";
+            : $"直近{summary.PeriodDays}日間で{device.DisplayName}は{summary.PeriodUsageCount}回使用され、1日あたり平均{summary.AveragePerDay:0.#}回です。";
 
         return new FabricAnswer(true, text, SourceName);
     }

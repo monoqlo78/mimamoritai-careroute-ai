@@ -6,6 +6,7 @@ Every constant below was re-measured on the canonical poster (1122x1402) with a
 Poster pixel -> world:  x = (xr-555)*0.0025 ,  z = (1100-yr)*0.0025
 """
 import math
+import os
 
 import bpy
 from mathutils import Euler, Vector
@@ -23,18 +24,41 @@ from opus_lib import (X, Z, L, ellipse_outline, heart_outline, inflate_outline,
 #   Half-width read directly off the grid: 120.5 @ y400, 143.5 @ y420,
 #   184.5 @ y460  ->  n_top = 2.30 (the earlier 2.80 was far too boxy and was
 #   the single biggest silhouette error in the 50/50 overlay).
+
+
+def _tune(name, default):
+    """Silhouette tuning knob, overridable from the environment for A/B renders."""
+    try:
+        return float(os.environ[name])
+    except (KeyError, ValueError):
+        return default
+
+
+def _tune_hw():
+    # The poster's helmet is wider than the 207.5 first read off the grid: at
+    # 207.5 the rim between the face plate and the outer edge came out too thin,
+    # which is what made the cheeks read as bulging.
+    return _tune("MIMAMO_HEAD_HW", 215.0)
+
+
 HEAD_CZ = Z(556.5)          # 1.35875
-HEAD_HW = L(207.5)          # 0.51875
+HEAD_HW = L(_tune_hw())     # 0.51875 at the measured 207.5
 HEAD_HH = L(178.5)          # 0.44625
 HEAD_HD = 0.4550            # depth (not measurable from a front view)
 HEAD_N_TOP = 2.30           # superellipse exponent, crown
-HEAD_N_BOT = 3.00           # superellipse exponent, cheeks/chin  (fuller!)
+
+
+# The lower half is the cheek/jaw curve.  n=3.0 was far too boxy: it held the
+# head at almost full width all the way down to the chin, so the face plate was
+# pushed out into a rounded rectangle and the cheeks read as fat next to the
+# poster's egg-shaped taper.  2.30 matches the poster in a 50/50 overlay.
+HEAD_N_BOT = _tune("MIMAMO_HEAD_N_BOT", 2.30)
 
 # face plate: superellipse n=3.0, x 372..748, y 445..715, centre (560, 580)
 FACE_CZ = Z(586.0)          # measured white oval centre  y 470..705
-FACE_HW = L(168.0)          # measured x 393..718 at the widest
+FACE_HW = L(_tune("MIMAMO_FACE_HW", 158.0))   # measured x 393..718 at the widest
 FACE_HH = L(122.0)
-FACE_N = 2.12               # near-true ellipse: the poster face is NOT a squircle
+FACE_N = _tune("MIMAMO_FACE_N", 1.95)  # near-true ellipse: the poster face is NOT a squircle
 
 # eyes (annotated grid g_eyes3.png): left lid x 422..505 y 562..653,
 # right lid x 615..697 y 564..655  ->  dx 94, centre y 607.5, 41.5 x 45.5.

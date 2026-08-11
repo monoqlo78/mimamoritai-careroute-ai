@@ -44,14 +44,27 @@ public sealed class DeviceControlService(
 
         var matches = DeviceResolver.Resolve(devices, alias);
 
+        // "電源はついてる？" names no device at all. For a read-only status check on a
+        // household that owns exactly one device there is nothing to disambiguate and
+        // nothing to break, so answering beats refusing. State-changing actions keep the
+        // stricter contract: they never act on a device the resident did not name.
+        if (matches.Count == 0 && devices.Count == 1 && action == DeviceAction.GetStatus)
+        {
+            matches = devices;
+        }
+
         if (matches.Count == 0)
         {
-            return await RejectAsync(command, "対象の機器が見つかりませんでした。登録済みの機器名で指定してください。", ct);
+            var known = devices.Count == 0
+                ? "まだ機器が登録されていません。"
+                : $"登録されているのは {string.Join("・", devices.Select(d => d.DisplayName))} です。";
+
+            return await RejectAsync(command, $"対象の機器が見つかりませんでした。{known}", ct);
         }
 
         if (matches.Count > 1)
         {
-            var names = string.Join("・", matches.Select(m => m.Name));
+            var names = string.Join("・", matches.Select(m => m.DisplayName));
             return await RejectAsync(command, $"どの機器か特定できませんでした。{names} のどれでしょうか？", ct);
         }
 
@@ -82,7 +95,7 @@ public sealed class DeviceControlService(
             await db.SaveChangesAsync(ct);
 
             var stateText = status is null ? "不明" : (status.IsOn ? "ON" : "OFF");
-            return new DeviceControlOutcome(true, $"{device.Name} は現在 {stateText} です。", device.Id, CommandStatus.Succeeded);
+            return new DeviceControlOutcome(true, $"{device.DisplayName} は現在 {stateText} です。", device.Id, CommandStatus.Succeeded);
         }
 
         var result = action switch
@@ -101,7 +114,7 @@ public sealed class DeviceControlService(
             command.FailureReason = result.FailureReason;
             db.DeviceCommands.Add(command);
             await db.SaveChangesAsync(ct);
-            return new DeviceControlOutcome(false, $"{device.Name} の操作に失敗しました。{result.FailureReason}", device.Id, CommandStatus.Failed);
+            return new DeviceControlOutcome(false, $"{device.DisplayName} の操作に失敗しました。{result.FailureReason}", device.Id, CommandStatus.Failed);
         }
 
         // SwitchBot applies commands asynchronously: a read-back issued immediately
@@ -122,17 +135,31 @@ public sealed class DeviceControlService(
         command.Status = CommandStatus.Succeeded;
         db.DeviceCommands.Add(command);
 
-        db.DeviceEvents.Add(new DeviceEvent
+        // Only record an event when the state actually changed. Asking to turn on a
+        // device that is already on is a no-op for the resident: writing an event
+        // regardless made "家電の利用" climb every time someone spoke to the
+        // assistant, so the dashboard reported activity that never happened. This
+        // mirrors the guard the polling cycle already applies.
+        var lastState = await db.DeviceEvents
+            .Where(e => e.DeviceId == device.Id)
+            .OrderByDescending(e => e.OccurredAtUtc)
+            .Select(e => e.State)
+            .FirstOrDefaultAsync(ct);
+
+        if (!string.Equals(lastState, newState, StringComparison.OrdinalIgnoreCase))
         {
-            HouseholdId = householdId,
-            DeviceId = device.Id,
-            EventType = "PowerState",
-            State = newState,
-            PowerWatts = newStatus?.PowerWatts,
-            Source = EventSource.AppCommand,
-            OccurredAtUtc = command.ExecutedAtUtc.Value,
-            ReceivedAtUtc = clock.GetUtcNow()
-        });
+            db.DeviceEvents.Add(new DeviceEvent
+            {
+                HouseholdId = householdId,
+                DeviceId = device.Id,
+                EventType = "PowerState",
+                State = newState,
+                PowerWatts = newStatus?.PowerWatts,
+                Source = EventSource.AppCommand,
+                OccurredAtUtc = command.ExecutedAtUtc.Value,
+                ReceivedAtUtc = clock.GetUtcNow()
+            });
+        }
 
         await db.SaveChangesAsync(ct);
 
@@ -142,7 +169,7 @@ public sealed class DeviceControlService(
             "off" => "消しました",
             _ => "操作しました"
         };
-        return new DeviceControlOutcome(true, $"{device.Name} を{verb}。", device.Id, CommandStatus.Succeeded);
+        return new DeviceControlOutcome(true, $"{device.DisplayName} を{verb}。", device.Id, CommandStatus.Succeeded);
     }
 
     /// <summary>
@@ -200,7 +227,9 @@ public sealed class DeviceControlService(
 public static class DeviceResolver
 {
     /// <summary>
-    /// Matches an alias against alias / name / "room + type" without ever inventing a device.
+    /// Matches an alias against alias / name / the family's own display name without ever
+    /// inventing a device. Both the provider's label and the name typed on screen are
+    /// matched, so a device stays reachable by whichever name the speaker happens to know.
     /// An empty or unknown alias yields no matches.
     /// </summary>
     public static List<Device> Resolve(IReadOnlyCollection<Device> devices, string? alias)
@@ -213,7 +242,7 @@ public static class DeviceResolver
         var needle = Normalize(alias);
 
         var exact = devices
-            .Where(d => Normalize(d.Alias) == needle || Normalize(d.Name) == needle)
+            .Where(d => Names(d).Any(n => n == needle))
             .ToList();
 
         if (exact.Count > 0)
@@ -222,11 +251,22 @@ public static class DeviceResolver
         }
 
         return devices
-            .Where(d => Normalize(d.Alias).Contains(needle, StringComparison.Ordinal)
-                     || needle.Contains(Normalize(d.Alias), StringComparison.Ordinal)
-                     || Normalize(d.Name).Contains(needle, StringComparison.Ordinal)
-                     || needle.Contains(Normalize(d.Name), StringComparison.Ordinal))
+            .Where(d => Names(d).Any(n =>
+                n.Length > 0
+                && (n.Contains(needle, StringComparison.Ordinal) || needle.Contains(n, StringComparison.Ordinal))))
             .ToList();
+    }
+
+    /// <summary>Every name this device answers to, normalized.</summary>
+    private static IEnumerable<string> Names(Device device)
+    {
+        yield return Normalize(device.Alias);
+        yield return Normalize(device.Name);
+
+        if (!string.IsNullOrWhiteSpace(device.DisplayNameOverride))
+        {
+            yield return Normalize(device.DisplayNameOverride);
+        }
     }
 
     private static string Normalize(string value) =>

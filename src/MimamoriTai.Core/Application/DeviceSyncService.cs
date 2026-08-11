@@ -20,6 +20,9 @@ public sealed record DeviceSyncResult(int Added, int Updated, int Deactivated)
 ///   control on its own).
 /// - Existing devices (matched by ExternalDeviceId + HouseholdId) have their
 ///   Name/DeviceType/Room refreshed and are reactivated if they had been deactivated.
+///   Name/Room here are the PROVIDER's own values; the family's own
+///   DisplayNameOverride/RoomOverride are separate columns sync never touches, so a
+///   correction typed on screen survives every subsequent poll.
 /// - Devices previously synced from the provider but no longer reported by it are
 ///   marked IsActive = false (never deleted), so their historical events/commands
 ///   remain valid and they naturally disappear from active device resolution.

@@ -77,6 +77,8 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.Name).HasMaxLength(128).IsRequired();
             e.Property(x => x.Alias).HasMaxLength(64).IsRequired();
             e.Property(x => x.Room).HasMaxLength(64);
+            e.Property(x => x.DisplayNameOverride).HasMaxLength(60);
+            e.Property(x => x.RoomOverride).HasMaxLength(64);
             e.Property(x => x.DeviceType).HasConversion<string>().HasMaxLength(32);
             e.Property(x => x.Provider).HasConversion<string>().HasMaxLength(32);
             e.Property(x => x.SafetyClass).HasConversion<string>().HasMaxLength(32);

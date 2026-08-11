@@ -1,4 +1,7 @@
+using System.ComponentModel.DataAnnotations.Schema;
+
 namespace MimamoriTai.Core.Domain;
+
 
 public class Household
 {
@@ -42,6 +45,35 @@ public class Device
 
     public DeviceType DeviceType { get; set; }
     public string Room { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Name the resident's family typed on screen, or null while they have never renamed
+    /// this device. Kept separate from <see cref="Name"/> because <see cref="Name"/> is the
+    /// provider's own label: SwitchBot re-reports it on every sync, so storing the human
+    /// correction there would be silently reverted by the next poll. The raw label is also
+    /// what an operator needs in order to recognise the device in the SwitchBot app, so it
+    /// is never overwritten or discarded.
+    /// </summary>
+    public string? DisplayNameOverride { get; set; }
+
+    /// <summary>
+    /// Room the family typed on screen, or null while they have never set one. SwitchBot has
+    /// no concept of a room, so <see cref="Room"/> only ever holds a synthesised placeholder
+    /// (the hub id, or the device's own name) - this is the only field that can hold a room
+    /// a human would recognise.
+    /// </summary>
+    public string? RoomOverride { get; set; }
+
+    /// <summary>What the family should see everywhere: their own name if they set one.</summary>
+    [NotMapped]
+    public string DisplayName =>
+        string.IsNullOrWhiteSpace(DisplayNameOverride) ? Name : DisplayNameOverride;
+
+    /// <summary>What the family should see everywhere: their own room if they set one.</summary>
+    [NotMapped]
+    public string DisplayRoom =>
+        string.IsNullOrWhiteSpace(RoomOverride) ? Room : RoomOverride;
+
     public DeviceProviderKind Provider { get; set; }
     public bool IsEnabled { get; set; } = true;
     public bool RemoteControlAllowed { get; set; }

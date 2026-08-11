@@ -220,4 +220,68 @@ public class HouseholdAccessTests
         Assert.Same(switchBot, resolved);
         Assert.Equal(DeviceProviderKind.SwitchBot, resolved.Kind);
     }
+
+    /// <summary>
+    /// A household that connected its own SwitchBot account must reach real hardware even
+    /// when the deployment itself has no global SwitchBot:Token -- which was exactly the
+    /// production configuration that silently routed every command to the mock provider.
+    /// </summary>
+    [Fact]
+    public async Task DataSourceAwareProvider_Production_PrefersHouseholdCredentials()
+    {
+        var mock = new MockDeviceProvider();
+        var unconfiguredGlobal = new SwitchBotDeviceProvider(
+            new FakeSwitchBotClient { IsConfigured = false },
+            NullLogger<SwitchBotDeviceProvider>.Instance);
+        var householdProvider = new SwitchBotDeviceProvider(
+            new FakeSwitchBotClient { IsConfigured = true },
+            NullLogger<SwitchBotDeviceProvider>.Instance);
+        var householdId = Guid.NewGuid();
+        var clients = new FakeHouseholdSwitchBotClientFactory(householdProvider);
+
+        var provider = new DataSourceAwareDeviceProvider(
+            new DeviceProviderFactory(mock, unconfiguredGlobal),
+            new DataSourceContext { Mode = DataSourceMode.Production, HouseholdId = householdId },
+            clients);
+
+        await provider.TurnOnAsync("8CFD49F79C92");
+
+        Assert.Equal(householdId, Assert.Single(clients.Requested));
+    }
+
+    [Fact]
+    public async Task DataSourceAwareProvider_Sample_NeverTouchesHouseholdCredentials()
+    {
+        var mock = new MockDeviceProvider();
+        var householdProvider = new SwitchBotDeviceProvider(
+            new FakeSwitchBotClient { IsConfigured = true },
+            NullLogger<SwitchBotDeviceProvider>.Instance);
+        var clients = new FakeHouseholdSwitchBotClientFactory(householdProvider);
+
+        var provider = new DataSourceAwareDeviceProvider(
+            new DeviceProviderFactory(mock, householdProvider),
+            new DataSourceContext { Mode = DataSourceMode.Sample, HouseholdId = Guid.NewGuid() },
+            clients);
+
+        await provider.GetDevicesAsync();
+
+        Assert.Empty(clients.Requested);
+    }
+}
+
+file sealed class FakeHouseholdSwitchBotClientFactory(IDeviceProvider provider) : IHouseholdSwitchBotClientFactory
+{
+    public List<Guid> Requested { get; } = [];
+
+    public Task<ISwitchBotClient> GetClientAsync(Guid householdId, CancellationToken ct = default) =>
+        throw new NotSupportedException();
+
+    public ISwitchBotClient CreateAdHocClient(string token, string secret) =>
+        throw new NotSupportedException();
+
+    public Task<IDeviceProvider> GetDeviceProviderAsync(Guid householdId, CancellationToken ct = default)
+    {
+        Requested.Add(householdId);
+        return Task.FromResult(provider);
+    }
 }

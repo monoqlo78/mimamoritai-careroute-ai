@@ -16,21 +16,27 @@ public static class ApiEndpoints
 
         app.MapGet("/api/devices", async (AppDbContext db, CancellationToken ct) =>
         {
-            var devices = await db.Devices
-                .OrderBy(d => d.Name)
+            // Materialized before projecting: Name/Room are the display values, which are
+            // computed from the override columns and so cannot be evaluated in SQL.
+            var rows = await db.Devices.ToListAsync(ct);
+
+            var devices = rows
+                .OrderBy(d => d.DisplayName, StringComparer.Ordinal)
                 .Select(d => new
                 {
                     d.Id,
-                    d.Name,
+                    Name = d.DisplayName,
                     d.Alias,
-                    d.Room,
+                    Room = d.DisplayRoom,
+                    ProviderName = d.Name,
+                    ProviderRoom = d.Room,
                     DeviceType = d.DeviceType.ToString(),
                     Provider = d.Provider.ToString(),
                     d.IsEnabled,
                     d.RemoteControlAllowed,
                     SafetyClass = d.SafetyClass.ToString()
                 })
-                .ToListAsync(ct);
+                .ToList();
 
             return Results.Ok(devices);
         }).WithName("GetDevices");
@@ -51,9 +57,11 @@ public static class ApiEndpoints
             return Results.Ok(new
             {
                 device.Id,
-                device.Name,
+                Name = device.DisplayName,
                 device.Alias,
-                device.Room,
+                Room = device.DisplayRoom,
+                ProviderName = device.Name,
+                ProviderRoom = device.Room,
                 DeviceType = device.DeviceType.ToString(),
                 Provider = device.Provider.ToString(),
                 device.IsEnabled,

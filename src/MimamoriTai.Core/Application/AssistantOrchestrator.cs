@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using MimamoriTai.Core.Abstractions;
 using MimamoriTai.Core.Domain;
@@ -90,6 +91,9 @@ public sealed class AssistantOrchestrator(
 
         ルール:
         - 与えられた「データ」に書かれている事実だけを使い、数値や時刻を創作しないこと。
+        - 家電の「台数」は、データに台数が明記されている場合のみ答えること。利用回数など別の
+          数値から台数を推測してはならない。明記が無ければ台数には触れないこと。
+        - データに数値が書かれている場合は「記録がありません」と答えてはならない。
         - 「[端末の記録から確認できる事実]」が付いている情報は最も信頼できる情報として優先すること。
         - データの一部に「取得できなかった」「技術的な問題」など、集計側の不調を述べる記述が
           混じっていても、それは家族には伝えず無視し、確認できた事実だけを伝えること。
@@ -247,8 +251,8 @@ public sealed class AssistantOrchestrator(
 
         _pending.Set(new PendingDeviceAction(
             request.HouseholdId,
-            plan.DeviceAlias ?? device.Name,
-            device.Name,
+            plan.DeviceAlias ?? device.Alias,
+            device.DisplayName,
             action,
             request.Message,
             clock.GetUtcNow()));
@@ -261,7 +265,7 @@ public sealed class AssistantOrchestrator(
         };
 
         return new AssistantResponse(
-            $"{device.Name} を{verb}。よろしいですか？（「はい」で実行、「いいえ」で中止）",
+            $"{device.DisplayName} を{verb}。よろしいですか？（「はい」で実行、「いいえ」で中止）",
             plan.Intent,
             completion.ResolvedModel,
             completion.Router,
@@ -427,7 +431,21 @@ public sealed class AssistantOrchestrator(
         var text = summary.Success ? summary.Content.Trim() : string.Empty;
 
         // Never let the model replace the facts with nothing.
-        return text.Length == 0 ? (facts, summary) : (text, summary);
+        if (text.Length == 0)
+        {
+            return (facts, summary);
+        }
+
+        // A summary that states a number the data never contained is worse than no
+        // summary at all: the family acts on it. Smaller models do invent counts here
+        // ("1回" arriving as "4回"), and no amount of prompting removes that entirely,
+        // so the claim is checked against the source before it is allowed out.
+        if (InventsNumbers(facts, text))
+        {
+            return (facts, summary);
+        }
+
+        return (text, summary);
     }
 
     /// <summary>
@@ -442,6 +460,67 @@ public sealed class AssistantOrchestrator(
     /// </summary>
     private static string SummaryPurpose(CommandSource source) =>
         source == CommandSource.Line ? "summary-fast" : "summary";
+
+    /// <summary>
+    /// True when <paramref name="summary"/> asserts a figure that does not appear in
+    /// <paramref name="facts"/>. Times are compared whole (14:45 must not be satisfied
+    /// by an unrelated "45"), and a rounded figure is accepted -- "約11時間半" from
+    /// "11.5時間" is a reasonable retelling, "4回" from "1回" is not.
+    /// </summary>
+    internal static bool InventsNumbers(string facts, string summary)
+    {
+        var allowed = NumberPattern.Matches(facts)
+            .Select(m => m.Value)
+            .ToHashSet(StringComparer.Ordinal);
+
+        // "16:45" is one token, but a natural retelling writes it as "16時45分". Both
+        // halves therefore have to count as supported, or correct summaries get thrown
+        // away for saying the same time in Japanese.
+        foreach (var part in allowed.Where(a => a.Contains(':')).SelectMany(a => a.Split(':')).ToList())
+        {
+            allowed.Add(part);
+            allowed.Add(part.TrimStart('0') is { Length: > 0 } trimmed ? trimmed : "0");
+        }
+
+        foreach (Match m in NumberPattern.Matches(summary))
+        {
+            if (allowed.Contains(m.Value))
+            {
+                continue;
+            }
+
+            // Accept a value the source also supports at lower precision, so that
+            // rounding for readability is not treated as invention.
+            if (double.TryParse(m.Value, out var claimed)
+                && allowed.Any(a => double.TryParse(a, out var source) && IsRoundingOf(source, claimed)))
+            {
+                continue;
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsRoundingOf(double source, double claimed)
+    {
+        if (Math.Abs(source - claimed) < 0.0001)
+        {
+            return true;
+        }
+
+        // Within 5% covers "約33ワット" for 32.7W but never turns 1 into 4.
+        var scale = Math.Max(Math.Abs(source), 1.0);
+        return Math.Abs(source - claimed) / scale <= 0.05;
+    }
+
+    /// <summary>
+    /// Matches a clock time as one token and any other run of digits (with an optional
+    /// decimal part) as another, so the two are never confused for one another.
+    /// </summary>
+    private static readonly Regex NumberPattern =
+        new(@"\d{1,2}:\d{2}|\d+(?:\.\d+)?", RegexOptions.Compiled);
 
     private async Task<AssistantResponse> HandleConversationAsync(
         AssistantRequest request, AiCompletionResult intentCompletion, CancellationToken ct)
@@ -468,16 +547,23 @@ public sealed class AssistantOrchestrator(
             null);
     }
 
+    /// <summary>
+    /// The alias vocabulary handed to the planning model. The family's own name for a
+    /// device is listed alongside the provider label so a request phrased with either one
+    /// resolves - the resolver accepts both, and the hint must not narrow that.
+    /// </summary>
     private async Task<string> BuildAliasHintAsync(Guid householdId, CancellationToken ct)
     {
         var devices = await db.Devices
             .Where(d => d.HouseholdId == householdId && d.IsEnabled)
-            .Select(d => new { d.Alias, d.Name })
+            .Select(d => new { d.Alias, d.Name, d.DisplayNameOverride })
             .ToListAsync(ct);
 
         return devices.Count == 0
             ? "(なし)"
-            : string.Join(", ", devices.Select(d => $"{d.Alias}({d.Name})"));
+            : string.Join(", ", devices.Select(d => string.IsNullOrWhiteSpace(d.DisplayNameOverride)
+                ? $"{d.Alias}({d.Name})"
+                : $"{d.Alias}({d.DisplayNameOverride}／{d.Name})"));
     }
 
     private async Task RecordMessageAsync(

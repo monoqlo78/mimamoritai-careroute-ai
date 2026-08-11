@@ -7,6 +7,8 @@
 @inject DeviceDetailService DeviceDetailReadModel
 @inject DeviceInsightQuestionService Insight
 @inject DeviceControlService Control
+@inject DeviceSettingsService Settings
+@implements IAsyncDisposable
 
 <PageTitle>@(_model is null ? "デバイス詳細" : _model.Name) / 見守り隊</PageTitle>
 
@@ -58,17 +60,25 @@ else
         </div>
     }
 
-    <section class="status-card @(_model.IsOn ? "risk-low" : "")">
-        <div class="status-icon" aria-hidden="true">@(_model.IsOn ? "✓" : "―")</div>
+    <section class="status-card @(_model.IsStateKnown && _model.IsOn ? "risk-low" : "")">
+        <div class="status-icon" aria-hidden="true">@(!_model.IsStateKnown ? "？" : _model.IsOn ? "✓" : "―")</div>
         <div class="status-copy">
             <p class="eyebrow">現在の状態</p>
-            <h2>@(_model.IsOn ? "使用中" : "停止中")</h2>
+            <h2>@(!_model.IsStateKnown ? "わかりません" : _model.IsOn ? "使用中" : "停止中")</h2>
             <p class="status-reason">
                 @if (_model.PowerWatts is { } watts)
                 {
                     @($"消費電力 約{watts:0.#}W ・ ")
                 }
-                最終確認 @FormatLocal(_model.StatusObservedAtUtc)
+                @if (!_model.IsStateKnown)
+                {
+                    @("機器から状態を受け取れていません。ハブの接続を確認してください")
+                }
+                else
+                {
+                    @($"最終確認 {FormatLocal(_model.StatusObservedAtUtc)}")
+                    @(_model.IsStateLive ? "" : "（記録からの表示）")
+                }
             </p>
         </div>
         <div class="device-actions">
@@ -81,10 +91,79 @@ else
                     disabled="@(_busy || !_model.IsEnabled)">消す</button>
         </div>
     </section>
-    @if (_model.SafetyClass == "Restricted")
+    @if (!_model.RemoteControlAllowed)
+    {
+        <p class="restricted-note">この機器は遠隔操作が許可されていません。下の「遠隔操作を許可する」をオンにしてください</p>
+    }
+    else if (_model.SafetyClass == "Restricted")
     {
         <p class="restricted-note">安全のため、遠隔では消す操作だけできます</p>
     }
+
+    <section class="permission-card">
+        <h3>この機器の設定</h3>
+
+        @if (_model.DataSourceMode == DataSourceMode.Sample)
+        {
+            <p class="permission-hint">デモデータの機器のため変更できません。</p>
+        }
+        else
+        {
+            <div class="permission-row rename-row">
+                <span class="rename-copy">
+                    <strong>呼び名と部屋</strong>
+                    <small>
+                        画面・LINE・AIの返事すべてでこの名前を使います。「リビングの電気」のように、
+                        普段そう呼んでいる言葉にしてください（メーカーの型番のままだと呼びかけても見つかりません）。
+                        部屋は空欄でもかまいません。
+                    </small>
+                    <span class="rename-input">
+                        <input type="text" maxlength="60" placeholder="リビングの電気"
+                               aria-label="呼び名"
+                               value="@_nameDraft"
+                               disabled="@_busy"
+                               @oninput="@(e => _nameDraft = e.Value?.ToString() ?? "")" />
+                        <input type="text" maxlength="64" placeholder="部屋（例：寝室）"
+                               aria-label="部屋"
+                               value="@_roomDraft"
+                               disabled="@_busy"
+                               @oninput="@(e => _roomDraft = e.Value?.ToString() ?? "")" />
+                        <button class="secondary-button"
+                                disabled="@(_busy || string.IsNullOrWhiteSpace(_nameDraft) || !HasNamingChanges)"
+                                @onclick="SaveNamingAsync">保存</button>
+                    </span>
+                    <small class="muted">
+                        機器そのものの名前は「@_model.ProviderName」です（SwitchBot側の名前。変わりません）。
+                    </small>
+                </span>
+            </div>
+
+            <label class="permission-row">
+                <input type="checkbox"
+                       checked="@_model.RemoteControlAllowed"
+                       disabled="@_busy"
+                       @onchange="@(e => UpdatePermissionAsync((bool)e.Value!, _model.SafetyClass == "Safe"))" />
+                <span>
+                    <strong>この機器の遠隔操作を許可する</strong>
+                    <small>オフの間は「つける」「消す」の両方が拒否されます。</small>
+                </span>
+            </label>
+
+            <label class="permission-row @(_model.RemoteControlAllowed ? "" : "is-disabled")">
+                <input type="checkbox"
+                       checked="@(_model.SafetyClass == "Safe")"
+                       disabled="@(_busy || !_model.RemoteControlAllowed)"
+                       @onchange="@(e => UpdatePermissionAsync(_model.RemoteControlAllowed, (bool)e.Value!))" />
+                <span>
+                    <strong>ONにするのも安全な機器として扱う</strong>
+                    <small>
+                        照明や扇風機など、留守中にONになっても危険がない機器のみチェックしてください。
+                        暖房器具・調理器具を接続している場合はオフのままにしてください（OFFのみ可能になります）。
+                    </small>
+                </span>
+            </label>
+        }
+    </section>
 
     <div class="today-summary">
         <div class="summary-item">
@@ -189,6 +268,18 @@ else
     private string? _notice;
     private string _noticeKind = "ok";
     private Guid _loadedDeviceId;
+    private string _nameDraft = string.Empty;
+    private string _roomDraft = string.Empty;
+
+    // 15s keeps a single appliance feeling live without burning through SwitchBot's
+    // daily API allowance (one status read per tick, only while the page is open).
+    private static readonly TimeSpan LiveRefreshInterval = TimeSpan.FromSeconds(15);
+    private readonly CancellationTokenSource _refreshCts = new();
+    private PeriodicTimer? _refreshTimer;
+
+    private bool HasNamingChanges =>
+        _model is not null
+        && (_nameDraft.Trim() != _model.Name || (_roomDraft.Trim() != _model.Room));
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
 
@@ -205,11 +296,19 @@ else
         }
     }
 
-    private async Task ReloadAsync()
+    private async Task ReloadAsync(bool includeInsight = true)
     {
         _loadedDeviceId = DeviceId;
         _model = await DeviceDetailReadModel.LoadAsync(DeviceId);
         _notFoundOrDenied = _model is null;
+        _nameDraft = _model?.Name ?? string.Empty;
+        _roomDraft = _model?.Room ?? string.Empty;
+
+        if (!includeInsight)
+        {
+            return;
+        }
+
         _insight = null;
 
         if (_model is not null)
@@ -218,6 +317,63 @@ else
             // delays the initial page render - the panel shows a loading state until it resolves.
             _ = LoadInsightAsync(_model.HouseholdId, DeviceId);
         }
+    }
+
+    /// <summary>
+    /// Re-reads the appliance while the page stays open, so flipping the physical switch
+    /// on the device itself is reflected here instead of leaving a stale "使用中"/"停止中"
+    /// until the family reloads the page. The usage insight is deliberately not refetched:
+    /// it is an AI call, and only the on/off state changes this often.
+    /// </summary>
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || _refreshTimer is not null)
+        {
+            return;
+        }
+
+        _refreshTimer = new PeriodicTimer(LiveRefreshInterval);
+        _ = RefreshLoopAsync(_refreshTimer, _refreshCts.Token);
+        await Task.CompletedTask;
+    }
+
+    private async Task RefreshLoopAsync(PeriodicTimer timer, CancellationToken ct)
+    {
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                // Never refresh mid-edit: it would overwrite what the family is typing,
+                // and never while a command is in flight, because the shared DbContext
+                // cannot serve two operations at once.
+                if (_busy || HasNamingChanges)
+                {
+                    continue;
+                }
+
+                await InvokeAsync(async () =>
+                {
+                    await ReloadAsync(includeInsight: false);
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Page closed.
+        }
+        catch (ObjectDisposedException)
+        {
+            // Circuit torn down between ticks.
+        }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _refreshCts.Cancel();
+        _refreshTimer?.Dispose();
+        _refreshCts.Dispose();
+        return ValueTask.CompletedTask;
     }
 
     private async Task LoadInsightAsync(Guid householdId, Guid deviceId)
@@ -274,6 +430,57 @@ else
         }
     }
 
+    private async Task SaveNamingAsync()
+    {
+        if (_model is null || _busy || string.IsNullOrWhiteSpace(_nameDraft))
+        {
+            return;
+        }
+
+        _busy = true;
+        StateHasChanged();
+
+        try
+        {
+            var result = await Settings.UpdateNamingAsync(_model.DeviceId, _nameDraft, _roomDraft);
+            _notice = result.Message;
+            _noticeKind = result.Status == DeviceSettingsUpdateStatus.Updated ? "ok" : "blocked";
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task UpdatePermissionAsync(bool remoteControlAllowed, bool treatAsSafeAppliance)
+    {
+        if (_model is null || _busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        StateHasChanged();
+
+        try
+        {
+            var result = await Settings.UpdatePermissionsAsync(
+                _model.DeviceId,
+                remoteControlAllowed,
+                treatAsSafeAppliance);
+
+            _notice = result.Message;
+            _noticeKind = result.Status == DeviceSettingsUpdateStatus.Updated ? "ok" : "blocked";
+
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
     private static string DeviceTypeLabel(string type) => type switch
     {
         "Light" => "照明",
@@ -292,6 +499,7 @@ else
     private static string EventTypeLabel(string eventType) => eventType switch
     {
         "PowerState" => "電源状態の変化",
+        "PowerChange" => "消費電力の変化",
         _ => eventType
     };
 
@@ -299,6 +507,8 @@ else
     {
         "on" => "使用",
         "off" => "停止",
+        "increased" => "電力↑",
+        "decreased" => "電力↓",
         "active" => "動きあり",
         "inactive" => "動きなし",
         _ => state

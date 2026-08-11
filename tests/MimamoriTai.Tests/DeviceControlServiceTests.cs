@@ -50,6 +50,45 @@ public class DeviceControlServiceTests
     }
 
     [Fact]
+    public async Task Turning_On_An_Already_On_Device_Does_Not_Count_As_New_Use()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var service = Create(db, out _);
+
+        await service.ExecuteAsync(db.HouseholdId, "living-light", DeviceAction.TurnOn, 0.95,
+            "つけて", CommandSource.Line, null, null);
+        await service.ExecuteAsync(db.HouseholdId, "living-light", DeviceAction.TurnOn, 0.95,
+            "電気をつけて", CommandSource.Line, null, null);
+        await service.ExecuteAsync(db.HouseholdId, "living-light", DeviceAction.TurnOn, 0.95,
+            "つけといて", CommandSource.Line, null, null);
+
+        // Both commands are audited, but only the first one changed anything, so the
+        // resident used the appliance once -- not three times.
+        Assert.Equal(3, db.Context.DeviceCommands.Count());
+        var recorded = Assert.Single(db.Context.DeviceEvents);
+        Assert.Equal("on", recorded.State);
+    }
+
+    [Fact]
+    public async Task A_Real_State_Change_After_A_No_Op_Is_Still_Recorded()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var service = Create(db, out _);
+
+        await service.ExecuteAsync(db.HouseholdId, "living-light", DeviceAction.TurnOn, 0.95,
+            "つけて", CommandSource.Line, null, null);
+        await service.ExecuteAsync(db.HouseholdId, "living-light", DeviceAction.TurnOn, 0.95,
+            "つけて", CommandSource.Line, null, null);
+        await service.ExecuteAsync(db.HouseholdId, "living-light", DeviceAction.TurnOff, 0.95,
+            "消して", CommandSource.Line, null, null);
+
+        var states = db.Context.DeviceEvents
+            .OrderBy(e => e.OccurredAtUtc).ThenBy(e => e.ReceivedAtUtc)
+            .Select(e => e.State).ToList();
+        Assert.Equal(new[] { "on", "off" }, states);
+    }
+
+    [Fact]
     public async Task Unknown_Device_Is_Rejected_And_Audited()
     {
         using var db = await new TestDb().SeedAsync(TestDb.Light());
@@ -79,6 +118,24 @@ public class DeviceControlServiceTests
 
         Assert.False(outcome.Executed);
         Assert.Empty(db.Context.DeviceEvents);
+    }
+
+    /// <summary>
+    /// "電源はついてる？" names no device. A read-only status check on a single-device
+    /// household can answer it; the same phrasing must never be allowed to switch
+    /// something on (see <see cref="Null_Alias_Never_Guesses_A_Device"/>).
+    /// </summary>
+    [Fact]
+    public async Task Null_Alias_Answers_Status_For_The_Only_Device()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var service = Create(db, out _);
+
+        var outcome = await service.ExecuteAsync(
+            db.HouseholdId, null, DeviceAction.GetStatus, 0.99,
+            "今って、電源はついてるの？", CommandSource.Web, null, null);
+
+        Assert.Equal(CommandStatus.Succeeded, outcome.Status);
     }
 
     [Fact]

@@ -895,4 +895,23 @@ public class SummaryRoutingTests
         Assert.Contains("summary", purposes);
         Assert.DoesNotContain("summary-fast", purposes);
     }
+    /// <summary>
+    /// The number in the reply is the one thing a family acts on. A smaller summarising
+    /// model does turn "1回" into "4回", so an invented figure must cost the family the
+    /// prettier wording rather than the truth.
+    /// </summary>
+    [Theory]
+    [InlineData("今日は1回、家電を利用しています。", "家電を4回使われました。", true)]
+    [InlineData("今日は1回、家電を利用しています。", "家電を1回使われました。", false)]
+    [InlineData("活動は14:45頃から始まりました。", "45回ほど動かれました。", false)]
+    [InlineData("活動は14:45頃から始まりました。", "14時45分ごろから動き始めました。", false)]
+    [InlineData("活動は14:45頃から始まりました。", "16時ごろから動き始めました。", true)]
+    [InlineData("通電時間は11.5時間でした。", "およそ11.5時間つけっぱなしでした。", false)]
+    [InlineData("消費電力は32.7ワットでした。", "およそ33ワットでした。", false)]
+    [InlineData("今日は家電の利用がありません。", "落ち着いて過ごされています。", false)]
+    public void InventsNumbers_Rejects_Figures_The_Data_Never_Contained(
+        string facts, string summary, bool expected)
+    {
+        Assert.Equal(expected, AssistantOrchestrator.InventsNumbers(facts, summary));
+    }
 }

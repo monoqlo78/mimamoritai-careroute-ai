@@ -15,6 +15,7 @@
 @inject IWebHostEnvironment Env
 @inject WatchAlertService AlertService
 @inject DeviceSyncService DeviceSync
+@inject DeviceSettingsService DeviceSettings
 @inject HouseholdAccessService HouseholdAccess
 @inject IDataSourceContext DataSourceContext
 @inject MimamoriTai.Core.Abstractions.IEventStreamPublisher StreamPublisher
@@ -22,6 +23,7 @@
 @inject IOptions<AuthOptions> AuthOptionsAccessor
 @inject MimamoriTai.Infrastructure.Auth.AdminAccessService AdminAccess
 @inject IJSRuntime JS
+@implements IAsyncDisposable
 
 <PageTitle>CareRoute AI / 見守り隊</PageTitle>
 
@@ -200,13 +202,13 @@ else
             @foreach (var device in _model.Devices)
             {
                 var d = device;
-                <div class="device-card @(d.IsOn ? "on" : "off") @(d.SafetyClass == "Restricted" ? "restricted" : "")">
+                <div class="device-card @(d.IsStateKnown && d.IsOn ? "on" : "off") @(d.SafetyClass == "Restricted" ? "restricted" : "")">
                     <div class="device-head">
                         <div>
                             <strong>@d.Name</strong>
                             <span class="device-room">@d.Room</span>
                         </div>
-                        <span class="state-pill @(d.IsOn ? "on" : "")">@(d.IsOn ? "使用中" : "停止中")</span>
+                        <span class="state-pill @(d.IsStateKnown && d.IsOn ? "on" : "")">@(!d.IsStateKnown ? "確認中" : d.IsOn ? "使用中" : "停止中")</span>
                     </div>
                     <p class="muted">最終利用 @FormatLocal(d.LastUsedUtc) ・ 今日 @d.TodayUsageCount 回</p>
                     <div class="device-actions">
@@ -221,6 +223,40 @@ else
                     @if (d.SafetyClass == "Restricted")
                     {
                         <p class="restricted-note">安全のため、遠隔では消す操作だけできます</p>
+                    }
+                    @if (_model.DataSourceMode != DataSourceMode.Sample)
+                    {
+                        @if (_editingDeviceId == d.Id)
+                        {
+                            <div class="device-rename">
+                                <label>
+                                    <span>呼び名</span>
+                                    <input type="text" maxlength="60" placeholder="リビングの電気"
+                                           value="@_editNameDraft"
+                                           disabled="@_busy"
+                                           @oninput="@(e => _editNameDraft = e.Value?.ToString() ?? "")" />
+                                </label>
+                                <label>
+                                    <span>部屋</span>
+                                    <input type="text" maxlength="64" placeholder="寝室"
+                                           value="@_editRoomDraft"
+                                           disabled="@_busy"
+                                           @oninput="@(e => _editRoomDraft = e.Value?.ToString() ?? "")" />
+                                </label>
+                                <div class="device-rename-actions">
+                                    <button class="secondary-button"
+                                            disabled="@(_busy || string.IsNullOrWhiteSpace(_editNameDraft))"
+                                            @onclick="SaveNamingAsync">保存</button>
+                                    <button class="link-button" @onclick="CancelEditing">やめる</button>
+                                </div>
+                            </div>
+                        }
+                        else
+                        {
+                            <button class="link-button device-rename-open"
+                                    disabled="@_busy"
+                                    @onclick="@(() => StartEditing(d))">名前・部屋を直す</button>
+                        }
                     }
                     <a class="link-button device-detail-link" href="@($"/devices/{d.Id}")">くわしく見る →</a>
                 </div>
@@ -364,6 +400,18 @@ else
     private IReadOnlyList<HouseholdSummary> _households = [];
     private const string SelectedHouseholdCookieName = "mimamori_household";
 
+    // Inline rename, opened one card at a time: the family corrects the name where they
+    // noticed it was wrong, without first having to find the detail page.
+    private Guid? _editingDeviceId;
+    private string _editNameDraft = string.Empty;
+    private string _editRoomDraft = string.Empty;
+
+    // 30s: the dashboard reads every appliance each tick, so it refreshes half as often
+    // as the single-device detail page to stay well inside SwitchBot's daily API allowance.
+    private static readonly TimeSpan LiveRefreshInterval = TimeSpan.FromSeconds(30);
+    private readonly CancellationTokenSource _refreshCts = new();
+    private PeriodicTimer? _refreshTimer;
+
     protected override async Task OnInitializedAsync() => await ReloadAsync();
 
     /// <summary>
@@ -394,6 +442,50 @@ else
             await ReloadAsync(householdId);
             StateHasChanged();
         }
+
+        // Appliances are also switched by hand at the wall, so the cards have to keep
+        // themselves honest instead of freezing on whatever was true when the page opened.
+        _refreshTimer = new PeriodicTimer(LiveRefreshInterval);
+        _ = RefreshLoopAsync(_refreshTimer, _refreshCts.Token);
+    }
+
+    private async Task RefreshLoopAsync(PeriodicTimer timer, CancellationToken ct)
+    {
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                // Never refresh mid-edit: it would overwrite what the family is typing,
+                // and never while another action is running, because the shared DbContext
+                // cannot serve two operations at once.
+                if (_busy || _editingDeviceId is not null)
+                {
+                    continue;
+                }
+
+                await InvokeAsync(async () =>
+                {
+                    await ReloadAsync();
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Page closed.
+        }
+        catch (ObjectDisposedException)
+        {
+            // Circuit torn down between ticks.
+        }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _refreshCts.Cancel();
+        _refreshTimer?.Dispose();
+        _refreshCts.Dispose();
+        return ValueTask.CompletedTask;
     }
 
     private async Task ReloadAsync(Guid? householdId = null)
@@ -558,6 +650,49 @@ else
         }
     }
 
+    private void StartEditing(DeviceCard device)
+    {
+        _editingDeviceId = device.Id;
+        _editNameDraft = device.Name;
+        _editRoomDraft = device.Room;
+    }
+
+    private void CancelEditing()
+    {
+        _editingDeviceId = null;
+        _editNameDraft = string.Empty;
+        _editRoomDraft = string.Empty;
+    }
+
+    private async Task SaveNamingAsync()
+    {
+        if (_model is null || _busy || _editingDeviceId is not { } deviceId || string.IsNullOrWhiteSpace(_editNameDraft))
+        {
+            return;
+        }
+
+        _busy = true;
+        StateHasChanged();
+
+        try
+        {
+            var result = await DeviceSettings.UpdateNamingAsync(deviceId, _editNameDraft, _editRoomDraft);
+            _notice = result.Message;
+            _noticeKind = result.Status == DeviceSettingsUpdateStatus.Updated ? "ok" : "blocked";
+
+            if (result.Status == DeviceSettingsUpdateStatus.Updated)
+            {
+                CancelEditing();
+            }
+
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
     private Task SendAsync() => SendCoreAsync(_input, CommandSource.Web, null, () => _input = string.Empty);
 
     private Task SendLineAsync() => SendCoreAsync(_lineInput, CommandSource.Line, _lineSpeaker, () => _lineInput = string.Empty);
@@ -698,8 +833,8 @@ else
                     e.Id,
                     e.HouseholdId,
                     e.DeviceId,
-                    device?.Name ?? string.Empty,
-                    device?.Room ?? string.Empty,
+                    device?.DisplayName ?? string.Empty,
+                    device?.DisplayRoom ?? string.Empty,
                     device?.DeviceType.ToString() ?? string.Empty,
                     e.EventType,
                     e.State,
@@ -826,6 +961,8 @@ else
     {
         "on" => "使用",
         "off" => "停止",
+        "increased" => "電力↑",
+        "decreased" => "電力↓",
         "active" => "動きあり",
         "inactive" => "動きなし",
         _ => state
