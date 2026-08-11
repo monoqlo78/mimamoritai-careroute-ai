@@ -250,4 +250,44 @@ public class BarChartGeometryTests
             Thread.CurrentThread.CurrentCulture = previous;
         }
     }
+
+    [Fact]
+    public void The_top_of_the_scale_is_stated_so_a_lone_bar_can_be_read()
+    {
+        // A household on its first day has one bar, and a bar drawn against itself always
+        // reaches full height. Without the scale, one visit and twenty look identical.
+        var top = BarChartGeometry.ScaleTop([new("8/12", 1)], "回");
+
+        Assert.Equal("1回", top);
+    }
+
+    [Fact]
+    public void The_top_of_the_scale_borrows_the_busiest_days_own_wording()
+    {
+        // 8.25 hours must read as a clock time, not as a decimal.
+        var top = BarChartGeometry.ScaleTop(
+            [new("8/11", 6.5, Display: "6:30"), new("8/12", 8.25, Display: "8:15")], "");
+
+        Assert.Equal("8:15", top);
+    }
+
+    [Fact]
+    public void The_top_of_the_scale_stays_at_zero_when_nothing_happened()
+    {
+        Assert.Equal("0回", BarChartGeometry.ScaleTop([new("8/12", 0)], "回"));
+        Assert.Equal(string.Empty, BarChartGeometry.ScaleTop([], "回"));
+    }
+
+    [Fact]
+    public void A_single_day_still_produces_a_drawable_bar_line_and_area()
+    {
+        // One day of data is drawn as one bar rather than hidden behind an explanation.
+        List<BarChartPoint> single = [new("8/12", 2, IsHighlighted: true)];
+        var max = BarChartGeometry.Max(single);
+
+        Assert.True(BarChartGeometry.BarWidth(1) > 0);
+        Assert.True(BarChartGeometry.BarHeight(2, max) > BarChartGeometry.MinBarHeight);
+        Assert.NotEmpty(BarChartGeometry.LinePoints(single, max));
+        Assert.StartsWith("M", BarChartGeometry.AreaPath(single, max));
+    }
 }

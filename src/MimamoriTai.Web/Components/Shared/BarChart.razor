@@ -29,6 +29,15 @@
         var width = G.BarWidth(Points.Count);
         var dash = G.F(G.LineDashLength(Points.Count));
 
+        <div class="bar-chart-plot">
+            @* The top of the scale, spelled out with its unit. Bars are drawn relative to the
+               busiest day, so without this a single quiet day and a single busy day look
+               identical - which matters most for a household that only has one day of data. *@
+            <p class="bar-chart-scale" aria-hidden="true">
+                <span>@(ScaleBottom ?? $"0{Unit}")</span>
+                <span>@G.ScaleTop(Points, Unit)</span>
+            </p>
+
         <svg viewBox="0 0 @G.F(G.ViewWidth) @G.F(G.ViewHeight)" role="img" aria-label="@AriaLabel" preserveAspectRatio="none">
             <defs>
                 @* Ids must be unique per chart: three charts share one page and a repeated
@@ -86,6 +95,7 @@
                       class="bar-chart-today-marker" />
             }
         </svg>
+        </div>
 
         <ul class="bar-chart-labels" aria-hidden="true">
             @foreach (var point in Points)
@@ -112,6 +122,12 @@
 
     /// <summary>Appended to the value in each bar's tooltip, e.g. "回".</summary>
     [Parameter] public string Unit { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Bottom of the scale when zero is not written as a plain "0" - the wake-up chart
+    /// measures clock time, where the floor is midnight rather than "none".
+    /// </summary>
+    [Parameter] public string? ScaleBottom { get; set; }
 
     [Parameter] public string? Class { get; set; }
 

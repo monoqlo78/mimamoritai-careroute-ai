@@ -139,7 +139,7 @@ else
                 <p class="eyebrow">最近の推移</p>
                 <h2>いつもと比べてどうか</h2>
             </div>
-            <span class="summary-meta">直近@(_model.Recent.Count)日間</span>
+            <span class="summary-meta">直近@(TrendDays().Count)日間</span>
         </div>
 
         @if (!HasTrendData())
@@ -158,7 +158,7 @@ else
                               AriaLabel="@TrendAriaLabel("家電の利用回数", d => d.DeviceUsageCount, "回")" />
                 </div>
                 <div class="trend-item">
-                    <BarChart Points="WakeUpTrend()" Caption="起きた時間"
+                    <BarChart Points="WakeUpTrend()" Caption="起きた時間" ScaleBottom="0:00"
                               Badge="@WakeUpVerdict().Text" BadgeClass="@WakeUpVerdict().Class"
                               AriaLabel="@WakeUpAriaLabel()" />
                 </div>
@@ -1082,12 +1082,12 @@ else
         TrendPoints(d => d.NightActivityCount);
 
     /// <summary>
-    /// A day counts as recorded once anything at all happened on it. Below a couple of these
-    /// there is nothing to compare, so the charts are replaced by a short explanation rather
-    /// than a fortnight of empty bars that reads as "nothing has ever happened here".
+    /// One recorded day is enough to draw. A single bar is honest about how little there is
+    /// so far; hiding it behind "データがありません" would be less so. What waits for a second
+    /// day is the wording of a trend - see the verdict badges.
     /// </summary>
     private bool HasTrendData() =>
-        _model is not null && _model.Recent.Count(d => d.FirstActivityTime is not null) >= 2;
+        _model is not null && _model.Recent.Any(d => d.FirstActivityTime is not null);
 
     private TrendVerdict UsageVerdict() =>
         TrendVerdicts.ForUsage(
@@ -1165,14 +1165,15 @@ else
     /// </summary>
     private IReadOnlyList<BarChartPoint> WakeUpTrend()
     {
-        if (_model is null)
+        var days = TrendDays();
+        if (days.Count == 0)
         {
             return [];
         }
 
         var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
 
-        return [.. _model.Recent.Select(d => new BarChartPoint(
+        return [.. days.Select(d => new BarChartPoint(
             d.Date.ToString("M/d"),
             d.FirstActivityTime is { } t ? Math.Round(t.ToTimeSpan().TotalHours, 2) : 0,
             d.Date == today,
@@ -1181,15 +1182,36 @@ else
 
     private IReadOnlyList<BarChartPoint> TrendPoints(Func<DailyActivity, double> value)
     {
-        if (_model is null)
+        var days = TrendDays();
+        if (days.Count == 0)
         {
             return [];
         }
 
         var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
 
-        return [.. _model.Recent.Select(d =>
+        return [.. days.Select(d =>
             new BarChartPoint(d.Date.ToString("M/d"), value(d), d.Date == today))];
+    }
+
+    /// <summary>
+    /// The days worth charting: everything from the first day something was recorded.
+    /// A household that signed up yesterday gets one bar rather than one bar preceded by
+    /// thirteen empty ones - padding the start with days that pre-date the household
+    /// would suggest a fortnight of silence that never actually happened.
+    /// </summary>
+    private IReadOnlyList<DailyActivity> TrendDays()
+    {
+        if (_model is null)
+        {
+            return [];
+        }
+
+        var first = _model.Recent
+            .Select((d, i) => (Day: d, Index: i))
+            .FirstOrDefault(x => x.Day.FirstActivityTime is not null);
+
+        return first.Day is null ? [] : [.. _model.Recent.Skip(first.Index)];
     }
 
     /// <summary>Spells the series out for screen readers, which cannot read the bars.</summary>

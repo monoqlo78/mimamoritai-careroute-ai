@@ -116,6 +116,24 @@ public static class BarChartGeometry
         point.Display ?? $"{F(point.Value)}{unit}";
 
     /// <summary>
+    /// How the top of the scale should be written, borrowing the busiest bar's own wording so
+    /// a wake-up chart reads "8:15" rather than "8.25". Bars are scaled against that busiest
+    /// day, so stating it is what stops one lone bar from being unreadable.
+    /// </summary>
+    public static string ScaleTop(IReadOnlyList<BarChartPoint> points, string unit)
+    {
+        if (points.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var max = Max(points);
+        var top = points.FirstOrDefault(p => p.Value == max) ?? points[0];
+
+        return max <= 0 ? $"0{unit}" : Describe(top, unit);
+    }
+
+    /// <summary>
     /// SVG attributes must use a dot decimal separator regardless of the request culture:
     /// a ja-JP or de-DE thread would otherwise emit "1,5" and the browser would drop the bar.
     /// </summary>
