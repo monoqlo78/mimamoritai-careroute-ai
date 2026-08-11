@@ -123,25 +123,80 @@ dotnet run --project src/MimamoriTai.Web
 
 `Auth:Enabled=false`（appsettings.json の既定値）の間は、本節の機能は一切有効化されず、アプリはこれまで通り匿名のデモモードで動作します。秘密情報も設定も不要です。
 
-実際のログインを有効化する場合は、以下の4項目（`Auth:Enabled` を含む）を **User Secrets または環境変数** で設定してください（`ClientSecret` を絶対に `appsettings.json` にコミットしないこと）。
+### 既定の構成は「LINE Login 直結」（構成B）
+
+LINE ログインには2つの構成があり、コードは**両方に対応**しています。**現在の既定は B（LINE Login 直結）**です。構成 A は Entra 側の制約により現時点では使用できません（後述）。
+
+| | 構成A: Entra External ID 経由 | 構成B: **LINE Login 直結（既定・実測で動作確認済み）** |
+|---|---|---|
+| 状態 | ⛔ **現時点で利用不可**（Entra が LINE の discovery を拒否） | ✅ **実ログイン完走を実測済み** |
+| `Auth:Authority` | `https://<tenantId>.ciamlogin.com/<tenantId>/v2.0` | `https://access.line.me` |
+| `Auth:ClientId` / `ClientSecret` | Entra のアプリ登録の値 | LINE のチャネルID / チャネルシークレット |
+| `Auth:CallbackPath` | `/signin-oidc`（既定） | `/signin-line`（推奨） |
+| LINE 以外のIdP追加 | ✅ 同じ配線のまま追加できる | ❌ LINEユーザー限定 |
+| `offline_access`（リフレッシュトークン） | ✅ 使える | ❌ LINEが非対応のため自動的に除外 |
+| リモートサインアウト | ✅ `end_session_endpoint` へリダイレクト | ❌ LINEに `end_session_endpoint` が無いためCookie削除のみ |
+| 設定箇所 | Entra ＋ LINE Developers の**双方**（相互にID/シークレット/コールバックURLを貼り付け合う） | LINE Developers のみ |
+
+**構成の切り替えは `Auth:Authority` の値だけで行います。** `access.line.me` を含むと自動的に構成Bの分岐（`offline_access` 除外／`response_mode=query`／Cookieのみサインアウト／HS256対称鍵での署名検証）に切り替わります（`AuthOptions.IsLineAuthority`）。`Auth:ProviderName` を明示しなくても、`IdentityProvider` は Authority から自動判定されます（`AuthOptions.ResolveIdentityProvider`）。
+
+#### 構成Aが現在使えない理由（Graph API での実測）
+
+Microsoft Graph に LINE を OIDC ID プロバイダーとして登録しようとすると **HTTP 400** で拒否されます。
+
+```
+POST https://graph.microsoft.com/beta/identity/identityProviders → 400
+  "Custom OIDC well-known endpoint validation error:
+   Required property 'token_endpoint_auth_methods_supported' not found in JSON."
+```
+
+LINE の discovery（`https://access.line.me/.well-known/openid-configuration`）にこのプロパティが**存在しない**ためです（OIDC 仕様上は OPTIONAL だが Entra は必須扱い）。回避には不足プロパティを補った discovery の自前ホストが必要で、現時点では未検証です。詳細と回避案は [`docs/line-entra-setup.md`](docs/line-entra-setup.md) を参照。
+
+具体的な画面手順と「どの値をどちらへ貼り付けるか」の対応表も **[`docs/line-entra-setup.md`](docs/line-entra-setup.md)** に記載しています。
+
+### 設定の投入（User Secrets）
+
+以下の項目を **User Secrets または環境変数** で設定してください（`ClientSecret` を絶対に `appsettings.json` にコミットしないこと）。`MimamoriTai.Web.csproj` に `UserSecretsId` を設定済みなので、次のコマンドがそのまま動きます。
+
+**構成B（LINE 直結・既定）:**
 
 ```powershell
 cd src/MimamoriTai.Web
 dotnet user-secrets set "Auth:Enabled" "true"
-dotnet user-secrets set "Auth:Authority" "https://<subdomain>.ciamlogin.com/<tenantId>/v2.0"
+dotnet user-secrets set "Auth:Authority" "https://access.line.me"
+dotnet user-secrets set "Auth:ClientId" "<LINE Login チャネルのチャネルID（数字10桁）>"
+dotnet user-secrets set "Auth:ClientSecret" "<LINE Login チャネルのチャネルシークレット>"
+dotnet user-secrets set "Auth:CallbackPath" "/signin-line"
+```
+
+LINE Developers Console の当該チャネル › 「LINE Login設定」 › **コールバックURL** に
+`http://localhost:5301/signin-line`（ローカル）と `https://<本番ホスト>/signin-line` を登録します。
+`Auth:CallbackPath` と**パスを完全一致**させてください。
+
+> `Line:*`（Messaging API 用）と `Auth:*`（ログイン用）は**別物**です。混同しないでください。
+> LINE Login チャネルと Messaging API チャネルもコンソール上の別チャネルです。
+
+**構成A（Entra External ID 経由・現在利用不可）:**
+
+```powershell
+dotnet user-secrets set "Auth:Authority" "https://<tenantId>.ciamlogin.com/<tenantId>/v2.0"
 dotnet user-secrets set "Auth:ClientId" "<your-app-registration-client-id>"
 dotnet user-secrets set "Auth:ClientSecret" "<your-app-registration-client-secret>"
 ```
+
+**4項目すべてが揃わないと `IsConfigured` が `false` のままで、認証パイプラインは一切登録されません**（エラーにはならず匿名のデモモードのまま動きます）。`/auth/login` が302リダイレクトではなく「ログイン機能は現在設定されていません」というテキストを返す場合はこれが原因です。
+
+ローカル開発でHTTPSが必要な場合は `dotnet dev-certs https --trust` の上で `dotnet run --launch-profile https`（`https://localhost:7215`）を使ってください。**ただし LINE Login は `localhost` に限りHTTP のコールバックURLも受理する**ため、ローカル検証だけならHTTPのままで動きます（実測確認済み）。詳細は `docs/line-entra-setup.md` の「手順 4」を参照。
 
 Azure App Service で運用する場合は、同じ4項目をアプリケーション設定（`Auth__Enabled` / `Auth__Authority` / `Auth__ClientId` / `Auth__ClientSecret`）として設定してください。
 
 | 設定キー | 既定値 | 説明 |
 |---|---|---|
 | `Auth__Enabled` | `false` | `true` にすると初めてCookie + OpenID Connect認証パイプラインが有効になる。 |
-| `Auth__Authority` | (空) | OIDCの発行者URL。Entra External IDの場合は `https://<subdomain>.ciamlogin.com/<tenantId>/v2.0`、LINE Loginを直接使う場合は `https://access.line.me`。 |
-| `Auth__ClientId` | (空) | アプリ登録のクライアントID。 |
-| `Auth__ClientSecret` | (空) | アプリ登録のクライアントシークレット。**必ずシークレットとして管理し、appsettings.jsonにはコミットしないこと。** |
-| `Auth__CallbackPath` | `/signin-oidc` | 通常は変更不要。 |
+| `Auth__Authority` | (空) | OIDCの発行者URL。Entra External IDの場合は `https://<tenantId>.ciamlogin.com/<tenantId>/v2.0`、LINE Loginを直接使う場合は `https://access.line.me`。 |
+| `Auth__ClientId` | (空) | アプリ登録のクライアントID（LINE直結の場合はチャネルID）。 |
+| `Auth__ClientSecret` | (空) | アプリ登録のクライアントシークレット（LINE直結の場合はチャネルシークレット）。**必ずシークレットとして管理し、appsettings.jsonにはコミットしないこと。** |
+| `Auth__CallbackPath` | `/signin-oidc` | 通常は変更不要。IdP側のリダイレクトURIと完全一致させること。 |
 | `Auth__SignedOutCallbackPath` | `/signout-callback-oidc` | 通常は変更不要。 |
 | `Auth__ProviderName` | `entra-external` | `CurrentUser.IdentityProvider` に使われる識別子（LINEを直接使う場合や `idp` クレームに `line` を含む場合は自動的に `"line"` になる）。 |
 

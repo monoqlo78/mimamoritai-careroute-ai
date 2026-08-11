@@ -36,4 +36,23 @@ public sealed class AuthOptions
     /// <summary>True when Authority points at LINE Login's own OIDC issuer, not Entra External ID.</summary>
     public bool IsLineAuthority =>
         Authority.Contains("access.line.me", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// True when the provider publishes an <c>end_session_endpoint</c> in its discovery
+    /// document. LINE Login does not (verified against
+    /// https://access.line.me/.well-known/openid-configuration), so asking the OpenID
+    /// Connect handler to sign out there throws
+    /// <c>InvalidOperationException: Cannot redirect to the end session endpoint</c>.
+    /// </summary>
+    public bool SupportsRemoteSignOut => !IsLineAuthority;
+
+    /// <summary>
+    /// Effective identity provider label for a signed-in principal. LINE reaches the app
+    /// either directly (<see cref="IsLineAuthority"/>) or federated through Entra External
+    /// ID, in which case Entra stamps an <c>idp</c> claim containing "line".
+    /// </summary>
+    public string ResolveIdentityProvider(string? idpClaim) =>
+        IsLineAuthority || (idpClaim is not null && idpClaim.Contains("line", StringComparison.OrdinalIgnoreCase))
+            ? "line"
+            : ProviderName;
 }
