@@ -446,6 +446,15 @@ public sealed class AssistantOrchestrator(
             .Select(m => m.Value)
             .ToHashSet(StringComparer.Ordinal);
 
+        // "16:45" is one token, but a natural retelling writes it as "16時45分". Both
+        // halves therefore have to count as supported, or correct summaries get thrown
+        // away for saying the same time in Japanese.
+        foreach (var part in allowed.Where(a => a.Contains(':')).SelectMany(a => a.Split(':')).ToList())
+        {
+            allowed.Add(part);
+            allowed.Add(part.TrimStart('0') is { Length: > 0 } trimmed ? trimmed : "0");
+        }
+
         foreach (Match m in NumberPattern.Matches(summary))
         {
             if (allowed.Contains(m.Value))
