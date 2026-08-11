@@ -394,22 +394,92 @@ Auth__Enabled / Auth__Authority / Auth__ClientId / Auth__ClientSecret / Auth__Pr
 
 > ⚠️ **実行順序を守ってください。設定の切り替えは「最後」です。**
 >
-> 1. 実装をコミット → 2. **デプロイ** → 3. 設定切替 → 4. 本番検証
+> 1. 実装をコミット → 2. **デプロイ** → 3. **デプロイ後の生存確認** → 4. 設定切替 → 5. **明示的な再起動** → 6. 本番検証
 >
 > デプロイ前に `Auth__Authority` を `access.line.me` に変えると、**LINE へリダイレクトはするが
 > コールバックを受ける `/signin-line` が存在しない**状態になり、ユーザーが確実に 404 に落ちます。
-> デプロイ前に `GET https://<本番ホスト>/signin-line` が **404 でないこと**（＝ハンドラが登録済み）を
-> 必ず確認してください。
 
 ### 3-B-1. 事前確認（デプロイ済みであることの証明）
 
+> ⚠️ **【重要な訂正】`/signin-line` の 404 はデプロイ成否の判定に使えません。**
+>
+> 当初この手順書では「`GET /signin-line` が 404 でなければデプロイ済み」と書いていましたが、
+> **これは誤りでした**（2026-08-11 に実測で判明）。`/signin-line` は OIDC ハンドラの
+> `CallbackPath` に依存して登録されるルートです。切替前は `Auth__CallbackPath` が未設定＝既定の
+> `/signin-oidc` なので、**新しいコードがデプロイされていても `/signin-line` は 404 のまま**です。
+> このパスが 404 でなくなるのは **3-B-4 の切替が完了した後**です。
+
+デプロイ成否は「**そのデプロイでしか存在しないページ**」で判定してください。
+
 ```powershell
 $app = "https://app-mimamoritai-hack.azurewebsites.net"
-curl.exe -s -o NUL -w "%{http_code}`n" "$app/signin-line"
+
+# 1) まずアプリが生きているか（最優先。503 なら 3-B-1b へ）
+curl.exe -s -o NUL -w "GET /          -> %{http_code}`n" "$app/"
+
+# 2) 新しいコードにしか無いページで判定する（例）
+curl.exe -s -o NUL -w "GET /one-touch -> %{http_code}`n" "$app/one-touch"
+curl.exe -s -o NUL -w "GET /admin     -> %{http_code}`n" "$app/admin"
 ```
 
-- ✅ **500**（`message.State is null or empty`）または 302 → ハンドラ登録済み。次へ進める
-- ❌ **404** → **まだデプロイされていません。切り替えないでください**
+- ✅ `/` が **200** かつ新規ページが **200** → デプロイ済み。次へ進める
+- ❌ `/` が **503** → 起動に失敗しています。**3-B-1b を実施してください**
+
+### 3-B-1b. デプロイ後に 503 になったとき（実際に発生した障害）
+
+`az webapp deploy` が次のエラーで終わることがあります。**これは「ファイル展開は成功したが、
+アプリが起動できなかった」という意味**で、コードは既に本番に届いています。
+
+```
+ERROR: Deployment failed because the site failed to start within 10 mins.
+InprogressInstances: 0, SuccessfulInstances: 0, FailedInstances: 1
+```
+
+**必ずコンテナの起動ログを読んでください。推測で対処しないこと。**
+
+```powershell
+# 方法1: 直近の起動ログを JSON で取得（早い）
+az webapp log startup show -n app-mimamoritai-hack -g rg-mimamoritai-hackathon > $env:TEMP\startup.json
+# JSON の content フィールドに \n 区切りでログが入っている。Unhandled / exit code で検索する
+
+# 方法2: ログ一式をダウンロードして展開（確実。スタックトレースが読める）
+az webapp log download -n app-mimamoritai-hack -g rg-mimamoritai-hackathon --log-file $env:TEMP\logs.zip
+Expand-Archive $env:TEMP\logs.zip -DestinationPath $env:TEMP\applogs -Force
+Get-ChildItem $env:TEMP\applogs\LogFiles\StartupLogs\*_failure.log | Get-Content -Tail 80
+```
+
+#### 実際に踏んだ障害: `DataProtection__KeyDirectory` 未設定で起動不能（exit code 134）
+
+```
+ContainerStream: Unhandled exception.
+  System.InvalidOperationException: DataProtection:KeyDirectory must be configured with a durable,
+  persistent path in non-Development environments (see docs/SECURITY.md).
+     at Program.<Main>$(String[] args) in ...\src\MimamoriTai.Web\Program.cs:line 39
+/opt/startup/startup.sh: line 20: 1872 Aborted (core dumped) dotnet "MimamoriTai.Web.dll"
+Container has finished running with exit code: 134
+ContainerStatus: Site is blocked due to multiple, consecutive cold start failures
+ContainerStatus: Site: app-mimamoritai-hack stopped.
+```
+
+`Program.cs` の fail-fast ガード（非 Development 環境で `DataProtection:KeyDirectory` が
+未設定なら起動時に throw する）が原因です。SwitchBot の世帯別資格情報がこの鍵リングで
+暗号化されるため、揮発する鍵で起動させない設計になっています。**認証とは無関係です。**
+
+対処:
+
+```powershell
+# Linux App Service で永続化されるのは /home 配下のみ。ここ以外だと再起動で鍵が消える
+az webapp config appsettings set -g rg-mimamoritai-hackathon -n app-mimamoritai-hack `
+  --settings 'DataProtection__KeyDirectory=/home/data/dataprotection-keys'
+
+# 連続起動失敗でサイトごと停止していた場合、設定投入だけでは復旧しない
+az webapp restart -g rg-mimamoritai-hackathon -n app-mimamoritai-hack
+# （State: Stopped まで行っていたら az webapp start が必要）
+```
+
+投入後 20 秒間隔でポーリングし、`GET /` が 200 に戻ることを確認します（実測では2回目で復旧）。
+
+> ⚠️ **`DataProtection__KeyDirectory` は絶対に削除しないでください。**消すと本番が起動不能になります。
 
 ### 3-B-2. 現在の Entra 設定を退避する（ロールバック可能にする）
 
@@ -472,8 +542,33 @@ az webapp config appsettings set -g $rg -n $app --settings `
   "Auth__ClientId=$id" `
   "Auth__ClientSecret=$sec" `
   "Auth__CallbackPath=/signin-line"
-# App Service は設定変更で自動再起動します（30〜60秒待つ）
+
+# ⚠️ 設定変更だけでは切り替わりません。必ず明示的に再起動してください（下記参照）
+az webapp restart -g $rg -n $app
 ```
+
+> ⚠️ **【実測で判明】`az webapp config appsettings set` だけでは切り替わりません。**
+>
+> 設定変更で App Service は再起動しますが、実測では変更直後に `GET /` が 200 に戻っても
+> **`/auth/login` はまだ旧設定（Entra）へ 302 していました**（旧ワーカーが応答し続ける）。
+> `az webapp restart` を明示的に打って初めて `access.line.me` へ変わりました。
+> **切替後に期待どおりにならない場合、まず再起動を疑ってください。**設定を疑って値を
+> いじり直すと事態が悪化します。
+
+再起動後、`/auth/login` の Location が `access.line.me` になるまでポーリングします。
+
+```powershell
+for ($i=1; $i -le 20; $i++) {
+    $r = Invoke-WebRequest -Uri "$appUrl/auth/login" -MaximumRedirection 0 -SkipHttpErrorCheck -TimeoutSec 90
+    $h = if ($r.Headers.Location) { ([uri](($r.Headers.Location) -join '')).Host } else { '(none)' }
+    "try{0,2} status={1} host={2}" -f $i, $r.StatusCode, $h
+    if ($h -eq 'access.line.me') { "SWITCHED-TO-LINE"; break }
+    Start-Sleep -Seconds 15
+}
+```
+
+なお `Auth__ProviderName` は Authority から自動判定されるため本来不要ですが、明示したい場合は
+`Auth__ProviderName=line` を追加しても構いません（実測環境では明示しています）。
 
 LINE Developers 側のコールバック URL に
 `https://app-mimamoritai-hack.azurewebsites.net/signin-line` が登録済みであることを確認してください
@@ -501,6 +596,90 @@ curl.exe -s -i "$app/auth/login?returnUrl=/" `
 - 続けてブラウザで `$app/auth/login` を開き、LINE ログイン → `$app/auth/me` が
   `{"authenticated":true,...,"provider":"line",...}` を返すこと
 
+#### 3-B-5 の実測結果（2026-08-11・本番で成功した記録）
+
+以下は実際に本番 `app-mimamoritai-hack` で構成 B へ切り替えた直後の実測値です。
+**新しく切り替えたときは、この値と一致することを確認してください。**
+
+```
+GET /              -> 200
+GET /signin-line   -> 500   ← 404 から変化した = ルート登録済みの証拠
+                              （code/state 無しの生 GET なので 500 が正常）
+GET /auth/me       -> 200   {"authenticated":false,"displayName":null,"provider":null,"appUserId":null}
+GET /one-touch     -> 200
+GET /admin         -> 200
+
+GET /auth/login    -> 302
+   host          : access.line.me
+   path          : /oauth2/v2.1/authorize
+   redirect_uri  : https://app-mimamoritai-hack.azurewebsites.net/signin-line
+   scope         : openid profile email      ← offline_access が付かない（LINE 分岐が効いている）
+   response_type : code
+   pkce          : S256
+   client_id len : 10                        ← LINE チャネル ID の桁数
+
+--- アサーション ---
+host is access.line.me         : True
+redirect_uri is HTTPS          : True   ← ForwardedHeaders が本番で効いている証拠
+redirect_uri path /signin-line : True
+no offline_access              : True
+```
+
+**Messaging API（見守り機能）に影響が無いことも必ず確認してください。**
+`Line__*` と `Auth__*` は別系統なので理屈の上では無関係ですが、本番を触った以上は実測します。
+
+```powershell
+cd src/MimamoriTai.Web
+$tok = ((dotnet user-secrets list | Select-String '^Line:ChannelAccessToken = ') -replace '^Line:ChannelAccessToken = ','').Trim()
+$h = @{ Authorization = "Bearer $tok" }
+Invoke-RestMethod -Uri 'https://api.line.me/v2/bot/channel/webhook/endpoint' -Headers $h
+1..3 | ForEach-Object {
+    Invoke-RestMethod -Uri 'https://api.line.me/v2/bot/channel/webhook/test' `
+      -Headers $h -Method Post -ContentType 'application/json' -Body '{}'
+}
+```
+
+実測結果:
+
+```
+webhook endpoint: https://app-mimamoritai-hack.azurewebsites.net/webhooks/line  active=True
+test1: success=True statusCode=200 reason=OK
+test2: success=True statusCode=200 reason=OK
+test3: success=True statusCode=200 reason=OK
+```
+
+#### 切替前後の App Service 設定（キー名と長さのみ・値は記録しない）
+
+| キー | 切替前 | 切替後 |
+| --- | --- | --- |
+| `Auth__Enabled` | 4 | 4 |
+| `Auth__Authority` | 78（Entra） | **22**（`https://access.line.me`） |
+| `Auth__ClientId` | 36（GUID） | **10**（LINE チャネル ID） |
+| `Auth__ClientSecret` | 40 | **32**（LINE チャネルシークレット） |
+| `Auth__CallbackPath` | （未設定） | **12**（`/signin-line`） |
+| `Auth__ProviderName` | （未設定） | 4（`line`） |
+| `AuthEntra__Authority` | （無し） | **78**（退避） |
+| `AuthEntra__ClientId` | （無し） | **36**（退避） |
+| `AuthEntra__ClientSecret` | （無し） | **40**（退避） |
+| `AuthEntra__Enabled` | （無し） | **4**（退避） |
+| `DataProtection__KeyDirectory` | （未設定＝起動不能） | **30**（`/home/data/dataprotection-keys`） |
+
+退避が正しく取れたかは、長さだけでなく**値の厳密一致**で検証してください。
+
+```powershell
+$k = az webapp config appsettings list -g $rg -n $app -o json | ConvertFrom-Json
+$m = @{}; foreach ($s in $k) { $m[$s.name] = $s.value }
+foreach ($p in 'Enabled','Authority','ClientId','ClientSecret') {
+    "{0,-14} identical={1}" -f $p, ($m["Auth__$p"] -ceq $m["AuthEntra__$p"])
+}
+```
+
+切替スクリプトには「**退避が存在しなければ中断する**」ガードを入れておくと安全です。
+
+```powershell
+if (-not $m['AuthEntra__ClientSecret']) { throw "BACKUP MISSING - abort" }
+```
+
 ### 3-B-6. ロールバック手順（構成 A へ戻す）
 
 ```powershell
@@ -512,7 +691,12 @@ foreach ($k in "Enabled","Authority","ClientId","ClientSecret","CallbackPath","P
     if ($null -ne $v) { $pairs += "Auth__$k=$v" }
 }
 az webapp config appsettings set -g $rg -n $app --settings $pairs
+az webapp config appsettings set -g $rg -n $app --settings "Auth__CallbackPath=/signin-oidc"
+az webapp restart -g $rg -n $app   # ⚠️ 3-B-4 と同じ理由で明示的な再起動が必須
 ```
+
+> 退避 `AuthEntra__*` が揃っている限り、**構成 A（Entra ログイン）へ完全復帰できます**。
+> 匿名モードよりこちらの方が望ましい復帰先です（本番のログイン機能が生きたまま戻せる）。
 
 **緊急停止（ログイン機能をまるごと無効化して匿名デモモードへ戻す）:**
 
@@ -631,6 +815,21 @@ dotnet run --launch-profile https
 ---
 
 ## トラブルシューティング
+
+### 本番が **HTTP 503** になる（デプロイ直後）
+
+**認証設定を疑う前に、まず起動ログを読んでください。** 実測では原因が認証と無関係でした
+（`DataProtection:KeyDirectory` 未設定による起動時 fail-fast / exit code 134）。詳細と復旧手順は
+[3-B-1b](#3-b-1b-デプロイ後に-503-になったとき実際に発生した障害) を参照してください。
+
+要点だけ再掲します。
+
+| 症状 | 確認コマンド | 対処 |
+| --- | --- | --- |
+| `az webapp deploy` が「site failed to start within 10 mins」で exit 1 | `az webapp log startup show` / `az webapp log download` | ファイル展開は成功している。起動失敗の原因をログで特定する |
+| `Container has finished running with exit code: 134` | 起動ログに `Unhandled exception` が出ている | 例外メッセージのとおりに設定を投入する |
+| `Site is blocked due to multiple, consecutive cold start failures` | `az webapp show --query state` | 設定投入だけでは復旧しない。`az webapp restart`（Stopped なら `az webapp start`）が必要 |
+| 設定を変えたのに挙動が変わらない | `/auth/login` の Location ホスト | 旧ワーカーが応答している。`az webapp restart` を明示的に打つ |
 
 ### `/auth/login` が 302 にならず、日本語の案内文が返る
 
