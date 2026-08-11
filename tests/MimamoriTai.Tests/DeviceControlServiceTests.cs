@@ -81,6 +81,24 @@ public class DeviceControlServiceTests
         Assert.Empty(db.Context.DeviceEvents);
     }
 
+    /// <summary>
+    /// "電源はついてる？" names no device. A read-only status check on a single-device
+    /// household can answer it; the same phrasing must never be allowed to switch
+    /// something on (see <see cref="Null_Alias_Never_Guesses_A_Device"/>).
+    /// </summary>
+    [Fact]
+    public async Task Null_Alias_Answers_Status_For_The_Only_Device()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var service = Create(db, out _);
+
+        var outcome = await service.ExecuteAsync(
+            db.HouseholdId, null, DeviceAction.GetStatus, 0.99,
+            "今って、電源はついてるの？", CommandSource.Web, null, null);
+
+        Assert.Equal(CommandStatus.Succeeded, outcome.Status);
+    }
+
     [Fact]
     public async Task Low_Confidence_Blocks_State_Change()
     {

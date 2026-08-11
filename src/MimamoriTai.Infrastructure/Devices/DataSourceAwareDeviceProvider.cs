@@ -21,25 +21,45 @@ public sealed class DataSourceContext : IDataSourceContext
 /// </summary>
 public sealed class DataSourceAwareDeviceProvider(
     IDeviceProviderFactory factory,
-    IDataSourceContext context) : IDeviceProvider
+    IDataSourceContext context,
+    IHouseholdSwitchBotClientFactory householdClients) : IDeviceProvider
 {
     private IDeviceProvider Current => factory.Get(context.Mode);
+
+    /// <summary>
+    /// Prefers the household's own SwitchBot credentials (the Settings UI writes them to
+    /// a SwitchBotConnection row) over the global bootstrap options. Without this a
+    /// household that connected its own account still resolved to the mock provider
+    /// whenever the deployment had no SwitchBot:Token of its own, so every real device
+    /// failed with "未登録の機器です" even though it existed in the database.
+    /// Falls back to the mode-based provider when this household has no usable credentials.
+    /// </summary>
+    private async Task<IDeviceProvider> ResolveAsync(CancellationToken ct)
+    {
+        if (context.Mode != DataSourceMode.Production || context.HouseholdId is not { } householdId)
+        {
+            return Current;
+        }
+
+        var perHousehold = await householdClients.GetDeviceProviderAsync(householdId, ct);
+        return perHousehold.IsConfigured ? perHousehold : Current;
+    }
 
     public DeviceProviderKind Kind => Current.Kind;
     public bool IsConfigured => Current.IsConfigured;
 
-    public Task<IReadOnlyList<ProviderDevice>> GetDevicesAsync(CancellationToken ct = default) =>
-        Current.GetDevicesAsync(ct);
+    public async Task<IReadOnlyList<ProviderDevice>> GetDevicesAsync(CancellationToken ct = default) =>
+        await (await ResolveAsync(ct)).GetDevicesAsync(ct);
 
-    public Task<ProviderDeviceStatus?> GetStatusAsync(string externalDeviceId, CancellationToken ct = default) =>
-        Current.GetStatusAsync(externalDeviceId, ct);
+    public async Task<ProviderDeviceStatus?> GetStatusAsync(string externalDeviceId, CancellationToken ct = default) =>
+        await (await ResolveAsync(ct)).GetStatusAsync(externalDeviceId, ct);
 
-    public Task<ProviderResult> TurnOnAsync(string externalDeviceId, CancellationToken ct = default) =>
-        Current.TurnOnAsync(externalDeviceId, ct);
+    public async Task<ProviderResult> TurnOnAsync(string externalDeviceId, CancellationToken ct = default) =>
+        await (await ResolveAsync(ct)).TurnOnAsync(externalDeviceId, ct);
 
-    public Task<ProviderResult> TurnOffAsync(string externalDeviceId, CancellationToken ct = default) =>
-        Current.TurnOffAsync(externalDeviceId, ct);
+    public async Task<ProviderResult> TurnOffAsync(string externalDeviceId, CancellationToken ct = default) =>
+        await (await ResolveAsync(ct)).TurnOffAsync(externalDeviceId, ct);
 
-    public Task<ProviderResult> ToggleAsync(string externalDeviceId, CancellationToken ct = default) =>
-        Current.ToggleAsync(externalDeviceId, ct);
+    public async Task<ProviderResult> ToggleAsync(string externalDeviceId, CancellationToken ct = default) =>
+        await (await ResolveAsync(ct)).ToggleAsync(externalDeviceId, ct);
 }

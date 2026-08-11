@@ -44,9 +44,22 @@ public sealed class DeviceControlService(
 
         var matches = DeviceResolver.Resolve(devices, alias);
 
+        // "電源はついてる？" names no device at all. For a read-only status check on a
+        // household that owns exactly one device there is nothing to disambiguate and
+        // nothing to break, so answering beats refusing. State-changing actions keep the
+        // stricter contract: they never act on a device the resident did not name.
+        if (matches.Count == 0 && devices.Count == 1 && action == DeviceAction.GetStatus)
+        {
+            matches = devices;
+        }
+
         if (matches.Count == 0)
         {
-            return await RejectAsync(command, "対象の機器が見つかりませんでした。登録済みの機器名で指定してください。", ct);
+            var known = devices.Count == 0
+                ? "まだ機器が登録されていません。"
+                : $"登録されているのは {string.Join("・", devices.Select(d => d.Name))} です。";
+
+            return await RejectAsync(command, $"対象の機器が見つかりませんでした。{known}", ct);
         }
 
         if (matches.Count > 1)
