@@ -58,3 +58,26 @@ FROM mimamori.WatchAlerts a
 LEFT JOIN mimamori.Households h ON h.Id = a.HouseholdId
 WHERE a.SentAtUtc >= @since
 ORDER BY a.SentAtUtc DESC;
+
+-- Hourly activity rollup. Counts only: no raw payload, no resident identifier.
+-- 30 days so the console has a usable time series even when alerting is quiet.
+SELECT
+    e.HouseholdId                                  AS HouseholdId,
+    ISNULL(h.Name, N'(deleted)')                   AS HouseholdName,
+    ISNULL(d.Name, N'(unknown)')                   AS DeviceName,
+    ISNULL(d.DeviceType, N'')                      AS DeviceType,
+    DATEADD(hour, DATEDIFF(hour, 0, CAST(e.OccurredAtUtc AS DATETIME2)), 0) AS BucketStart,
+    COUNT(*)                                       AS EventCount,
+    SUM(CASE WHEN e.State IN ('on', 'active') THEN 1 ELSE 0 END) AS OnCount,
+    MAX(e.Source)                                  AS Source
+FROM mimamori.DeviceEvents e
+LEFT JOIN mimamori.Households h ON h.Id = e.HouseholdId
+LEFT JOIN mimamori.Devices d ON d.Id = e.DeviceId
+WHERE e.OccurredAtUtc >= DATEADD(day, -30, SYSUTCDATETIME())
+GROUP BY
+    e.HouseholdId,
+    h.Name,
+    d.Name,
+    d.DeviceType,
+    DATEADD(hour, DATEDIFF(hour, 0, CAST(e.OccurredAtUtc AS DATETIME2)), 0)
+ORDER BY BucketStart;

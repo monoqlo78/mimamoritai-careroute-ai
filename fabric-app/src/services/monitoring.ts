@@ -1,4 +1,10 @@
 import { getRayfinClient, isLocalBackend } from './rayfinClient';
+import {
+  SNAPSHOT_ACTIVITY,
+  SNAPSHOT_ALERTS,
+  SNAPSHOT_CAPTURED_AT,
+  SNAPSHOT_HOUSEHOLDS,
+} from './snapshotFallback';
 
 export interface HouseholdRow {
   id: string;
@@ -31,6 +37,18 @@ export interface AlertRow {
   sentAt: Date;
 }
 
+export interface ActivityRow {
+  id: string;
+  householdId: string;
+  householdName: string;
+  deviceName: string;
+  deviceType: string;
+  bucketStart: Date;
+  eventCount: string;
+  onCount: string;
+  source: string;
+}
+
 const HOUSEHOLD_FIELDS = [
   'id',
   'householdId',
@@ -60,6 +78,18 @@ const ALERT_FIELDS = [
   'success',
   'error',
   'sentAt',
+] as const;
+
+const ACTIVITY_FIELDS = [
+  'id',
+  'householdId',
+  'householdName',
+  'deviceName',
+  'deviceType',
+  'bucketStart',
+  'eventCount',
+  'onCount',
+  'source',
 ] as const;
 
 // Local-dev fallback. `rayfin up` has not provisioned a Fabric SQL database
@@ -131,33 +161,147 @@ const SAMPLE_ALERTS: AlertRow[] = [
   },
 ];
 
+// Local-dev sample activity: a synthetic two-week rhythm so the charts have
+// shape before a Fabric backend exists. Deliberately labelled `Sample` so it is
+// distinguishable from the SwitchBotPoll/AppCommand sources of real data.
+const SAMPLE_ACTIVITY: ActivityRow[] = (() => {
+  const rows: ActivityRow[] = [];
+  const devices = [
+    { name: 'リビング照明', type: 'Light' },
+    { name: '寝室照明', type: 'Light' },
+    { name: '扇風機', type: 'Fan' },
+  ];
+  // Rough diurnal weighting: quiet at night, busy morning / evening.
+  const weights = [
+    0, 0, 1, 2, 1, 0, 0, 3, 4, 2, 1, 1, 1, 2, 3, 1, 1, 1, 2, 3, 4, 5, 6, 2,
+  ];
+  const start = new Date();
+  start.setUTCHours(0, 0, 0, 0);
+  for (let day = 13; day >= 0; day -= 1) {
+    for (let hour = 0; hour < 24; hour += 1) {
+      const count = weights[hour];
+      if (count === 0) continue;
+      const device = devices[(day + hour) % devices.length];
+      const bucket = new Date(start);
+      bucket.setUTCDate(bucket.getUTCDate() - day);
+      bucket.setUTCHours(hour);
+      rows.push({
+        id: `sample-${day}-${hour}`,
+        householdId: '22222222-2222-2222-2222-222222222222',
+        householdName: '田中家',
+        deviceName: device.name,
+        deviceType: device.type,
+        bucketStart: bucket,
+        eventCount: String(count),
+        onCount: String(Math.ceil(count / 2)),
+        source: 'Sample',
+      });
+    }
+  }
+  return rows;
+})();
+
+/**
+ * How the rows on screen were obtained. The console must never imply a live
+ * Fabric read when it is actually serving the bundled snapshot, so the UI reads
+ * this and says so.
+ */
+export type DataOrigin = 'fabric' | 'snapshot' | 'sample';
+
+let dataOrigin: DataOrigin = 'fabric';
+
+export function getDataOrigin(): DataOrigin {
+  return dataOrigin;
+}
+
+export const SNAPSHOT_TAKEN_AT = SNAPSHOT_CAPTURED_AT;
+
+/**
+ * Reads from Fabric, but degrades to the bundled production snapshot when the
+ * backend is unreachable (typically because the Fabric capacity is paused) or
+ * returns nothing at all. An empty result is treated as unavailable so the
+ * console shows real history rather than a blank chart.
+ */
+async function withSnapshotFallback<T>(
+  snapshot: T[],
+  read: () => Promise<T[]>
+): Promise<T[]> {
+  try {
+    const rows = await read();
+    if (rows.length > 0) {
+      if (dataOrigin !== 'snapshot') dataOrigin = 'fabric';
+      return rows;
+    }
+  } catch (error) {
+    console.warn('Fabric read failed; falling back to the bundled snapshot', error);
+  }
+
+  dataOrigin = 'snapshot';
+  return snapshot.map((row) => ({ ...row }));
+}
+
 export async function getHouseholds(): Promise<HouseholdRow[]> {
   if (isLocalBackend()) {
+    dataOrigin = 'sample';
     return sortHouseholds([...SAMPLE_HOUSEHOLDS]);
   }
 
-  const client = getRayfinClient();
-  const results = await client.data.HouseholdSnapshot.select([
-    ...HOUSEHOLD_FIELDS,
-  ]).execute();
+  return withSnapshotFallback(SNAPSHOT_HOUSEHOLDS, async () => {
+    const client = getRayfinClient();
+    const results = await client.data.HouseholdSnapshot.select([
+      ...HOUSEHOLD_FIELDS,
+    ]).execute();
 
-  return sortHouseholds(results as unknown as HouseholdRow[]);
+    return results as unknown as HouseholdRow[];
+  }).then(sortHouseholds);
 }
 
 export async function getAlerts(limit = 50): Promise<AlertRow[]> {
   if (isLocalBackend()) {
+    dataOrigin = 'sample';
     return [...SAMPLE_ALERTS]
       .sort((a, b) => b.sentAt.getTime() - a.sentAt.getTime())
       .slice(0, limit);
   }
 
-  const client = getRayfinClient();
-  const results = await client.data.AlertRecord.select([...ALERT_FIELDS])
-    .orderBy({ sentAt: 'desc' })
-    .first(limit)
-    .execute();
+  const rows = await withSnapshotFallback(SNAPSHOT_ALERTS, async () => {
+    const client = getRayfinClient();
+    const results = await client.data.AlertRecord.select([...ALERT_FIELDS])
+      .orderBy({ sentAt: 'desc' })
+      .first(limit)
+      .execute();
 
-  return results as unknown as AlertRow[];
+    return results as unknown as AlertRow[];
+  });
+
+  return rows
+    .slice()
+    .sort((a, b) => new Date(b.sentAt).getTime() - new Date(a.sentAt).getTime())
+    .slice(0, limit);
+}
+
+/** Hourly device-activity buckets, oldest first, for the timeline charts. */
+export async function getActivity(limit = 2000): Promise<ActivityRow[]> {
+  if (isLocalBackend()) {
+    dataOrigin = 'sample';
+    return [...SAMPLE_ACTIVITY].slice(-limit);
+  }
+
+  const rows = await withSnapshotFallback(SNAPSHOT_ACTIVITY, async () => {
+    const client = getRayfinClient();
+    const results = await client.data.ActivityBucket.select([...ACTIVITY_FIELDS])
+      .orderBy({ bucketStart: 'desc' })
+      .first(limit)
+      .execute();
+
+    return results as unknown as ActivityRow[];
+  });
+
+  return rows
+    .slice(-limit)
+    .sort(
+      (a, b) => new Date(a.bucketStart).getTime() - new Date(b.bucketStart).getTime()
+    );
 }
 
 /** Households needing attention first, then by name, so triage is the default view. */

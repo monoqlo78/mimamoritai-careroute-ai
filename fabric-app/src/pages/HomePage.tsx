@@ -1,11 +1,37 @@
 import { useCallback, useEffect, useState } from 'react';
 
+import {
+  ActivityArea,
+  AlertTimeline,
+  DeliveryGauge,
+  DeviceBreakdown,
+  HouseholdBars,
+  RhythmHeatmap,
+  RiskDonut,
+} from '@/components/charts';
+import { DataFlowCanvas } from '@/components/DataFlowCanvas';
 import { useAuth } from '@/hooks/AuthContext';
 import {
+  activitySummary,
+  alertsByDay,
+  dailyActivity,
+  deliveryStats,
+  deviceBreakdown,
+  hourlyRhythm,
+  householdBars,
+  pipelineStats,
+  riskDistribution,
+} from '@/services/analytics';
+import {
+  getActivity,
   getAlerts,
+  getDataOrigin,
   getHouseholds,
   summarize,
+  SNAPSHOT_TAKEN_AT,
+  type ActivityRow,
   type AlertRow,
+  type DataOrigin,
   type HouseholdRow,
 } from '@/services/monitoring';
 import { isLocalBackend } from '@/services/rayfinClient';
@@ -14,19 +40,26 @@ export function HomePage() {
   const { signOut, user } = useAuth();
   const [households, setHouseholds] = useState<HouseholdRow[]>([]);
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
+  const [activity, setActivity] = useState<ActivityRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [origin, setOrigin] = useState<DataOrigin>('fabric');
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [householdRows, alertRows] = await Promise.all([
+      const [householdRows, alertRows, activityRows] = await Promise.all([
         getHouseholds(),
         getAlerts(),
+        // Activity is the newest table; tolerate a backend that predates it so
+        // the rest of the console still renders.
+        getActivity().catch(() => [] as ActivityRow[]),
       ]);
       setHouseholds(householdRows);
       setAlerts(alertRows);
+      setActivity(activityRows);
+      setOrigin(getDataOrigin());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -39,6 +72,15 @@ export function HomePage() {
   }, [refresh]);
 
   const totals = summarize(households);
+  const flow = pipelineStats(households, alerts, activity);
+  const timeline = alertsByDay(alerts);
+  const risks = riskDistribution(alerts);
+  const delivery = deliveryStats(alerts);
+  const bars = householdBars(households);
+  const activityDaily = dailyActivity(activity);
+  const rhythm = hourlyRhythm(activity);
+  const devices = deviceBreakdown(activity);
+  const activityTotals = activitySummary(activity);
 
   return (
     <div className="bg-gray-50 min-h-screen">
@@ -72,11 +114,23 @@ export function HomePage() {
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 py-8 space-y-6">
+      <main className="mx-auto max-w-7xl px-4 py-8 space-y-6">
         {isLocalBackend() && (
           <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
             ローカル開発モードです。Fabric のバックエンドが未接続のため、
             サンプルデータを表示しています。
+          </div>
+        )}
+
+        {!isLocalBackend() && origin === 'snapshot' && (
+          <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            <span className="font-semibold">Fabric SQL に接続できていません。</span>{' '}
+            {SNAPSHOT_TAKEN_AT.toLocaleString('ja-JP')} 時点で本番データベースから
+            抽出したスナップショットを表示しています。これは現在の状況ではありません。
+            <span className="block mt-1 text-xs text-amber-800">
+              Fabric の容量が一時停止している可能性があります。復旧すると自動的に
+              最新データの表示に戻ります。
+            </span>
           </div>
         )}
 
@@ -97,6 +151,102 @@ export function HomePage() {
             alert={totals.needingAttention > 0}
           />
           <Kpi label="通知失敗" value={totals.failedAlerts} sub="直近期間" alert={totals.failedAlerts > 0} />
+        </section>
+
+        <section className="rounded-xl border border-gray-200 bg-white p-5">
+          <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">
+                データはこう流れています
+              </h2>
+              <p className="text-xs text-gray-500">
+                センサーから家族への通知まで、そして Fabric に取り込まれて
+                この画面に届くまで。数字はすべて下の表と同じ実データです。
+              </p>
+            </div>
+            <div className="text-right text-xs text-gray-500">
+              <div>
+                最終イベント <span className="font-medium text-gray-800">{formatTime2(flow.lastEvent)}</span>
+              </div>
+              <div>
+                最終同期 <span className="font-medium text-gray-800">{formatTime2(flow.lastSync)}</span>
+              </div>
+            </div>
+          </div>
+          <DataFlowCanvas stats={flow} />
+        </section>
+
+        <section className="rounded-xl border border-gray-200 bg-white p-5">
+          <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">
+                機器イベントの推移
+              </h2>
+              <p className="text-xs text-gray-500">
+                実線=総イベント数／点線=ON 判定。1 時間単位で集計した
+                DeviceEvents を日次にまとめています。
+              </p>
+            </div>
+            <div className="text-right text-xs text-gray-500">
+              <div>
+                <span className="font-medium text-gray-800">
+                  {activityTotals.events.toLocaleString()}
+                </span>{' '}
+                イベント / {activityTotals.days} 日 / {activityTotals.devices} 台
+              </div>
+              {activityTotals.sources.length > 0 && (
+                <div>取込元: {activityTotals.sources.join('、')}</div>
+              )}
+            </div>
+          </div>
+
+          {activity.length === 0 ? (
+            <p className="text-sm text-gray-400">
+              機器イベントがまだ取り込まれていません。
+            </p>
+          ) : (
+            <>
+              <ActivityArea points={activityDaily} />
+              <div className="mt-6 grid gap-6 lg:grid-cols-2">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-800">
+                    生活リズム（時間帯別・JST）
+                  </h3>
+                  <p className="mb-3 text-xs text-gray-500">
+                    全期間の合計。暖色ほど活動が多い時間帯です。
+                  </p>
+                  <RhythmHeatmap cells={rhythm} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-800">機器別の寄与</h3>
+                  <p className="mb-3 text-xs text-gray-500">イベント数の多い順</p>
+                  <DeviceBreakdown slices={devices} />
+                </div>
+              </div>
+            </>
+          )}
+        </section>
+
+        <section className="grid gap-4 lg:grid-cols-3">
+          <Panel title="通知の推移" sub="直近7日／赤は配信失敗">
+            <AlertTimeline buckets={timeline} />
+          </Panel>
+          <Panel title="リスク内訳" sub="通知時点の判定">
+            <RiskDonut slices={risks} />
+          </Panel>
+          <Panel title="LINE 配信結果" sub="取得済みの通知全件">
+            <DeliveryGauge
+              successRate={delivery.successRate}
+              success={delivery.success}
+              failed={delivery.failed}
+            />
+          </Panel>
+        </section>
+
+        <section className="rounded-xl border border-gray-200 bg-white p-5">
+          <h2 className="mb-1 text-base font-semibold text-gray-900">世帯別の規模と通知量</h2>
+          <p className="mb-4 text-xs text-gray-500">機器数の多い順</p>
+          <HouseholdBars bars={bars} />
         </section>
 
         <section className="rounded-xl border border-gray-200 bg-white p-5">
@@ -254,6 +404,24 @@ function Kpi({
   );
 }
 
+function Panel({
+  title,
+  sub,
+  children,
+}: {
+  title: string;
+  sub: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white p-5">
+      <h2 className="text-base font-semibold text-gray-900">{title}</h2>
+      <p className="mb-4 text-xs text-gray-500">{sub}</p>
+      {children}
+    </div>
+  );
+}
+
 function Th({ children }: { children: React.ReactNode }) {
   return <th className="whitespace-nowrap px-3 py-2 font-semibold">{children}</th>;
 }
@@ -266,6 +434,10 @@ function formatTime(iso: string): string {
   if (!iso) return '—';
   const date = new Date(iso);
   return Number.isNaN(date.getTime()) ? '—' : formatDate(date);
+}
+
+function formatTime2(date: Date | null): string {
+  return date ? formatDate(date) : '—';
 }
 
 function formatDate(date: Date): string {
