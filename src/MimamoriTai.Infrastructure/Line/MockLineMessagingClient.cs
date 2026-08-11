@@ -67,6 +67,16 @@ public sealed class MockLineMessagingClient(IOptions<LineOptions> options) : ILi
     }
 
     /// <summary>
+    /// Records the card's text so the on-screen LINE Simulator shows exactly what the
+    /// family would read in the notification banner.
+    /// </summary>
+    public Task<LineSendResult> PushAlertAsync(string to, LineAlertCard card, CancellationToken ct = default)
+    {
+        lock (_sent) { _sent.Add(card.Text); }
+        return Task.FromResult(new LineSendResult(true));
+    }
+
+    /// <summary>
     /// Even in mock mode a configured channel secret is honoured, so signature
     /// rejection can be demonstrated and tested.
     /// </summary>

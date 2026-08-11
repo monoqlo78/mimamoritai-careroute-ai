@@ -30,6 +30,119 @@ public sealed class LineMessagingClient(
             messages = new[] { new { type = "text", text } }
         }, ct);
 
+    /// <summary>
+    /// Pushes the alert as a Flex bubble carrying the mascot.
+    ///
+    /// Falls back to the plain text push when no image URL is available, because a
+    /// bubble whose hero image 404s renders as a grey box and looks like a broken
+    /// app -- worse than the text the family would otherwise have read.
+    /// </summary>
+    public Task<LineSendResult> PushAlertAsync(string to, LineAlertCard card, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(card.ImageUrl))
+        {
+            return PushAsync(to, card.Text, ct);
+        }
+
+        return PostAsync("/v2/bot/message/push", new
+        {
+            to,
+            messages = new object[]
+            {
+                new
+                {
+                    type = "flex",
+                    // Shown in the chat list and in the phone's notification banner,
+                    // where a Flex bubble cannot be rendered.
+                    altText = card.Text,
+                    contents = BuildAlertBubble(card)
+                }
+            }
+        }, ct);
+    }
+
+    private static object BuildAlertBubble(LineAlertCard card)
+    {
+        var body = new List<object>
+        {
+            new
+            {
+                type = "text",
+                text = card.RiskLabel,
+                size = "sm",
+                weight = "bold",
+                color = "#C2410C"
+            },
+            new
+            {
+                type = "text",
+                text = card.Title,
+                size = "lg",
+                weight = "bold",
+                color = "#1F2937",
+                margin = "sm",
+                wrap = true
+            },
+            new
+            {
+                type = "text",
+                text = card.Text,
+                size = "sm",
+                color = "#374151",
+                margin = "md",
+                wrap = true
+            }
+        };
+
+        object? footer = string.IsNullOrWhiteSpace(card.LinkUrl)
+            ? null
+            : new
+            {
+                type = "box",
+                layout = "vertical",
+                contents = new object[]
+                {
+                    new
+                    {
+                        type = "button",
+                        style = "primary",
+                        color = "#2563EB",
+                        height = "sm",
+                        action = new { type = "uri", label = "様子をみる", uri = card.LinkUrl }
+                    }
+                }
+            };
+
+        var bubble = new Dictionary<string, object>
+        {
+            ["type"] = "bubble",
+            ["hero"] = new
+            {
+                type = "image",
+                url = card.ImageUrl,
+                size = "full",
+                // The mascot artwork is close to square; 20:13 keeps the head and the
+                // cape in frame without LINE cropping into the face.
+                aspectRatio = "20:13",
+                aspectMode = "fit",
+                backgroundColor = "#EFF6FF"
+            },
+            ["body"] = new
+            {
+                type = "box",
+                layout = "vertical",
+                contents = body
+            }
+        };
+
+        if (footer is not null)
+        {
+            bubble["footer"] = footer;
+        }
+
+        return bubble;
+    }
+
     public bool VerifySignature(string rawBody, string? signatureHeader) =>
         LineSignature.Verify(_options.ChannelSecret, rawBody, signatureHeader);
 
