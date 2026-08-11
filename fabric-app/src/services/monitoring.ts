@@ -1,6 +1,7 @@
 import { getRayfinClient, isLocalBackend } from './rayfinClient';
 import {
   SNAPSHOT_ACTIVITY,
+  SNAPSHOT_AI_CALLS,
   SNAPSHOT_ALERTS,
   SNAPSHOT_CAPTURED_AT,
   SNAPSHOT_HOUSEHOLDS,
@@ -49,6 +50,25 @@ export interface ActivityRow {
   source: string;
 }
 
+/**
+ * One (purpose, router, resolvedModel) group of AI calls.
+ *
+ * `router` is the X-Orca-Router response header recorded by OrcaRouterClient:
+ *  - "auto"        OrcaRouter's own router chose the model for us
+ *  - "OrcaRouter"  no header, i.e. we pinned the model on that call site
+ *  - "MockAiRouter" the offline stub -- the only value that did not reach OrcaRouter
+ */
+export interface AiRouterCallRow {
+  id: string;
+  purpose: string;
+  router: string;
+  resolvedModel: string;
+  callCount: string;
+  successCount: string;
+  avgDurationMs: string;
+  lastCalledAt: Date;
+}
+
 const HOUSEHOLD_FIELDS = [
   'id',
   'householdId',
@@ -90,6 +110,17 @@ const ACTIVITY_FIELDS = [
   'eventCount',
   'onCount',
   'source',
+] as const;
+
+const AI_FIELDS = [
+  'id',
+  'purpose',
+  'router',
+  'resolvedModel',
+  'callCount',
+  'successCount',
+  'avgDurationMs',
+  'lastCalledAt',
 ] as const;
 
 // Local-dev fallback. `rayfin up` has not provisioned a Fabric SQL database
@@ -202,6 +233,24 @@ const SAMPLE_ACTIVITY: ActivityRow[] = (() => {
 })();
 
 /**
+ * Local-dev sample router traffic. Every row is MockAiRouter on purpose: with no
+ * OrcaRouter API key configured, that is exactly what the Blazor app records, so
+ * the fixture cannot be mistaken for evidence of real routing.
+ */
+const SAMPLE_AI_CALLS: AiRouterCallRow[] = [
+  {
+    id: 'sample-ai-1',
+    purpose: 'intent',
+    router: 'MockAiRouter',
+    resolvedModel: 'mock/local-rules',
+    callCount: '2',
+    successCount: '2',
+    avgDurationMs: '1',
+    lastCalledAt: new Date(Date.now() - 3 * 3600_000),
+  },
+];
+
+/**
  * How the rows on screen were obtained. The console must never imply a live
  * Fabric read when it is actually serving the bundled snapshot, so the UI reads
  * this and says so.
@@ -302,6 +351,25 @@ export async function getActivity(limit = 2000): Promise<ActivityRow[]> {
     .sort(
       (a, b) => new Date(a.bucketStart).getTime() - new Date(b.bucketStart).getTime()
     );
+}
+
+/** AI router traffic, busiest group first. */
+export async function getAiRouterCalls(): Promise<AiRouterCallRow[]> {
+  if (isLocalBackend()) {
+    dataOrigin = 'sample';
+    return [...SAMPLE_AI_CALLS];
+  }
+
+  const rows = await withSnapshotFallback(SNAPSHOT_AI_CALLS, async () => {
+    const client = getRayfinClient();
+    const results = await client.data.AiRouterCall.select([...AI_FIELDS]).execute();
+
+    return results as unknown as AiRouterCallRow[];
+  });
+
+  return rows
+    .slice()
+    .sort((a, b) => Number(b.callCount || 0) - Number(a.callCount || 0));
 }
 
 /** Households needing attention first, then by name, so triage is the default view. */

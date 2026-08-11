@@ -15,6 +15,7 @@
   Rows are keyed so re-running is idempotent:
     - HouseholdSnapshots.id is derived deterministically from the household GUID
     - AlertRecords.id is the source WatchAlert.Id
+    - ActivityBuckets.id / AiRouterCalls.id are derived from their aggregate grain
 
   Run after `rayfin up`, which is what creates the target tables.
 
@@ -97,6 +98,14 @@ function SnapshotId([string]$householdId) {
 function BucketId([string]$householdId, [string]$deviceName, [datetime]$bucketStart) {
     $md5 = [System.Security.Cryptography.MD5]::Create()
     $key = "activity-bucket:$householdId|$deviceName|$($bucketStart.ToString('o'))"
+    $bytes = $md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($key))
+    return ([guid]::new($bytes)).ToString()
+}
+
+# AI router rows are already aggregated, so their key is the grain itself.
+function AiCallId([string]$purpose, [string]$router, [string]$resolvedModel) {
+    $md5 = [System.Security.Cryptography.MD5]::Create()
+    $key = "ai-router-call:$purpose|$router|$resolvedModel"
     $bytes = $md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($key))
     return ([guid]::new($bytes)).ToString()
 }
@@ -212,6 +221,33 @@ VALUES
         } | Out-Null
     }
     Write-Host "Synced $($snapshot.activity.Count) activity buckets"
+
+    $aiMerge = @'
+MERGE dbo.AiRouterCalls AS t
+USING (SELECT @id AS id) AS s ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET
+    purpose = @purpose, router = @router, resolvedModel = @resolvedModel,
+    callCount = @callCount, successCount = @successCount,
+    avgDurationMs = @avgDurationMs, lastCalledAt = @lastCalledAt
+WHEN NOT MATCHED THEN INSERT
+    (id, purpose, router, resolvedModel, callCount, successCount, avgDurationMs, lastCalledAt)
+VALUES
+    (@id, @purpose, @router, @resolvedModel, @callCount, @successCount, @avgDurationMs, @lastCalledAt);
+'@
+
+    foreach ($c in $snapshot.aiCalls) {
+        Invoke-NonQuery $aiMerge @{
+            id            = [guid](AiCallId $c.Purpose $c.Router $c.ResolvedModel)
+            purpose       = Text $c.Purpose
+            router        = Text $c.Router
+            resolvedModel = Text $c.ResolvedModel
+            callCount     = [string]$c.CallCount
+            successCount  = [string]$c.SuccessCount
+            avgDurationMs = [string]$c.AvgDurationMs
+            lastCalledAt  = [datetime]::Parse($c.LastCalledAt).ToUniversalTime()
+        } | Out-Null
+    }
+    Write-Host "Synced $(@($snapshot.aiCalls).Count) AI router groups"
 }
 finally {
     $conn.Close()

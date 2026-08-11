@@ -1,4 +1,10 @@
-import type { ActivityRow, AlertRow, DataOrigin, HouseholdRow } from './monitoring';
+import type {
+  ActivityRow,
+  AiRouterCallRow,
+  AlertRow,
+  DataOrigin,
+  HouseholdRow,
+} from './monitoring';
 
 /** Rayfin returns datetimes as `Date`, but a rehydrated JSON payload may hand back a string. */
 export function toDate(value: Date | string): Date {
@@ -290,6 +296,143 @@ export function activitySummary(buckets: ActivityRow[]): ActivitySummary {
   };
 }
 
+/** The offline stub used when no OrcaRouter API key is configured. */
+export const MOCK_ROUTER = 'MockAiRouter';
+
+/** Every router value except the local stub reached OrcaRouter. */
+export function viaOrcaRouter(row: AiRouterCallRow): boolean {
+  return row.router !== MOCK_ROUTER;
+}
+
+/**
+ * A model OrcaRouter actually served requests with.
+ *
+ * `autoRouted` separates the two stories the log tells: models OrcaRouter chose
+ * on its own (`router = "auto"`) versus the one we pinned because the call site
+ * has a deadline or needs JSON mode.
+ */
+export interface ModelBar {
+  model: string;
+  calls: number;
+  success: number;
+  /** Call-weighted mean latency, milliseconds. */
+  avgMs: number;
+  autoRouted: boolean;
+  purposes: string[];
+}
+
+/**
+ * Collapses the (purpose, router, model) grain down to one bar per model.
+ *
+ * Rows whose model never resolved (a failed call still logs `resolvedModel =
+ * "auto"`) are left out: there is no model to attribute them to. They are still
+ * counted by `routerSummary`, so the success rate stays honest.
+ */
+export function routerModels(rows: AiRouterCallRow[]): ModelBar[] {
+  const byModel = new Map<string, ModelBar & { weighted: number }>();
+
+  for (const row of rows) {
+    if (!viaOrcaRouter(row)) continue;
+    const model = row.resolvedModel;
+    if (!model || model === 'auto') continue;
+
+    const calls = toInt(row.callCount);
+    const entry = byModel.get(model) ?? {
+      model,
+      calls: 0,
+      success: 0,
+      avgMs: 0,
+      autoRouted: false,
+      purposes: [],
+      weighted: 0,
+    };
+
+    entry.calls += calls;
+    entry.success += toInt(row.successCount);
+    entry.weighted += toInt(row.avgDurationMs) * calls;
+    entry.autoRouted = entry.autoRouted || row.router === 'auto';
+    if (!entry.purposes.includes(row.purpose)) entry.purposes.push(row.purpose);
+    byModel.set(model, entry);
+  }
+
+  return [...byModel.values()]
+    .map(({ weighted, ...bar }) => ({
+      ...bar,
+      avgMs: bar.calls > 0 ? Math.round(weighted / bar.calls) : 0,
+      purposes: bar.purposes.sort(),
+    }))
+    .sort((a, b) => b.calls - a.calls);
+}
+
+export interface RouterSummary {
+  /** Calls that went through OrcaRouter. */
+  calls: number;
+  success: number;
+  /** Distinct models OrcaRouter resolved to. */
+  models: number;
+  /** Calls OrcaRouter's own router assigned a model to. */
+  autoCalls: number;
+  /** Calls where we pinned the model up front. */
+  pinnedCalls: number;
+  autoAvgMs: number;
+  pinnedAvgMs: number;
+  /** Calls served by the offline stub, i.e. never sent to OrcaRouter. */
+  mockCalls: number;
+  lastCalledAt: Date | null;
+}
+
+/** Totals for the diagram and the caption above the model chart. */
+export function routerSummary(rows: AiRouterCallRow[]): RouterSummary {
+  let calls = 0;
+  let success = 0;
+  let autoCalls = 0;
+  let pinnedCalls = 0;
+  let autoWeighted = 0;
+  let pinnedWeighted = 0;
+  let mockCalls = 0;
+  let lastCalledAt: Date | null = null;
+  const models = new Set<string>();
+
+  for (const row of rows) {
+    const count = toInt(row.callCount);
+
+    if (!viaOrcaRouter(row)) {
+      mockCalls += count;
+      continue;
+    }
+
+    calls += count;
+    success += toInt(row.successCount);
+    if (row.resolvedModel && row.resolvedModel !== 'auto') models.add(row.resolvedModel);
+
+    const weighted = toInt(row.avgDurationMs) * count;
+    if (row.router === 'auto') {
+      autoCalls += count;
+      autoWeighted += weighted;
+    } else {
+      pinnedCalls += count;
+      pinnedWeighted += weighted;
+    }
+
+    const called = row.lastCalledAt ? toDate(row.lastCalledAt) : null;
+    if (called && !Number.isNaN(called.getTime()) && (!lastCalledAt || called > lastCalledAt)) {
+      lastCalledAt = called;
+    }
+  }
+
+  return {
+    calls,
+    success,
+    models: models.size,
+    autoCalls,
+    pinnedCalls,
+    autoAvgMs: autoCalls > 0 ? Math.round(autoWeighted / autoCalls) : 0,
+    pinnedAvgMs: pinnedCalls > 0 ? Math.round(pinnedWeighted / pinnedCalls) : 0,
+    mockCalls,
+    lastCalledAt,
+  };
+}
+
 export interface PipelineStats {
   devices: number;
   households: number;
@@ -305,6 +448,13 @@ export interface PipelineStats {
   /** Most recent device event across all households, or `null` when unknown. */
   lastEvent: Date | null;
   lastSync: Date | null;
+  /** Calls routed through OrcaRouter, and how many distinct models it resolved to. */
+  aiCalls: number;
+  aiModels: number;
+  /** Of `aiCalls`, the subset OrcaRouter itself picked a model for. */
+  aiAutoCalls: number;
+  aiAutoAvgMs: number;
+  aiPinnedAvgMs: number;
   /** Where the rendered rows came from. Drives the console node's label. */
   origin: DataOrigin;
 }
@@ -317,10 +467,12 @@ export function pipelineStats(
   rows: HouseholdRow[],
   alerts: AlertRow[],
   activity: ActivityRow[] = [],
-  origin: DataOrigin = 'fabric'
+  origin: DataOrigin = 'fabric',
+  aiCalls: AiRouterCallRow[] = []
 ): PipelineStats {
   let lastEvent: Date | null = null;
   let lastSync: Date | null = null;
+  const ai = routerSummary(aiCalls);
 
   for (const row of rows) {
     const event = row.lastEventUtc ? new Date(row.lastEventUtc) : null;
@@ -346,6 +498,11 @@ export function pipelineStats(
     fabricRows: activity.length,
     lastEvent,
     lastSync,
+    aiCalls: ai.calls,
+    aiModels: ai.models,
+    aiAutoCalls: ai.autoCalls,
+    aiAutoAvgMs: ai.autoAvgMs,
+    aiPinnedAvgMs: ai.pinnedAvgMs,
     origin,
   };
 }

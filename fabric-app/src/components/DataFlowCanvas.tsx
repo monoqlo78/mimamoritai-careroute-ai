@@ -14,7 +14,7 @@ import type { PipelineStats } from '@/services/analytics';
  * cannot drift from the data.
  */
 
-type Accent = 'sensor' | 'app' | 'store' | 'risk' | 'deliver' | 'fabric';
+type Accent = 'sensor' | 'app' | 'store' | 'risk' | 'deliver' | 'fabric' | 'ai';
 
 interface FlowNode {
   id: string;
@@ -45,6 +45,7 @@ const ACCENT_CLASS: Record<Accent, string> = {
   risk: 'border-violet-400/40 shadow-violet-500/20',
   deliver: 'border-amber-400/40 shadow-amber-500/20',
   fabric: 'border-emerald-400/40 shadow-emerald-500/20',
+  ai: 'border-rose-400/40 shadow-rose-500/20',
 };
 
 const ACCENT_DOT: Record<Accent, string> = {
@@ -54,6 +55,7 @@ const ACCENT_DOT: Record<Accent, string> = {
   risk: 'bg-violet-400',
   deliver: 'bg-amber-400',
   fabric: 'bg-emerald-400',
+  ai: 'bg-rose-400',
 };
 
 const NODES: FlowNode[] = [
@@ -102,6 +104,19 @@ const NODES: FlowNode[] = [
     subtitle: '家族への通知',
     metric: (s) => `宛先 ${s.lineRecipients}`,
     accent: 'deliver',
+  },
+  {
+    id: 'orca',
+    x: 0.3,
+    y: 0.78,
+    title: 'OrcaRouter',
+    // Short enough to stay on one line inside the card; the longer wording
+    // ("自動モデル選択") wrapped mid-word at this card width.
+    subtitle: 'OpenAI 互換 / 自動選択',
+    // Counts only the calls that actually reached OrcaRouter, so the offline
+    // stub used before an API key exists can never inflate this.
+    metric: (s) => (s.aiCalls > 0 ? `${s.aiCalls} 回 / ${s.aiModels} モデル` : '呼び出しなし'),
+    accent: 'ai',
   },
   {
     id: 'sync',
@@ -163,6 +178,15 @@ const EDGES: FlowEdge[] = [
     weight: (s) => 3 + s.alerts * 2,
     color: [0.98, 0.75, 0.29],
     failureRate: (s) => (s.alerts === 0 ? 0 : s.failedAlerts / s.alerts),
+  },
+  {
+    from: 'app',
+    to: 'orca',
+    // One-way on purpose: a return edge between the same two nodes would take an
+    // identical bend and land exactly on top of this one.
+    label: '意図解析・要約を依頼',
+    weight: (s) => 3 + Math.min(14, s.aiCalls / 4),
+    color: [0.98, 0.44, 0.58],
   },
   {
     from: 'sql',
@@ -564,6 +588,12 @@ export function DataFlowCanvas({ stats }: { stats: PipelineStats }) {
             <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
             分析経路（Fabric）
           </span>
+          {stats.aiCalls > 0 && (
+            <span className="flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-rose-400" />
+              AI 経路（OrcaRouter）
+            </span>
+          )}
           {stats.failedAlerts > 0 && (
             <span className="flex items-center gap-1.5 text-red-300">
               <span className="h-1.5 w-1.5 rounded-full bg-red-400" />
