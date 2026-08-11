@@ -8,6 +8,7 @@ import {
   HouseholdBars,
   RhythmHeatmap,
   RiskDonut,
+  RouterModels,
 } from '@/components/charts';
 import { DataFlowCanvas } from '@/components/DataFlowCanvas';
 import { useAuth } from '@/hooks/AuthContext';
@@ -21,15 +22,19 @@ import {
   householdBars,
   pipelineStats,
   riskDistribution,
+  routerModels,
+  routerSummary,
 } from '@/services/analytics';
 import {
   getActivity,
+  getAiRouterCalls,
   getAlerts,
   getDataOrigin,
   getHouseholds,
   summarize,
   SNAPSHOT_TAKEN_AT,
   type ActivityRow,
+  type AiRouterCallRow,
   type AlertRow,
   type DataOrigin,
   type HouseholdRow,
@@ -41,6 +46,7 @@ export function HomePage() {
   const [households, setHouseholds] = useState<HouseholdRow[]>([]);
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
   const [activity, setActivity] = useState<ActivityRow[]>([]);
+  const [aiCalls, setAiCalls] = useState<AiRouterCallRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [origin, setOrigin] = useState<DataOrigin>('fabric');
@@ -49,16 +55,18 @@ export function HomePage() {
     setLoading(true);
     setError(null);
     try {
-      const [householdRows, alertRows, activityRows] = await Promise.all([
+      const [householdRows, alertRows, activityRows, aiRows] = await Promise.all([
         getHouseholds(),
         getAlerts(),
         // Activity is the newest table; tolerate a backend that predates it so
         // the rest of the console still renders.
         getActivity().catch(() => [] as ActivityRow[]),
+        getAiRouterCalls().catch(() => [] as AiRouterCallRow[]),
       ]);
       setHouseholds(householdRows);
       setAlerts(alertRows);
       setActivity(activityRows);
+      setAiCalls(aiRows);
       setOrigin(getDataOrigin());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -72,7 +80,7 @@ export function HomePage() {
   }, [refresh]);
 
   const totals = summarize(households);
-  const flow = pipelineStats(households, alerts, activity, origin);
+  const flow = pipelineStats(households, alerts, activity, origin, aiCalls);
   const timeline = alertsByDay(alerts);
   const risks = riskDistribution(alerts);
   const delivery = deliveryStats(alerts);
@@ -81,6 +89,8 @@ export function HomePage() {
   const rhythm = hourlyRhythm(activity);
   const devices = deviceBreakdown(activity);
   const activityTotals = activitySummary(activity);
+  const aiModels = routerModels(aiCalls);
+  const aiSummary = routerSummary(aiCalls);
 
   return (
     <div className="bg-gray-50 min-h-screen">
@@ -174,6 +184,34 @@ export function HomePage() {
             </div>
           </div>
           <DataFlowCanvas stats={flow} />
+        </section>
+
+        <section className="rounded-xl border border-gray-200 bg-white p-5">
+          <div className="mb-4">
+            <h2 className="text-base font-semibold text-gray-900">
+              OrcaRouter が使ったモデル
+            </h2>
+            <p className="mt-1 text-xs text-gray-500">
+              見守り隊の AI 呼び出しは OpenAI 互換の OrcaRouter を通ります。
+              記録した {aiSummary.calls.toLocaleString()} 回に対し、実際に{' '}
+              <span className="font-medium text-rose-700">
+                {aiSummary.models} 種類
+              </span>{' '}
+              のモデルが応答しました（成功 {aiSummary.success.toLocaleString()} 回）。
+              用途ごとに別ベンダのモデルへ振り分けられています。
+            </p>
+            <p className="mt-1 text-xs text-gray-500">
+              下段の細い棒は平均応答時間です。LINE の webhook は 8 秒でイベントを
+              打ち切るため、締切のある経路には速いモデルを使っています。
+            </p>
+            {aiSummary.mockCalls > 0 && (
+              <p className="mt-1 text-[11px] text-gray-400">
+                API キー未設定時のローカルスタブ {aiSummary.mockCalls} 回は
+                OrcaRouter を経由していないため、上の集計から除いています。
+              </p>
+            )}
+          </div>
+          <RouterModels models={aiModels} />
         </section>
 
         <section className="rounded-xl border border-gray-200 bg-white p-5">

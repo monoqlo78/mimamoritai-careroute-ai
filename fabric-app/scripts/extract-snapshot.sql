@@ -81,3 +81,23 @@ GROUP BY
     d.DeviceType,
     DATEADD(hour, DATEDIFF(hour, 0, CAST(e.OccurredAtUtc AS DATETIME2)), 0)
 ORDER BY BucketStart;
+
+-- AI router rollup. Counts only: AiRequestLogs stores no prompt or completion
+-- text, and the household id is deliberately dropped here as well.
+--
+-- The grain is what makes the routing visible: `Router` is the X-Orca-Router
+-- response header, so "auto" rows are the ones OrcaRouter itself routed, while
+-- "OrcaRouter" rows are the calls where we pinned a model on purpose (JSON and
+-- deadline-bound paths). Comparing their AvgDurationMs is the evidence behind
+-- that decision.
+SELECT
+    l.Purpose        AS Purpose,
+    l.Router         AS Router,
+    l.ResolvedModel  AS ResolvedModel,
+    COUNT(*)         AS CallCount,
+    SUM(CASE WHEN l.Success = 1 THEN 1 ELSE 0 END) AS SuccessCount,
+    CAST(ROUND(AVG(CAST(l.DurationMs AS FLOAT)), 0) AS BIGINT) AS AvgDurationMs,
+    MAX(l.CreatedAtUtc) AS LastCalledAt
+FROM mimamori.AiRequestLogs l
+GROUP BY l.Purpose, l.Router, l.ResolvedModel
+ORDER BY CallCount DESC;

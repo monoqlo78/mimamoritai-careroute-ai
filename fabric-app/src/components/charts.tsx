@@ -4,6 +4,7 @@ import type {
   DeviceSlice,
   HeatmapCell,
   HouseholdBar,
+  ModelBar,
   RiskSlice,
 } from '@/services/analytics';
 
@@ -356,6 +357,65 @@ export function DeviceBreakdown({ slices }: { slices: DeviceSlice[] }) {
               style={{ width: `${(slice.events / max) * 100}%` }}
             />
           </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Which models OrcaRouter actually served requests with.
+ *
+ * Two bars per model on purpose: the call bar shows how much traffic the model
+ * took, the latency bar shows what it cost. The rows deliberately carry no
+ * "auto vs pinned" badge -- that split reflects how a request was asked for,
+ * not what came back, and the log still holds rows from before the call sites
+ * were narrowed down, so labelling them would say more than the data supports.
+ * The model name and its measured cost are the facts.
+ */
+export function RouterModels({ models }: { models: ModelBar[] }) {
+  if (models.length === 0) {
+    return <p className="text-sm text-gray-400">AI 呼び出しの記録がありません。</p>;
+  }
+
+  const maxCalls = Math.max(1, ...models.map((model) => model.calls));
+  const maxMs = Math.max(1, ...models.map((model) => model.avgMs));
+
+  return (
+    <div className="space-y-4">
+      {models.map((model) => (
+        <div key={model.model} className="space-y-1.5">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-2">
+            <span className="font-mono text-sm font-medium text-gray-800">{model.model}</span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <div className="h-2 flex-1 overflow-hidden rounded-full bg-gray-100">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-rose-500 to-fuchsia-400 transition-[width] duration-700"
+                style={{ width: `${(model.calls / maxCalls) * 100}%` }}
+              />
+            </div>
+            <span className="w-16 shrink-0 text-right text-xs text-gray-500">
+              {model.calls} 回
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-gray-100">
+              <div
+                className="h-full rounded-full bg-gray-400 transition-[width] duration-700"
+                style={{ width: `${(model.avgMs / maxMs) * 100}%` }}
+              />
+            </div>
+            <span className="w-16 shrink-0 text-right text-xs text-gray-400">
+              {model.avgMs.toLocaleString()} ms
+            </span>
+          </div>
+
+          {model.purposes.length > 0 && (
+            <p className="text-[11px] text-gray-400">用途: {model.purposes.join('、')}</p>
+          )}
         </div>
       ))}
     </div>
