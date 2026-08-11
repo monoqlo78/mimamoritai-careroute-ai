@@ -48,18 +48,15 @@ public sealed class LineMessagingClient(
             return ReplyAsync(replyToken, text, ct);
         }
 
+        // Built through BuildTextMessage so the chips carry the same mascot sender as
+        // every other bubble; composing the object inline here would silently drop it.
+        var message = BuildTextMessage(text);
+        message["quickReply"] = new { items };
+
         return PostAsync("/v2/bot/message/reply", new
         {
             replyToken,
-            messages = new object[]
-            {
-                new
-                {
-                    type = "text",
-                    text,
-                    quickReply = new { items }
-                }
-            }
+            messages = new object[] { message }
         }, ct);
     }
 
