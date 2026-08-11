@@ -59,7 +59,7 @@
 .mascot-hero {
     display: grid;
     min-height: 520px;
-    grid-template-columns: minmax(0, 0.9fr) minmax(420px, 1.1fr);
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 1.05fr);
     align-items: center;
     gap: 28px;
     overflow: hidden;
@@ -78,11 +78,32 @@
     letter-spacing: 0.08em;
 }
 
+/* 見出しは左の段の中だけで折り返す。画面幅(vw)で字を大きくすると、
+   main が 1080px で頭打ちなのに字だけ育ち、広い画面ほど
+   「話しかけるよ／うに」と語の途中で折れてしまう。段の幅は
+   861px 以上ならほぼ一定なので、ここでは固定の大きさにしている。
+   keep-all で、万一収まらなくても語の途中では折らない。 */
 .mascot-hero h1 {
     margin: 0;
-    font-size: clamp(38px, 5.3vw, 66px);
-    line-height: 1.12;
+    font-size: 42px;
+    line-height: 1.14;
     letter-spacing: -0.035em;
+    word-break: keep-all;
+}
+
+/* 1段になったら横幅をぜんぶ使えるので、画面幅に合わせて大きくしてよい。 */
+@media (max-width: 860px) {
+    .mascot-hero h1 {
+        font-size: clamp(32px, 6.4vw, 54px);
+    }
+}
+
+/* 2段に切り替わった直後は左の段がいちばん狭い（861px で 312px）。
+   ここだけ字を少し詰めないと 12px ほどはみ出す。 */
+@media (min-width: 861px) and (max-width: 940px) {
+    .mascot-hero h1 {
+        font-size: 37px;
+    }
 }
 
 .hero-lead {
