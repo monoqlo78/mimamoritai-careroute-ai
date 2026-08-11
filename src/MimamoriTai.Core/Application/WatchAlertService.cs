@@ -79,7 +79,8 @@ public sealed class WatchAlertService(
 
             var (today, recent) = await LoadActivityAsync(householdId, ct);
             var nowLocal = HouseholdTime.LocalTime(clock.GetUtcNow());
-            var risk = RiskAssessmentService.Evaluate(today, recent, nowLocal);
+            var leftOn = await new RiskAssessmentService(db, clock).LoadLeftOnAsync(householdId, ct);
+            var risk = RiskAssessmentService.Evaluate(today, recent, nowLocal, leftOn);
 
             if (risk.Level < settings.Threshold)
             {

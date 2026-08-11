@@ -24,11 +24,32 @@ public sealed class MockAiRouterClient : IAiRouterClient
     {
         var userMessage = messages.LastOrDefault(m => m.Role == "user")?.Content ?? string.Empty;
 
-        var content = jsonMode
-            ? BuildIntentJson(userMessage)
-            : BuildConversation(userMessage);
+        var content = purpose switch
+        {
+            "summary" => BuildSummary(userMessage),
+            _ when jsonMode => BuildIntentJson(userMessage),
+            _ => BuildConversation(userMessage)
+        };
 
         return Task.FromResult(new AiCompletionResult(true, content, DisplayName, MockModelName, 1));
+    }
+
+    /// <summary>
+    /// Stand-in for the family-facing summary. With no model available the honest
+    /// thing is to return the facts unchanged rather than invent friendly prose,
+    /// so the demo never shows a number the data does not support.
+    /// </summary>
+    private static string BuildSummary(string prompt)
+    {
+        const string marker = "\n";
+        var index = prompt.IndexOf("データ(", StringComparison.Ordinal);
+        if (index < 0)
+        {
+            return prompt.Trim();
+        }
+
+        var newline = prompt.IndexOf(marker, index, StringComparison.Ordinal);
+        return newline < 0 ? prompt.Trim() : prompt[(newline + 1)..].Trim();
     }
 
     private static string BuildIntentJson(string message)

@@ -1,0 +1,365 @@
+# AI・デバイス連携セットアップ（OrcaRouter / SwitchBot / Fabric）
+
+このドキュメントは、見守り隊の AI アシスタント連携を **Mock から実接続へ切り替えるために
+ユーザーが手作業で用意する必要があるもの** を一覧化したものです。
+
+アプリは「設定が入っていなければ Mock、入っていれば実接続」という設計です。
+つまり **何も設定しなくても動きますが、その場合は全部ダミー応答** になります。
+ダッシュボードの「連携状況」カードで、いま実接続か Mock かを確認できます。
+
+---
+
+## 0. 前提：シークレットは絶対にリポジトリへ書かない
+
+`appsettings.json` には **キーの置き場所だけが空文字で用意されています**。
+ここに直接キーを書くと git に載ってしまうため、必ず User Secrets か環境変数を使ってください。
+
+```powershell
+cd src\MimamoriTai.Web
+dotnet user-secrets init   # 初回のみ（csproj に UserSecretsId は設定済み）
+```
+
+保存先は `%APPDATA%\Microsoft\UserSecrets\<UserSecretsId>\secrets.json` で、
+リポジトリの外にあります。
+
+---
+
+## 1. OrcaRouter（LLM）
+
+### 必要なもの
+
+| 設定キー | 必須 | 説明 |
+|---|---|---|
+| `OrcaRouter:ApiKey` | **必須** | これが空だと Mock にフォールバックします |
+| `OrcaRouter:BaseUrl` | 任意 | 既定 `https://api.orcarouter.ai/v1`（検証済み） |
+| `OrcaRouter:Model` | 任意 | 既定 `orcarouter/auto` |
+| `OrcaRouter:JsonModel` | 任意 | 既定 `openai/gpt-4.1-mini`（後述の理由で重要） |
+| `OrcaRouter:SummaryModel` | 任意 | 既定は空（＝`Model` を使う）。要約だけ速いモデルに固定したい時に指定（6-4） |
+| `OrcaRouter:FallbackModels` | 任意 | 主モデルが落ちた時の代替（最大5件） |
+
+### 取得手順
+
+1. <https://www.orcarouter.ai/console/get-started> にサインアップする。
+2. コンソールで API キーを発行する。
+3. 以下を実行する（`<key>` を実際の値に置き換え）。
+
+```powershell
+cd src\MimamoriTai.Web
+dotnet user-secrets set "OrcaRouter:ApiKey" "<key>"
+```
+
+4. アプリを起動し、ダッシュボードの連携状況が `OrcaRouter: Live` になることを確認する。
+
+### 動作確認（キー投入後）
+
+```powershell
+$body = @{ message = "今日のお母さんの様子を教えて" } | ConvertTo-Json -Compress
+$bytes = [Text.Encoding]::UTF8.GetBytes($body)
+$r = Invoke-WebRequest -Uri "http://localhost:5302/api/assistant/message" `
+    -Method Post -Body $bytes -ContentType "application/json; charset=utf-8" -UseBasicParsing
+[Text.Encoding]::UTF8.GetString($r.RawContentStream.ToArray())
+```
+
+応答 JSON の `router` が `OrcaRouter`、`resolvedModel` が実際に選ばれたモデル名
+（例 `openai/gpt-4.1-mini`）になっていれば実接続です。
+Mock のときは `router: "MockAiRouter"` / `resolvedModel: "mock/local-rules"` になります。
+
+### なぜ `JsonModel` を分けているのか（重要）
+
+意図解析は `response_format: {"type":"json_object"}` を使って JSON を強制しています。
+しかし **Anthropic 系モデルはこのパラメータを一切サポートしていません**
+（OrcaRouter 公式ドキュメント `advanced/structured-outputs` に明記）。
+
+既定の `orcarouter/auto` は全モデルを候補にするルーターなので、
+たまたま Anthropic に解決されると意図解析が壊れます。
+そのため **JSON を要求する呼び出しだけは `JsonModel` にピン留め** し、
+自由文の要約は `Model`（= `auto`）に任せる、という二本立てにしています。
+
+`JsonModel` を変更する場合は、`json_object` に対応したモデル
+（OpenAI / Grok / Gemini / DeepSeek 系）を指定してください。
+
+### 障害時の挙動
+
+- 429（レート制限）と 5xx は自動リトライします。`Retry-After` ヘッダーがあれば従います。
+- `FallbackModels` を設定していれば、主モデルが失敗した時に順に切り替えます。
+- 最終的に失敗しても **アプリは落ちず、日本語のメッセージを返します**。
+
+---
+
+## 2. SwitchBot（家電操作）
+
+### 必要なもの
+
+| 設定キー | 必須 | 説明 |
+|---|---|---|
+| `SwitchBot:Token` | **必須** | 開発者トークン |
+| `SwitchBot:Secret` | **必須** | HMAC-SHA256 署名用シークレット |
+
+### 取得手順
+
+1. スマホの SwitchBot アプリを開く。
+2. 「プロフィール」→「設定」を開く。
+3. **「アプリバージョン」を10回連続でタップ** する（開発者オプションが出現）。
+4. 「開発者オプション」を開き、**トークン** と **クライアントシークレット** をコピーする。
+
+```powershell
+cd src\MimamoriTai.Web
+dotnet user-secrets set "SwitchBot:Token" "<token>"
+dotnet user-secrets set "SwitchBot:Secret" "<secret>"
+```
+
+より詳しい手順と、実機なしで送信内容を確認する方法は
+[`SWITCHBOT_SETUP.md`](SWITCHBOT_SETUP.md) を参照してください。
+
+### 世帯ごとの資格情報
+
+SwitchBot は **世帯単位** でも設定できます（`SwitchBotConnectionService`）。
+この場合は DataProtection で暗号化して DB に保存され、
+`IDeviceProviderFactory` が世帯ごとに実接続と Mock を実行時に切り替えます。
+つまり「A家は実機、B家はデモ」という混在が可能です。
+
+---
+
+## 3. Fabric Data Agent（任意）
+
+使わない場合は設定不要です。未設定のときはローカル DB の
+`ILocalDataQuestionService` が同じ質問に答えるので、機能は落ちません。
+
+必要な設定は [`FABRIC_SETUP.md`](FABRIC_SETUP.md) を参照してください。
+概略は以下の通りです。
+
+| 設定キー | 説明 |
+|---|---|
+| `Fabric:WorkspaceId` | Fabric ワークスペース ID |
+| `Fabric:DataAgentId` | Data Agent の ID |
+| `Fabric:McpUrl` | MCP エンドポイント |
+| `Fabric:TenantId` | Entra テナント ID |
+| `Fabric:ClientId` | アプリ登録のクライアント ID |
+| `Fabric:ClientSecret` | クライアントシークレット |
+
+---
+
+## 4. 安全設計：AI が家電を勝手に連発しないための仕組み
+
+LLM に家電操作をさせる以上、暴走したときの被害を構造的に抑える必要があります。
+以下は **設定不要で常に有効** です。
+
+### 4-1. 実行前の確認（ヒューマン・イン・ザ・ループ）
+
+状態を変える操作（ON / OFF / トグル）は **即座に実行されません**。
+まず「〜します。よろしいですか？」と聞き返し、
+ユーザーが「はい」と答えて初めて実行します。
+
+実測例（ポート5302、Mock プロバイダ）:
+
+```
+> リビングの電気を消して
+  reply: リビング照明 を消します。よろしいですか？（「はい」で実行、「いいえ」で中止）
+  awaitingConfirmation: true
+  deviceChanged: false        ← まだ何もしていない
+
+> はい
+  reply: リビング照明 を消しました。
+  deviceChanged: true
+```
+
+拒否した場合:
+
+```
+> リビングの電気をつけて
+  reply: リビング照明 をつけます。よろしいですか？…
+> いいえ
+  reply: リビング照明 の操作を中止しました。
+  deviceChanged: false        ← 機器の状態は off のまま
+```
+
+補足:
+
+- **状態を読むだけの操作（「ついてる？」）は確認不要** です。すぐ答えます。
+- 確認は **3分で失効** します。放置した指示が後から実行されることはありません。
+- 確認は **一度きり** です。続けて「はい」と言っても再実行されません。
+- 「はい」「いいえ」以外を言った場合は **新しい指示として解釈** され、
+  保留中の操作は承認されません。
+- 「はい、やめて」のような曖昧な返事は **安全側に倒して拒否** と解釈します。
+
+### 4-2. ホワイトリストと機器クラス
+
+`DeviceSafetyPolicy` が以下を判定します（従来からの仕組み）。
+
+- 遠隔操作が許可された機器か（`RemoteControlAllowed`）
+- 機器の安全クラス（`Safe` / `Restricted`）
+- 意図解析の信頼度が閾値（0.85）以上か
+
+暖房器具のような `Restricted` 機器は、条件を満たさない限り AI が触れません。
+
+### 4-3. 連発防止のレート上限
+
+| 上限 | 値 | 目的 |
+|---|---|---|
+| 世帯あたりの状態変更 | **10分間に10回まで** | 家全体の暴走を止める |
+| 同一機器・同一操作の反復 | **2分間に3回まで** | 同じスイッチの連打を止める |
+| 状態を読む操作 | **無制限** | 監視機能を阻害しない |
+
+重要な設計判断として、**カウントするのは実際に成功した状態変更だけ** です。
+拒否された試行はカウントしません。そうしないと、AI が誤った指示を繰り返しただけで
+家族が自宅から締め出されてしまいます。
+
+上限に達したときの応答:
+
+```
+安全のため、10分間に操作できる回数の上限（10回）に達しました。少し時間をおいてから試してください。
+同じ操作が短時間に繰り返されています。安全のため一度お休みします。
+```
+
+---
+
+## 5. 異常検知と家族への通知
+
+異常かどうかの判定は **LLM に任せていません**。`RiskAssessmentService` が決定論的な
+ルールでスコアリングし、LLM は結果の言い回しを整えるだけです。
+モデルの機嫌で「異常なし」と言われては見守りになりません。
+
+### 検知するもの
+
+| 検知内容 | 条件 | 加点 |
+|---|---|---|
+| 家電の利用がない | 10時を過ぎても0回 | +60 |
+| 活動開始が遅い | 初回利用が10時以降 | +35 |
+| 深夜の活動 | 0〜5時に2回以上 | +30 |
+| 活動量の低下 | 直近平均の40%以下 | +25 |
+| **電気つけっぱなし（暖房系）** | ストーブ/ケトル/調理器が**2時間**以上ON | **+60** |
+| **電気つけっぱなし（照明等）** | 深夜は**4時間**、日中は**12時間**以上ON | +20 |
+
+重要度は合計スコアで決まります（60以上=High、25以上=Medium、それ未満=Low）。
+
+つけっぱなし検知の設計判断:
+
+- **暖房系は単独で High** になります。火災の恐れがあるため、他の兆候を待ちません。
+- 照明が何個ついていても **加点は最悪の1件だけ** です。
+  部屋数の多い家で誤って High にならないようにするためです。
+- 暖房系と照明が同時に該当した場合は **暖房系を優先して報告** します。
+
+### 通知
+
+`WatchAlertService` がリスクを評価し、閾値（既定 Medium）以上なら LINE で家族に通知します。
+
+- 同一人物・同一リスクレベルの通知は **6時間クールダウン** され、連投しません。
+- 通知文は OrcaRouter が設定済みなら LLM が自然な日本語に整えます。
+  **失敗しても定型文で必ず送信** されるため、通知が LLM に依存することはありません。
+
+---
+
+## 6. 現在の検証状況（実キー投入後・実測）
+
+すべて実際の API を叩いた結果です。推測は含みません。
+
+| 項目 | 状態 |
+|---|---|
+| OrcaRouter のベース URL / 認証方式 / エンドポイント | 公式ドキュメントと実 HTTP で **検証済み** |
+| `json_object` × Anthropic 非対応問題 | **発見・対処済み**（`JsonModel` 分離） |
+| 429 / `Retry-After` / フォールバック | **実装・テスト済み** |
+| OrcaRouter の実キーによる end-to-end 応答 | **実測済み**（`X-Orca-Router: auto` → `qwen3.7-plus` 等） |
+| SwitchBot の署名生成・送信内容 | **テストで実証済み**（秘匿値はマスク） |
+| SwitchBot 実機のデバイス一覧・状態取得 | **実測済み**（Plug Mini 1台を検出） |
+| SwitchBot 実機の電源 OFF → 復元 | **実測済み**（`power on → off → on`） |
+| 確認フロー / レート上限 | **実装・テスト・実機実測すべて完了** |
+| つけっぱなし検知 | **実装・テスト済み**（7件） |
+| LLM による状況要約経路 | **実キーで実測済み**（下記参照） |
+| Fabric Data Agent の疎通 | **HTTP 200 まで到達。ただしデータソース未到達**（下記 6-3） |
+
+### 6-1. 実測ログ（抜粋）
+
+```
+[LIVE] router=auto resolvedModel=qwen3.7-plus 11682ms
+[LIVE] jsonModel=gpt-4.1-mini-2025-04-14 raw={"intent":"control_device","action":"turn_off"}
+[LIVE] device id=8CFD49F79C92 name=プラグミニ 92 type=Plug
+[LIVE] awaitingConfirmation=True deviceChanged=False
+[LIVE] propose=プラグミニ 92 を消します。よろしいですか？（「はい」で実行、「いいえ」で中止）
+[LIVE] execute=プラグミニ 92 を消しました。
+[LIVE] power before=True after=False
+[LIVE] summary=お母様は今朝7時頃から活動を始められ、家電も2回ご利用になっています。
+              普段と変わらないリズムで過ごされているようで、安心しました。
+```
+
+### 6-2. 実接続テストの動かし方
+
+実 API を叩くテストは既定では動きません。環境変数で明示的に有効化します。
+
+```powershell
+# 読み取りのみ（LLM 応答・デバイス一覧・状態取得・要約）。実機は操作しない
+$env:MIMAMORI_LIVE = "1"
+dotnet test --filter "FullyQualifiedName~LiveIntegrationTests"
+
+# 実機の電源を実際に落とす検証まで行う場合（テスト終了時に元の状態へ復元します）
+$env:MIMAMORI_LIVE_CONTROL = "1"
+```
+
+環境変数が無いときは各テストが即座に return するため、オフラインでも CI でも
+テストは緑のままです。
+
+### 6-3. Fabric Data Agent の既知の制約（要対処）
+
+MCP エンドポイントへの認証・疎通は成功しており **HTTP 200 が返ります**。
+しかし Data Agent 自身が自分のデータソースに到達できておらず、200 のまま
+日本語の謝罪文を返してきます。実測した生の応答は以下です。
+
+```
+家電の利用状況をお調べしようとしましたが、技術的な問題で最新のデータを
+取得できませんでした。ご不便おかけし申し訳ありません。
+```
+
+アプリ側はこれを失敗として検出し、**ローカル DB（`ILocalDataQuestionService`）へ
+自動フォールバック**します。したがって家族には正常な回答が返り、機能は落ちません。
+
+これは Fabric 側の構成の問題で、アプリのコードでは直せません。以下を確認してください。
+
+1. Data Agent に紐づくデータソース（Lakehouse / Warehouse / KQL DB）が、
+   **サービスプリンシパル認証に対応した種類** になっているか。
+   セマンティックモデル経由などサービスプリンシパル非対応の構成だと、
+   認証は通るのにクエリだけ失敗します。
+2. `Fabric:ClientId` のサービスプリンシパルに、ワークスペースと
+   データソース両方の読み取り権限が付いているか。
+3. Fabric テナント設定で「サービス プリンシパルによる Fabric API の使用を許可する」
+   が有効か。
+
+失敗時は生の応答先頭300文字が警告ログに出るので、原因の切り分けに使えます
+（この文言は家族の画面には出ません）。
+
+### 6-4. 応答速度の実測とチューニング
+
+| 用途 | モデル | 実測 |
+|---|---|---|
+| 意図分類（JSON） | `openai/gpt-4.1-mini`（ピン留め） | 約 2 秒 |
+| 状況要約 | `orcarouter/auto` → `qwen3.7-plus` / `deepseek-v4-pro` | **20〜30 秒** |
+
+`orcarouter/auto` は推論（thinking）系モデルに解決されることがあり、要約が
+20〜30 秒かかります。デモや LINE 応答では長すぎる場合、`OrcaRouter:SummaryModel`
+に速いチャットモデルをピン留めしてください。
+
+```powershell
+dotnet user-secrets set "OrcaRouter:SummaryModel" "openai/gpt-4.1-mini"
+```
+
+既定は空文字で、**空のときは `OrcaRouter:Model`（＝自動ルーティング）のまま**です。
+OrcaRouter の自動選択を活かしたい場合は設定しないでください。
+
+### 6-5. SwitchBot 実機の構成に関する注意
+
+検証に使ったアカウントに登録されている操作可能な機器は
+**Plug Mini 1台（`プラグミニ 92`）のみ** です。照明やエアコンは登録されていません。
+
+「家の電気を消して」というデモを行う場合は、**照明のプラグを Plug Mini に挿して**
+Plug Mini の名前を「リビングの電気」等に変更してください。アプリは機器の別名
+（`Device.Alias`）で照合するため、名前を合わせれば自然文で操作できます。
+
+なお `Plug` は安全区分 `Restricted` に分類されており、**電源 OFF は許可、
+ON と Toggle は拒否** されます。ヒーター等が挿さっていた場合に AI が勝手に
+通電させないための設計です。
+
+### ユーザー側に残っている手作業
+
+1. Fabric Data Agent のデータソースをサービスプリンシパル対応の構成に直す（6-3）。
+   直さない場合もローカル DB へフォールバックするため、デモは実施可能です。
+2. デモで照明を操作したい場合、照明を Plug Mini に挿して別名を合わせる（6-5）。
+3. 要約の応答速度が問題になる場合、`OrcaRouter:SummaryModel` をピン留めする（6-4）。
+

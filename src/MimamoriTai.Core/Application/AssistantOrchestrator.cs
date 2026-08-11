@@ -16,7 +16,8 @@ public sealed record AssistantResponse(
     string ResolvedModel,
     string Router,
     bool DeviceChanged,
-    Guid? DeviceId);
+    Guid? DeviceId,
+    bool AwaitingConfirmation = false);
 
 /// <summary>
 /// Single entry point for every natural language message, no matter whether it
@@ -28,8 +29,11 @@ public sealed class AssistantOrchestrator(
     IDeviceProvider deviceProvider,
     IFabricDataAgentClient fabric,
     ILocalDataQuestionService localData,
-    TimeProvider clock)
+    TimeProvider clock,
+    IPendingActionStore? pendingActions = null)
 {
+    private readonly IPendingActionStore _pending = pendingActions ?? new InMemoryPendingActionStore();
+
     private const string SystemPrompt = """
         あなたは高齢者見守りサービス「見守り隊 / CareRoute AI」の意図解析エンジンです。
         ユーザーの日本語メッセージを、次のJSONだけで返してください。前後に文章やコードフェンスを付けないこと。
@@ -53,8 +57,38 @@ public sealed class AssistantOrchestrator(
 
     private const string RepairPrompt = "JSONとして解析できませんでした。指定したスキーマのJSONオブジェクトのみを、余計な文字なしで返してください。";
 
+    /// <summary>
+    /// Turns the raw data-agent / local-database answer into something a worried
+    /// family member actually wants to read. Deliberately forbids inventing numbers:
+    /// the figures must come from the supplied facts only.
+    /// </summary>
+    private const string SummaryPrompt = """
+        あなたは高齢者見守りサービス「見守り隊」のアシスタントです。
+        ご家族（離れて暮らす息子・娘）に向けて、データの要約をやさしい日本語で伝えてください。
+
+        ルール:
+        - 与えられた「データ」に書かれている事実だけを使い、数値や時刻を創作しないこと。
+        - 「[端末の記録から確認できる事実]」が付いている情報は最も信頼できる情報として優先すること。
+        - データの一部に「取得できなかった」「技術的な問題」など、集計側の不調を述べる記述が
+          混じっていても、それは家族には伝えず無視し、確認できた事実だけを伝えること。
+        - データに「記録がありません」「利用がありません」とある場合は、それを事実としてそのまま
+          やさしく伝えること。機器の故障・通信エラー・システムの不具合だと決めつけないこと。
+        - 2〜3文、120文字程度。専門用語や英語は使わない。
+        - 落ち着いた、安心できる語り口にする。過度に不安をあおらない。
+        - 心配な兆候がある場合は、最後にひと言だけやさしく声かけを提案する。
+        - 箇条書きにせず、自然な文章で書くこと。
+        """;
+
     public async Task<AssistantResponse> HandleAsync(AssistantRequest request, CancellationToken ct = default)
     {
+        // A pending proposal is answered before anything is sent to the model: "はい" on
+        // its own carries no intent, and re-parsing it would lose the action it refers to.
+        var confirmation = await TryResolveConfirmationAsync(request, ct);
+        if (confirmation is not null)
+        {
+            return confirmation;
+        }
+
         var aliasHint = await BuildAliasHintAsync(request.HouseholdId, ct);
 
         var messages = new List<AiMessage>
@@ -116,13 +150,38 @@ public sealed class AssistantOrchestrator(
             ? DeviceAction.GetStatus
             : plan.Action ?? DeviceAction.GetStatus;
 
+        // Anything that physically changes the home is proposed first and executed only
+        // after the family says yes, so a misread message cannot act on its own.
+        if (DeviceSafetyPolicy.IsStateChanging(action))
+        {
+            var proposal = await ProposeAsync(request, plan, action, completion, ct);
+            if (proposal is not null)
+            {
+                return proposal;
+            }
+        }
+
+        return await ExecuteDeviceAsync(
+            request, plan.DeviceAlias, action, plan.Confidence, request.Message, plan.Intent, completion, ct);
+    }
+
+    private async Task<AssistantResponse> ExecuteDeviceAsync(
+        AssistantRequest request,
+        string? alias,
+        DeviceAction action,
+        double confidence,
+        string originalText,
+        AssistantIntent intent,
+        AiCompletionResult completion,
+        CancellationToken ct)
+    {
         var control = new DeviceControlService(db, deviceProvider, clock);
         var outcome = await control.ExecuteAsync(
             request.HouseholdId,
-            plan.DeviceAlias,
+            alias,
             action,
-            plan.Confidence,
-            request.Message,
+            confidence,
+            originalText,
             request.Source,
             request.PersonId,
             completion.ResolvedModel,
@@ -130,11 +189,103 @@ public sealed class AssistantOrchestrator(
 
         return new AssistantResponse(
             outcome.Message,
-            plan.Intent,
+            intent,
             completion.ResolvedModel,
             completion.Router,
             outcome.Executed && DeviceSafetyPolicy.IsStateChanging(action),
             outcome.DeviceId);
+    }
+
+    /// <summary>
+    /// Turns a state-changing plan into a confirmation question. Returns null when the
+    /// request should just run: an unresolvable or unsafe device is better reported by
+    /// the control service, which produces the precise reason and audits the attempt.
+    /// </summary>
+    private async Task<AssistantResponse?> ProposeAsync(
+        AssistantRequest request,
+        AssistantPlan plan,
+        DeviceAction action,
+        AiCompletionResult completion,
+        CancellationToken ct)
+    {
+        var devices = await db.Devices
+            .Where(d => d.HouseholdId == request.HouseholdId)
+            .ToListAsync(ct);
+
+        var matches = DeviceResolver.Resolve(devices, plan.DeviceAlias);
+
+        // Exactly one safe, permitted target is the only case worth confirming.
+        if (matches.Count != 1
+            || DeviceSafetyPolicy.Validate(matches[0], action, plan.Confidence) is not null)
+        {
+            return null;
+        }
+
+        var device = matches[0];
+
+        _pending.Set(new PendingDeviceAction(
+            request.HouseholdId,
+            plan.DeviceAlias ?? device.Name,
+            device.Name,
+            action,
+            request.Message,
+            clock.GetUtcNow()));
+
+        var verb = action switch
+        {
+            DeviceAction.TurnOn => "つけます",
+            DeviceAction.TurnOff => "消します",
+            _ => "切り替えます"
+        };
+
+        return new AssistantResponse(
+            $"{device.Name} を{verb}。よろしいですか？（「はい」で実行、「いいえ」で中止）",
+            plan.Intent,
+            completion.ResolvedModel,
+            completion.Router,
+            false,
+            device.Id,
+            AwaitingConfirmation: true);
+    }
+
+    /// <summary>
+    /// Consumes a yes/no answer to a pending proposal. Returns null when there is nothing
+    /// pending, or when the message is not a yes/no, in which case it is a fresh instruction.
+    /// </summary>
+    private async Task<AssistantResponse?> TryResolveConfirmationAsync(AssistantRequest request, CancellationToken ct)
+    {
+        var answer = ConfirmationReply.Interpret(request.Message);
+        if (answer is null)
+        {
+            return null;
+        }
+
+        var pending = _pending.Take(request.HouseholdId, clock.GetUtcNow());
+        if (pending is null)
+        {
+            return null;
+        }
+
+        await RecordMessageAsync(request, MessageType.Text, request.Message, ct);
+
+        // Confirmation is explicit human consent, so the model's original confidence
+        // no longer gates it; every other safety check still runs in the control service.
+        var completion = new AiCompletionResult(true, string.Empty, "Confirmation", "confirmation/none", 0);
+
+        var response = answer.Value
+            ? await ExecuteDeviceAsync(
+                request, pending.DeviceAlias, pending.Action, 1.0, pending.OriginalText,
+                AssistantIntent.ControlDevice, completion, ct)
+            : new AssistantResponse(
+                $"{pending.DeviceName} の操作を中止しました。",
+                AssistantIntent.ControlDevice,
+                completion.ResolvedModel,
+                completion.Router,
+                false,
+                null);
+
+        await RecordMessageAsync(request, MessageType.AiReply, response.Reply, ct, isAi: true);
+        return response;
     }
 
     private async Task<AssistantResponse> HandleQueryAsync(
@@ -142,27 +293,80 @@ public sealed class AssistantOrchestrator(
     {
         var question = string.IsNullOrWhiteSpace(plan.Question) ? request.Message : plan.Question;
 
-        FabricAnswer answer;
+        // The local database is always consulted, even when Fabric is available.
+        //
+        // The Fabric Data Agent answers in free text and, when it cannot reach its
+        // datasource, apologises with HTTP 200 instead of failing. FabricDataAgentMcpClient
+        // catches the common wordings, but a phrase list can never cover everything a
+        // language model might say. Carrying the local facts alongside means a missed
+        // apology degrades the answer instead of erasing it: the summary still has real
+        // times and counts to work from.
+        var local = await localData.AnswerAsync(request.HouseholdId, question, ct);
+        var answer = local;
+
         if (fabric.IsConfigured)
         {
-            answer = await fabric.AskAsync(question, ct);
-            if (!answer.Success)
+            var remote = await fabric.AskAsync(question, ct);
+            if (remote.Success && !string.IsNullOrWhiteSpace(remote.Answer))
             {
-                answer = await localData.AnswerAsync(request.HouseholdId, question, ct);
+                answer = new FabricAnswer(true, Merge(remote.Answer, local.Answer), remote.Source, null);
             }
         }
-        else
-        {
-            answer = await localData.AnswerAsync(request.HouseholdId, question, ct);
-        }
+
+        var (reply, summary) = await SummarizeAsync(request, question, answer, ct);
 
         return new AssistantResponse(
-            answer.Answer,
+            reply,
             AssistantIntent.QueryData,
-            completion.ResolvedModel,
-            completion.Router,
+            summary?.ResolvedModel ?? completion.ResolvedModel,
+            summary?.Router ?? completion.Router,
             false,
             null);
+    }
+
+    /// <summary>
+    /// Presents the Fabric answer and the locally computed facts as two labelled
+    /// sources so the model can reconcile them, rather than silently preferring one.
+    /// </summary>
+    private static string Merge(string remote, string local)
+    {
+        var localFacts = local?.Trim() ?? string.Empty;
+
+        return localFacts.Length == 0
+            ? remote.Trim()
+            : $"{remote.Trim()}\n\n[端末の記録から確認できる事実]\n{localFacts}";
+    }
+
+    /// <summary>
+    /// Rewrites a factual data answer as a gentle, family-facing Japanese summary.
+    ///
+    /// The raw answer is always kept as the fallback: if the router is unavailable,
+    /// throttled or returns nothing usable, the user still gets the correct facts
+    /// rather than an error, which is why this never throws.
+    /// </summary>
+    private async Task<(string Reply, AiCompletionResult? Completion)> SummarizeAsync(
+        AssistantRequest request, string question, FabricAnswer answer, CancellationToken ct)
+    {
+        var facts = answer.Answer?.Trim() ?? string.Empty;
+
+        if (!answer.Success || facts.Length == 0)
+        {
+            return (string.IsNullOrEmpty(facts) ? "データを取得できませんでした。少し時間をおいて試してください。" : facts, null);
+        }
+
+        var messages = new List<AiMessage>
+        {
+            AiMessage.System(SummaryPrompt),
+            AiMessage.User($"ご家族からの質問: {question}\n\nデータ({answer.Source}):\n{facts}")
+        };
+
+        var summary = await ai.CompleteAsync(messages, "summary", jsonMode: false, ct);
+        await LogAiAsync(request.HouseholdId, "summary", summary, ct);
+
+        var text = summary.Success ? summary.Content.Trim() : string.Empty;
+
+        // Never let the model replace the facts with nothing.
+        return text.Length == 0 ? (facts, summary) : (text, summary);
     }
 
     private async Task<AssistantResponse> HandleConversationAsync(

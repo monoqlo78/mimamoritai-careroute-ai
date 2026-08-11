@@ -54,10 +54,20 @@ public sealed class FabricDataAgentMcpClient(
         "システムエラー",
         "エラーが発生し",
         "取得できませんでした",
+        "取得できません",
+        "お答えできません",
+        "アクセスできません",
+        "アクセスできず",
+        "見つかりませんでした",
+        "確認できませんでした",
+        "技術的な問題",
         "unable to connect",
+        "unable to access",
+        "unable to retrieve",
         "failed to connect",
         "an error occurred",
         "could not retrieve",
+        "could not access",
         "i'm sorry, but i encountered an error"
     ];
 
@@ -130,8 +140,18 @@ public sealed class FabricDataAgentMcpClient(
 
             if (IsErrorResult(callResult) || LooksLikeFailureAnswer(answer))
             {
-                logger.LogWarning("Fabric Data Agent returned a failure-shaped answer; falling back to local data.");
-                return Failure("Fabric Data Agent could not access its datasource.");
+                // The apology text is the only clue about WHY the agent could not read
+                // its datasource (permissions, an unmigrated datasource, a missing
+                // table...), and it is never shown to the family, so it is worth
+                // surfacing for diagnosis. Truncated because a data agent can be
+                // verbose, and because the tail may quote row data.
+                var detail = Truncate(answer, 300);
+
+                logger.LogWarning(
+                    "Fabric Data Agent returned a failure-shaped answer; falling back to local data. Agent said: {Detail}",
+                    detail);
+
+                return Failure($"Fabric Data Agent could not access its datasource: {detail}");
             }
 
             return new FabricAnswer(true, answer, SourceName);
@@ -425,6 +445,9 @@ public sealed class FabricDataAgentMcpClient(
 
     private static FabricAnswer NotConfigured() =>
         new(false, string.Empty, SourceName, "Fabric Data Agent is not configured.");
+
+    private static string Truncate(string value, int max) =>
+        value.Length <= max ? value : value[..max] + "…";
 
     private static FabricAnswer Failure(string reason) =>
         new(false, string.Empty, SourceName, reason);

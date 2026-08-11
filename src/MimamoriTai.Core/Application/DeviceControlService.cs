@@ -64,6 +64,15 @@ public sealed class DeviceControlService(
             return await RejectAsync(command, violation, ct);
         }
 
+        if (DeviceSafetyPolicy.IsStateChanging(action))
+        {
+            var throttle = await CheckRateLimitAsync(householdId, device.Id, action, ct);
+            if (throttle is not null)
+            {
+                return await RejectAsync(command, throttle, ct);
+            }
+        }
+
         if (action == DeviceAction.GetStatus)
         {
             var status = await provider.GetStatusAsync(device.ExternalDeviceId, ct);
@@ -95,8 +104,20 @@ public sealed class DeviceControlService(
             return new DeviceControlOutcome(false, $"{device.Name} の操作に失敗しました。{result.FailureReason}", device.Id, CommandStatus.Failed);
         }
 
+        // SwitchBot applies commands asynchronously: a read-back issued immediately
+        // after the command still reports the PREVIOUS power state. Trusting it wrote
+        // an "on" event right after turning a device off, which both flipped the reply
+        // ("つけました" for a turn-off) and poisoned downstream rules such as the
+        // left-on detection. The requested action is therefore the source of truth for
+        // the resulting state; the read-back is only used for the live wattage, and for
+        // Toggle, where the caller by definition does not know the target state.
         var newStatus = await provider.GetStatusAsync(device.ExternalDeviceId, ct);
-        var newState = newStatus?.State ?? (action == DeviceAction.TurnOn ? "on" : "off");
+        var newState = action switch
+        {
+            DeviceAction.TurnOn => "on",
+            DeviceAction.TurnOff => "off",
+            _ => newStatus?.State ?? "unknown"
+        };
 
         command.Status = CommandStatus.Succeeded;
         db.DeviceCommands.Add(command);
@@ -115,8 +136,55 @@ public sealed class DeviceControlService(
 
         await db.SaveChangesAsync(ct);
 
-        var verb = newState.Equals("on", StringComparison.OrdinalIgnoreCase) ? "つけました" : "消しました";
+        var verb = newState switch
+        {
+            "on" => "つけました",
+            "off" => "消しました",
+            _ => "操作しました"
+        };
         return new DeviceControlOutcome(true, $"{device.Name} を{verb}。", device.Id, CommandStatus.Succeeded);
+    }
+
+    /// <summary>
+    /// Caps how often the assistant may physically change the home, using the same
+    /// DeviceCommand audit trail the UI shows. Returns null when the command may
+    /// proceed, otherwise the Japanese reason shown to the family.
+    ///
+    /// Only executed (Succeeded) state changes count: rejections must not lock the
+    /// household out, and reads are never limited.
+    /// </summary>
+    private async Task<string?> CheckRateLimitAsync(
+        Guid householdId, Guid deviceId, DeviceAction action, CancellationToken ct)
+    {
+        var now = clock.GetUtcNow();
+        var windowStart = now - DeviceSafetyPolicy.RateLimitWindow;
+
+        var recent = await db.DeviceCommands
+            .Where(c => c.HouseholdId == householdId
+                     && c.Status == CommandStatus.Succeeded
+                     && c.ExecutedAtUtc != null
+                     && c.ExecutedAtUtc >= windowStart)
+            .Select(c => new { c.DeviceId, c.Action, c.ExecutedAtUtc })
+            .ToListAsync(ct);
+
+        var stateChanges = recent.Count(c => DeviceSafetyPolicy.IsStateChanging(c.Action));
+
+        if (stateChanges >= DeviceSafetyPolicy.MaxStateChangesPerWindow)
+        {
+            var minutes = (int)DeviceSafetyPolicy.RateLimitWindow.TotalMinutes;
+            return $"安全のため、{minutes}分間に操作できる回数の上限（{DeviceSafetyPolicy.MaxStateChangesPerWindow}回）に達しました。少し時間をおいてから試してください。";
+        }
+
+        var repeatStart = now - DeviceSafetyPolicy.RepeatWindow;
+        var repeats = recent.Count(c =>
+            c.DeviceId == deviceId && c.Action == action && c.ExecutedAtUtc >= repeatStart);
+
+        if (repeats >= DeviceSafetyPolicy.MaxIdenticalRepeats)
+        {
+            return "同じ操作が短時間に繰り返されています。安全のため一度お休みします。";
+        }
+
+        return null;
     }
 
     private async Task<DeviceControlOutcome> RejectAsync(DeviceCommand command, string reason, CancellationToken ct)

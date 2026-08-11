@@ -29,12 +29,20 @@ public class AssistantOrchestratorTests
         using var db = await new TestDb().SeedAsync(TestDb.Light());
         var orchestrator = Create(db);
 
-        var response = await orchestrator.HandleAsync(
+        // State changes are proposed first, then executed on confirmation.
+        var proposal = await orchestrator.HandleAsync(
             new AssistantRequest(db.HouseholdId, db.ResidentId, "リビングのライトつけて", CommandSource.Web));
 
-        Assert.Equal(AssistantIntent.ControlDevice, response.Intent);
+        Assert.Equal(AssistantIntent.ControlDevice, proposal.Intent);
+        Assert.True(proposal.AwaitingConfirmation);
+        Assert.False(proposal.DeviceChanged);
+        Assert.Equal(MockAiRouterClient.MockModelName, proposal.ResolvedModel);
+
+        var response = await orchestrator.HandleAsync(
+            new AssistantRequest(db.HouseholdId, db.ResidentId, "はい", CommandSource.Web));
+
         Assert.True(response.DeviceChanged);
-        Assert.Equal(MockAiRouterClient.MockModelName, response.ResolvedModel);
+        Assert.Contains("つけました", response.Reply);
     }
 
     [Fact]
@@ -44,8 +52,11 @@ public class AssistantOrchestratorTests
         var orchestrator = Create(db);
 
         await orchestrator.HandleAsync(new AssistantRequest(db.HouseholdId, null, "リビングのライトつけて", CommandSource.Web));
+        await orchestrator.HandleAsync(new AssistantRequest(db.HouseholdId, null, "はい", CommandSource.Web));
+
+        await orchestrator.HandleAsync(new AssistantRequest(db.HouseholdId, null, "リビングのライト消して", CommandSource.Web));
         var response = await orchestrator.HandleAsync(
-            new AssistantRequest(db.HouseholdId, null, "リビングのライト消して", CommandSource.Web));
+            new AssistantRequest(db.HouseholdId, null, "はい", CommandSource.Web));
 
         Assert.True(response.DeviceChanged);
         Assert.Contains("消しました", response.Reply);
@@ -107,6 +118,374 @@ public class AssistantOrchestratorTests
             CallCount++;
             return Task.FromResult(new AiCompletionResult(true, "申し訳ありません、よく分かりません。", DisplayName, "broken/model", 1));
         }
+    }
+}
+
+/// <summary>
+/// Covers the guardrails around LLM-issued device control: a state change is always
+/// proposed before it happens, consent has to be explicit, and the assistant cannot
+/// keep cycling the home even if the model insists.
+/// </summary>
+public class DeviceConfirmationTests(Xunit.Abstractions.ITestOutputHelper output)
+{
+    private static AssistantOrchestrator Create(TestDb db, TimeProvider? clock = null, IPendingActionStore? store = null) =>
+        new(db.Context,
+            new MockAiRouterClient(),
+            new MockDeviceProvider(),
+            new MockFabricDataAgentClient(),
+            new LocalDataQuestionService(db.Context, clock ?? TimeProvider.System),
+            clock ?? TimeProvider.System,
+            store ?? new InMemoryPendingActionStore());
+
+    private static AssistantRequest Say(TestDb db, string message) =>
+        new(db.HouseholdId, null, message, CommandSource.Web);
+
+    [Fact]
+    public async Task Turning_a_light_off_asks_before_doing_it()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var orchestrator = Create(db);
+
+        var proposal = await orchestrator.HandleAsync(Say(db, "リビングのライト消して"));
+
+        Assert.True(proposal.AwaitingConfirmation);
+        Assert.False(proposal.DeviceChanged);
+        Assert.Contains("よろしいですか", proposal.Reply, StringComparison.Ordinal);
+
+        // Nothing has been sent to the device yet.
+        Assert.Empty(db.Context.DeviceCommands);
+
+        output.WriteLine("proposal: " + proposal.Reply);
+    }
+
+    [Fact]
+    public async Task Saying_no_cancels_without_touching_the_device()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var orchestrator = Create(db);
+
+        await orchestrator.HandleAsync(Say(db, "リビングのライト消して"));
+        var response = await orchestrator.HandleAsync(Say(db, "やめて"));
+
+        Assert.False(response.DeviceChanged);
+        Assert.Contains("中止", response.Reply, StringComparison.Ordinal);
+        Assert.Empty(db.Context.DeviceCommands);
+
+        output.WriteLine("cancelled: " + response.Reply);
+    }
+
+    [Fact]
+    public async Task A_confirmation_can_only_be_used_once()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var orchestrator = Create(db);
+
+        await orchestrator.HandleAsync(Say(db, "リビングのライト消して"));
+        var first = await orchestrator.HandleAsync(Say(db, "はい"));
+        var second = await orchestrator.HandleAsync(Say(db, "はい"));
+
+        Assert.True(first.DeviceChanged);
+
+        // The second "はい" has nothing pending, so it must not repeat the command.
+        Assert.False(second.DeviceChanged);
+        Assert.Single(db.Context.DeviceCommands.Where(c => c.Status == CommandStatus.Succeeded));
+    }
+
+    [Fact]
+    public async Task An_unanswered_proposal_expires_rather_than_lingering()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var orchestrator = Create(db, clock);
+
+        await orchestrator.HandleAsync(Say(db, "リビングのライト消して"));
+
+        clock.Advance(InMemoryPendingActionStore.Lifetime + TimeSpan.FromMinutes(1));
+
+        var response = await orchestrator.HandleAsync(Say(db, "はい"));
+
+        Assert.False(response.DeviceChanged);
+    }
+
+    [Fact]
+    public async Task Asking_for_status_never_needs_confirmation()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var orchestrator = Create(db);
+
+        var response = await orchestrator.HandleAsync(Say(db, "リビングのライトはついてる？"));
+
+        Assert.False(response.AwaitingConfirmation);
+        Assert.Equal(AssistantIntent.DeviceStatus, response.Intent);
+    }
+
+    [Fact]
+    public async Task Repeating_the_same_change_is_throttled()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var orchestrator = Create(db, clock);
+
+        for (var i = 0; i < DeviceSafetyPolicy.MaxIdenticalRepeats; i++)
+        {
+            await orchestrator.HandleAsync(Say(db, "リビングのライト消して"));
+            var ok = await orchestrator.HandleAsync(Say(db, "はい"));
+            Assert.True(ok.DeviceChanged, $"repeat {i + 1} should have executed");
+        }
+
+        await orchestrator.HandleAsync(Say(db, "リビングのライト消して"));
+        var blocked = await orchestrator.HandleAsync(Say(db, "はい"));
+
+        Assert.False(blocked.DeviceChanged);
+        Assert.Contains("繰り返され", blocked.Reply, StringComparison.Ordinal);
+
+        output.WriteLine("throttled: " + blocked.Reply);
+    }
+
+    [Fact]
+    public async Task The_household_cannot_exceed_the_command_ceiling_in_the_window()
+    {
+        // Distinct devices so the per-device repeat guard never fires and the test
+        // measures only the household-wide ceiling.
+        var lights = MakeLights(DeviceSafetyPolicy.MaxStateChangesPerWindow + 3);
+        using var db = await new TestDb().SeedAsync(lights);
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var control = new DeviceControlService(db.Context, new MockDeviceProvider(), clock);
+
+        var executed = 0;
+        for (var i = 0; i < lights.Length; i++)
+        {
+            var outcome = await control.ExecuteAsync(
+                db.HouseholdId, lights[i].Name, DeviceAction.TurnOn,
+                1.0, "test", CommandSource.Web, null, "test/model");
+
+            if (outcome.Executed)
+            {
+                executed++;
+            }
+
+            clock.Advance(TimeSpan.FromSeconds(5));
+        }
+
+        Assert.Equal(DeviceSafetyPolicy.MaxStateChangesPerWindow, executed);
+    }
+
+    [Fact]
+    public async Task The_ceiling_lifts_once_the_window_has_passed()
+    {
+        var lights = MakeLights(DeviceSafetyPolicy.MaxStateChangesPerWindow + 1);
+        using var db = await new TestDb().SeedAsync(lights);
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var control = new DeviceControlService(db.Context, new MockDeviceProvider(), clock);
+
+        for (var i = 0; i < DeviceSafetyPolicy.MaxStateChangesPerWindow; i++)
+        {
+            await control.ExecuteAsync(
+                db.HouseholdId, lights[i].Name, DeviceAction.TurnOn,
+                1.0, "test", CommandSource.Web, null, "test/model");
+            clock.Advance(TimeSpan.FromSeconds(5));
+        }
+
+        var last = lights[^1].Name;
+
+        var blocked = await control.ExecuteAsync(
+            db.HouseholdId, last, DeviceAction.TurnOn, 1.0, "test", CommandSource.Web, null, "test/model");
+        Assert.False(blocked.Executed);
+
+        clock.Advance(DeviceSafetyPolicy.RateLimitWindow + TimeSpan.FromMinutes(1));
+
+        var allowed = await control.ExecuteAsync(
+            db.HouseholdId, last, DeviceAction.TurnOn, 1.0, "test", CommandSource.Web, null, "test/model");
+        Assert.True(allowed.Executed);
+    }
+
+    [Fact]
+    public async Task Reading_status_is_never_rate_limited()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var control = new DeviceControlService(db.Context, new MockDeviceProvider(), clock);
+
+        for (var i = 0; i < DeviceSafetyPolicy.MaxStateChangesPerWindow + 5; i++)
+        {
+            var outcome = await control.ExecuteAsync(
+                db.HouseholdId, "リビング照明", DeviceAction.GetStatus,
+                1.0, "test", CommandSource.Web, null, "test/model");
+
+            Assert.True(outcome.Executed);
+        }
+    }
+
+    private static Device[] MakeLights(int count) =>
+        [.. Enumerable.Range(0, count).Select(i => TestDb.Light($"light-{i}", $"照明{i}"))];
+
+    [Theory]
+    [InlineData("はい", true)]
+    [InlineData("うん", true)]
+    [InlineData("OK", true)]
+    [InlineData("お願いします", true)]
+    [InlineData("いいえ", false)]
+    [InlineData("やめて", false)]
+    [InlineData("キャンセル", false)]
+    [InlineData("はい、やめて", false)]
+    [InlineData("リビングのライトつけて", null)]
+    [InlineData("今日のお母さんどう？", null)]
+    [InlineData("", null)]
+    public void Confirmation_replies_are_interpreted_conservatively(string message, bool? expected)
+    {
+        Assert.Equal(expected, ConfirmationReply.Interpret(message));
+    }
+
+    [Fact]
+    public async Task A_new_instruction_does_not_confirm_a_pending_one()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var orchestrator = Create(db);
+
+        await orchestrator.HandleAsync(Say(db, "リビングのライト消して"));
+
+        // Not a yes/no, so it must be treated as a fresh request, not as consent.
+        var response = await orchestrator.HandleAsync(Say(db, "今日のお母さんどう？"));
+
+        Assert.Equal(AssistantIntent.QueryData, response.Intent);
+        Assert.False(response.DeviceChanged);
+        Assert.Empty(db.Context.DeviceCommands);
+    }
+}
+
+/// <summary>
+/// Covers the "summarise the situation for the family" path: a data question must
+/// reach the LLM with the retrieved facts, and must still answer correctly when the
+/// router is down, throttled or returns nothing.
+/// </summary>
+public class AssistantSummaryTests(Xunit.Abstractions.ITestOutputHelper output)
+{
+    /// <summary>Answers intent JSON like the mock, but returns a scripted summary for purpose "summary".</summary>
+    private sealed class ScriptedSummaryRouter(
+        string? summary, bool success = true, string model = "openai/gpt-4.1-mini") : IAiRouterClient
+    {
+        private readonly MockAiRouterClient _intent = new();
+
+        public List<IReadOnlyList<AiMessage>> SummaryPrompts { get; } = [];
+
+        public bool IsConfigured => true;
+
+        public string DisplayName => "ScriptedRouter";
+
+        public Task<AiCompletionResult> CompleteAsync(
+            IReadOnlyList<AiMessage> messages, string purpose, bool jsonMode = false, CancellationToken ct = default)
+        {
+            if (purpose != "summary")
+            {
+                return _intent.CompleteAsync(messages, purpose, jsonMode, ct);
+            }
+
+            SummaryPrompts.Add(messages);
+
+            return Task.FromResult(success
+                ? new AiCompletionResult(true, summary ?? string.Empty, DisplayName, model, 12)
+                : new AiCompletionResult(false, string.Empty, DisplayName, model, 12, "OrcaRouter returned 429."));
+        }
+    }
+
+    private static AssistantOrchestrator Create(TestDb db, IAiRouterClient ai) =>
+        new(db.Context,
+            ai,
+            new MockDeviceProvider(),
+            new MockFabricDataAgentClient(),
+            new LocalDataQuestionService(db.Context, TimeProvider.System),
+            TimeProvider.System);
+
+    [Fact]
+    public async Task Data_question_is_rewritten_by_the_llm_for_the_family()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var router = new ScriptedSummaryRouter("お母さんは今朝もいつも通り起きて、日中も過ごされています。今日は少しゆっくりのようなので、夕方に一度お電話してみると安心かもしれません。");
+        var orchestrator = Create(db, router);
+
+        var response = await orchestrator.HandleAsync(
+            new AssistantRequest(db.HouseholdId, null, "今日のお母さんの様子はどう？", CommandSource.Web));
+
+        Assert.Equal(AssistantIntent.QueryData, response.Intent);
+        Assert.Contains("お母さん", response.Reply, StringComparison.Ordinal);
+        Assert.Equal("openai/gpt-4.1-mini", response.ResolvedModel);
+
+        // The LLM must receive the retrieved facts, not just the question.
+        var prompt = Assert.Single(router.SummaryPrompts);
+        Assert.Equal("system", prompt[0].Role);
+        Assert.Contains("見守り隊", prompt[0].Content, StringComparison.Ordinal);
+        Assert.Contains("今日のお母さんの様子はどう？", prompt[1].Content, StringComparison.Ordinal);
+        Assert.Contains("データ(", prompt[1].Content, StringComparison.Ordinal);
+
+        output.WriteLine("--- summary system prompt ---");
+        output.WriteLine(prompt[0].Content);
+        output.WriteLine("--- summary user prompt ---");
+        output.WriteLine(prompt[1].Content);
+        output.WriteLine("--- reply ---");
+        output.WriteLine(response.Reply);
+    }
+
+    [Fact]
+    public async Task Router_failure_falls_back_to_the_raw_facts_instead_of_an_error()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var router = new ScriptedSummaryRouter(null, success: false);
+        var orchestrator = Create(db, router);
+
+        var response = await orchestrator.HandleAsync(
+            new AssistantRequest(db.HouseholdId, null, "今日のお母さんの様子はどう？", CommandSource.Line));
+
+        Assert.Equal(AssistantIntent.QueryData, response.Intent);
+        Assert.False(string.IsNullOrWhiteSpace(response.Reply));
+        Assert.DoesNotContain("429", response.Reply, StringComparison.Ordinal);
+        Assert.DoesNotContain("error", response.Reply, StringComparison.OrdinalIgnoreCase);
+
+        output.WriteLine("router-down reply: " + response.Reply);
+    }
+
+    [Fact]
+    public async Task Empty_model_output_never_replaces_the_facts()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var orchestrator = Create(db, new ScriptedSummaryRouter("   "));
+
+        var response = await orchestrator.HandleAsync(
+            new AssistantRequest(db.HouseholdId, null, "今日のお母さんの様子はどう？", CommandSource.Web));
+
+        Assert.False(string.IsNullOrWhiteSpace(response.Reply));
+    }
+
+    [Fact]
+    public async Task Summary_call_is_recorded_in_the_ai_request_log()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var orchestrator = Create(db, new ScriptedSummaryRouter("お母さんは落ち着いて過ごされています。"));
+
+        await orchestrator.HandleAsync(
+            new AssistantRequest(db.HouseholdId, null, "今日のお母さんの様子はどう？", CommandSource.Web));
+
+        Assert.Contains(db.Context.AiRequestLogs, l => l.Purpose == "summary");
+    }
+
+    /// <summary>
+    /// Without a key the app still has to answer. The mock must not invent numbers,
+    /// so the facts it was given have to survive into the reply.
+    /// </summary>
+    [Fact]
+    public async Task Mock_router_summary_preserves_the_underlying_facts()
+    {
+        var ai = new MockAiRouterClient();
+
+        var result = await ai.CompleteAsync(
+            [
+                AiMessage.System("要約してください。"),
+                AiMessage.User("ご家族からの質問: 今日どう？\n\nデータ(LocalDatabase):\nお母さんは今朝06:41頃から活動を始め、これまでに家電を2回利用しています。")
+            ],
+            "summary");
+
+        Assert.True(result.Success);
+        Assert.Contains("06:41", result.Content, StringComparison.Ordinal);
+        output.WriteLine("mock summary: " + result.Content);
     }
 }
 

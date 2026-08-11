@@ -19,7 +19,21 @@
 
 ## OrcaRouter
 
-- OrcaRouter の公開ドキュメントは未確認です。`OrcaRouterOptions.BaseUrl` の既定値 `https://api.orcarouter.ai/v1` と、レスポンスヘッダー名 `X-Orca-Router` / `X-Orca-Resolved-Model`（`src/MimamoriTai.Infrastructure/Ai/OrcaRouterClient.cs`）は、社内の仕様書ベースで実装したものであり、**実際のライブAPIに対して検証されていません（※未検証：実APIでの確認が必要）**。接続する前に、実際のOrcaRouterエンドポイントとレスポンス仕様を必ず確認してください。
+- OrcaRouter の公開ドキュメントは `https://docs.orcarouter.ai/llms.txt`（LLM向け索引。各ページは末尾に `.md` を付けると生Markdownが取得できる）。`https://www.orcarouter.ai/` 側はJavaScript SPAのため、テキストとしては取得できません。
+- **2026-08-11 に実APIに対して検証済み**の事項（`src/MimamoriTai.Infrastructure/Ai/OrcaRouterClient.cs`）:
+  - ベースURL `https://api.orcarouter.ai/v1` は正しい（`https://api.orcarouter.ai/api/status` の `api_base_url` でも裏付け）。
+  - 認証は `Authorization: Bearer <ApiKey>`。エンドポイントは `POST /chat/completions` でOpenAI互換のリクエスト/レスポンス形状。
+  - レスポンスヘッダー名 `X-Orca-Router` / `X-Orca-Resolved-Model` は正しい。ただし **`orcarouter/{ルーター名}` を指定して呼んだ場合にのみ付与**され、認証エラー等の失敗応答には現れません。関連ヘッダーとして `X-Orca-Fallback-Model` / `X-Orca-Fallback-Level` / `X-Orca-Request-Id` があります（[Response Headers](https://docs.orcarouter.ai/routing/response-headers)）。
+  - モデル `orcarouter/auto` は `GET /v1/models` の一覧には**現れません**が有効です（アカウント作成時に自動生成される named router のため）。モデル一覧に無いことを根拠に「存在しない」と判断しないでください。
+  - **`response_format: {"type":"json_object"}` は Anthropic 系モデルが一切サポートしません**（[Structured Outputs](https://docs.orcarouter.ai/advanced/structured-outputs)）。`orcarouter/auto` は全モデルを候補にするため Anthropic に解決されうるので、JSONを要求する呼び出し（意図解析）では `OrcaRouter:JsonModel`（既定 `openai/gpt-4.1-mini`）にピン留めしています。
+  - フォールバックチェーンは `extra_body.models`（配列・最大5件）と `extra_body.route = "fallback"` で指定します（[Model Fallbacks](https://docs.orcarouter.ai/routing/model-fallbacks)）。`OrcaRouter:FallbackModels` がこれに対応します。
+  - レート制限（429）応答には `Retry-After`（秒）が付きます。`OrcaRouterClient` はこれを尊重しつつ `OrcaRouter:MaxRetryDelaySeconds` で上限を設けて再試行します。
+- APIキーは `https://www.orcarouter.ai/console` で発行し、**リポジトリには置かず** User Secrets（開発時）または環境変数（本番）で投入してください。
+
+```bash
+cd src/MimamoriTai.Web
+dotnet user-secrets set "OrcaRouter:ApiKey" "<発行したキー>"
+```
 
 ## LINE Messaging API
 

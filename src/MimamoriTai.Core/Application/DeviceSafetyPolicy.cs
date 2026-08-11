@@ -22,6 +22,24 @@ public static class DeviceSafetyPolicy
         DeviceAction.GetStatus
     ];
 
+    /// <summary>
+    /// Ceiling on state-changing commands the assistant may execute for one household
+    /// inside <see cref="RateLimitWindow"/>. A model that misreads a conversation (or a
+    /// prompt-injected one) must not be able to cycle the lights indefinitely; reads
+    /// (GetStatus) are exempt because they cannot affect the home.
+    /// </summary>
+    public const int MaxStateChangesPerWindow = 10;
+
+    public static readonly TimeSpan RateLimitWindow = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// Guard against the same command being repeated back-to-back, which is what a
+    /// retry loop or a duplicated LINE webhook delivery looks like.
+    /// </summary>
+    public const int MaxIdenticalRepeats = 3;
+
+    public static readonly TimeSpan RepeatWindow = TimeSpan.FromMinutes(2);
+
     public static bool IsStateChanging(DeviceAction action) =>
         action is DeviceAction.TurnOn or DeviceAction.TurnOff or DeviceAction.Toggle;
 

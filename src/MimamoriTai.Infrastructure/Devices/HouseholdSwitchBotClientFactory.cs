@@ -66,12 +66,18 @@ public sealed class HouseholdSwitchBotClientFactory(
                 Secret = secret
             });
 
-            return new SwitchBotClient(httpClientFactory.CreateClient(HttpClientName), perHousehold);
+            return new SwitchBotClient(
+                httpClientFactory.CreateClient(HttpClientName),
+                perHousehold,
+                loggerFactory.CreateLogger<SwitchBotClient>());
         }
 
         if (globalOptions.Value.AllowGlobalFallback && globalOptions.Value.IsConfigured)
         {
-            return new SwitchBotClient(httpClientFactory.CreateClient(HttpClientName), globalOptions);
+            return new SwitchBotClient(
+                httpClientFactory.CreateClient(HttpClientName),
+                globalOptions,
+                loggerFactory.CreateLogger<SwitchBotClient>());
         }
 
         return NotConfiguredSwitchBotClient.Instance;
@@ -87,7 +93,10 @@ public sealed class HouseholdSwitchBotClientFactory(
             Secret = secret
         });
 
-        return new SwitchBotClient(httpClientFactory.CreateClient(HttpClientName), adHoc);
+        return new SwitchBotClient(
+            httpClientFactory.CreateClient(HttpClientName),
+            adHoc,
+            loggerFactory.CreateLogger<SwitchBotClient>());
     }
 
     public async Task<IDeviceProvider> GetDeviceProviderAsync(Guid householdId, CancellationToken ct = default)

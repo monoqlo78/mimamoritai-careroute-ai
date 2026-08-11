@@ -63,13 +63,39 @@ SwitchBot OpenAPI v1.1 は、リクエストごとに以下の値を計算して
 デバイス種別（SwitchBotの `deviceType`/`remoteType` 文字列）は `MimamoriTai.Core.Domain.DeviceType` にマッピングされます。マッピング表に無い機種（Hub、Curtain、Meter、Lock、Robot Vacuumなど）は `DeviceType.Unknown` にフォールバックし、`DeviceSafetyPolicy` により自動的に `Restricted`（安全側）として扱われます。
 
 ## 4. 実機データをアプリへ反映する
-
 1. `SwitchBot:Enabled=true` とToken/Secretを設定して起動すると、`IDeviceProvider` が `SwitchBotDeviceProvider` に切り替わります。
 2. ダッシュボードの「実機を同期」ボタン（または `POST /api/devices/sync`）を押すと、`DeviceSyncService` が実機の機器一覧を取得し、`Devices` テーブルへ反映します（新規は追加、既存は名前/種別/部屋を更新、実機側から消えた機器は削除せず無効化）。同期は冪等で、変化が無ければ2回目の実行は何も変更しません。
 3. 同期後は `SwitchBotPollingBackgroundService` が既定5分間隔（`SwitchBot:PollIntervalMinutes`）で各機器のステータスをポーリングし、ON/OFF・人感・開閉の変化を検知したときだけ `DeviceEvent`（`Source=SwitchBotPoll`）を記録します。状態が変わらない限り重複イベントは作成されません。
 4. 同期は機器を発見するだけで、遠隔操作の許可（`RemoteControlAllowed`）は自動では付与されません。安全のため、AIチャット/LINEからの操作を許可する機器は運用者が個別に設定してください。
 5. `src/MimamoriTai.Web/Endpoints/WebhookEndpoints.cs` の `/webhooks/switchbot` エンドポイントは、現状はペイロードを読み捨てるだけのプレースホルダーです。SwitchBot Webhookからのリアルタイムイベント受信（ポーリングより低遅延）が必要な場合は、別途実装が必要です。
 
-## 5. デモ環境での代替
+## 5. 実機なしで「送信内容」を確認する
+
+実機やアカウントが無い段階でも、アプリがSwitchBotへ**実際に何を送るのか**を確認できます。`SwitchBotClient` は送信直前に、URL・ヘッダー・ボディを `Information` レベルでログ出力します。**Token と sign（署名）は必ず `***(len=N)` にマスク**されるため、ログを共有しても資格情報は漏れません。
+
+以下のテストを実行すると、実際のログ行が出力されます（`tests/MimamoriTai.Tests/SwitchBotClientTests.cs`）。
+
+```powershell
+dotnet test --filter "FullyQualifiedName~Outgoing_log_shows" --logger "console;verbosity=detailed"
+```
+
+実際の出力（2026-08-11 実測、ダミー資格情報を使用）:
+
+```text
+SwitchBot -> POST https://api.switch-bot.com/v1.1/devices/01-202410-12345678/commands | headers: Authorization: ***(len=27), sign: ***(len=44), t: 1786413337412, nonce: 6208875eb1b047a2be646fe29d2e04d7, Accept: application/json | body: {"command":"turnOff","parameter":"default","commandType":"command"}
+SwitchBot <- 200 POST /v1.1/devices/01-202410-12345678/commands (48 bytes)
+```
+
+このテスト一式では、以下も自動で検証しています。
+
+- 署名が `base64(HMACSHA256(secret, token + t + nonce))`（32バイト＝Base64で44文字）であること
+- `t` がUnixミリ秒であり、実時刻とのずれが1分未満であること
+- `nonce` がハイフン無し32文字のGUIDであり、**リクエストごとに署名が変わる**こと
+- 失敗レスポンス時の例外メッセージにTokenもSecretも含まれないこと
+- 未設定時はHTTP送信そのものが行われないこと
+
+実機を接続したあと、同じ形式のログが `dotnet run` のコンソールに出ます。「リビングの電気を消して」が実機まで届いたかは、`SwitchBot -> POST .../commands ... "command":"turnOff"` と、直後の `SwitchBot <- 200` で確認してください。
+
+## 6. デモ環境での代替
 
 実機が無い間は `MockDeviceProvider`（`src/MimamoriTai.Infrastructure/Devices/MockDeviceProvider.cs`）がインメモリで4台の擬似デバイス（リビング照明・寝室照明・扇風機・電気ストーブ）を提供し、認証情報を一切必要としません。電気ストーブは `SafetyClass.Restricted` に分類される機器で、AIからのON操作が拒否されることを実演するために含まれています。ダッシュボードの表示・自然言語操作・安全ガードレールのデモはすべてこのモックで完結します。

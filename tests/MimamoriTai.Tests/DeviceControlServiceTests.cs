@@ -1,3 +1,4 @@
+using MimamoriTai.Core.Abstractions;
 using MimamoriTai.Core.Application;
 using MimamoriTai.Core.Domain;
 using MimamoriTai.Infrastructure.Devices;
@@ -107,6 +108,76 @@ public class DeviceControlServiceTests
 
         Assert.False(outcome.Executed);
         Assert.Contains("遠隔操作が許可されていません", outcome.Message);
+    }
+
+    /// <summary>
+    /// Regression, found against real SwitchBot hardware: the cloud applies commands
+    /// asynchronously, so the status read issued straight after a turn-off still
+    /// reported "on". The service used to trust that read-back, which replied
+    /// "つけました" to a turn-off and recorded an "on" DeviceEvent -- feeding the
+    /// left-on detection with the exact opposite of what happened.
+    /// </summary>
+    [Fact]
+    public async Task TurnOff_Does_Not_Trust_A_Stale_Read_Back()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var provider = new StaleReadBackProvider("on");
+        var service = new DeviceControlService(db.Context, provider, TimeProvider.System);
+
+        var outcome = await service.ExecuteAsync(
+            db.HouseholdId, "living-light", DeviceAction.TurnOff, 0.95,
+            "リビングのライト消して", CommandSource.Web, null, null);
+
+        Assert.True(outcome.Executed);
+        Assert.Contains("消しました", outcome.Message);
+        Assert.DoesNotContain("つけました", outcome.Message);
+
+        var recorded = Assert.Single(db.Context.DeviceEvents);
+        Assert.Equal("off", recorded.State);
+    }
+
+    [Fact]
+    public async Task TurnOn_Does_Not_Trust_A_Stale_Read_Back()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var provider = new StaleReadBackProvider("off");
+        var service = new DeviceControlService(db.Context, provider, TimeProvider.System);
+
+        var outcome = await service.ExecuteAsync(
+            db.HouseholdId, "living-light", DeviceAction.TurnOn, 0.95,
+            "リビングのライトつけて", CommandSource.Web, null, null);
+
+        Assert.True(outcome.Executed);
+        Assert.Contains("つけました", outcome.Message);
+
+        var recorded = Assert.Single(db.Context.DeviceEvents);
+        Assert.Equal("on", recorded.State);
+    }
+
+    /// <summary>
+    /// Accepts every command but keeps reporting the state it had beforehand, the way
+    /// the SwitchBot cloud does for the first seconds after a command.
+    /// </summary>
+    private sealed class StaleReadBackProvider(string staleState) : IDeviceProvider
+    {
+        public DeviceProviderKind Kind => DeviceProviderKind.Mock;
+
+        public bool IsConfigured => true;
+
+        public Task<IReadOnlyList<ProviderDevice>> GetDevicesAsync(CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<ProviderDevice>>([]);
+
+        public Task<ProviderDeviceStatus?> GetStatusAsync(string externalDeviceId, CancellationToken ct = default) =>
+            Task.FromResult<ProviderDeviceStatus?>(new ProviderDeviceStatus(externalDeviceId, staleState, 42));
+
+        public Task<ProviderResult> TurnOnAsync(string externalDeviceId, CancellationToken ct = default) =>
+            Task.FromResult(ProviderResult.Ok());
+
+        public Task<ProviderResult> TurnOffAsync(string externalDeviceId, CancellationToken ct = default) =>
+            Task.FromResult(ProviderResult.Ok());
+
+        public Task<ProviderResult> ToggleAsync(string externalDeviceId, CancellationToken ct = default) =>
+            Task.FromResult(ProviderResult.Ok());
     }
 
     [Fact]

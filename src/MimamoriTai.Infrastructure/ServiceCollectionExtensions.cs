@@ -233,6 +233,10 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ActivityService>();
         services.AddScoped<RiskAssessmentService>();
         services.AddScoped<DeviceControlService>();
+
+        // Singleton on purpose: a confirmation is proposed on one HTTP request and
+        // answered on the next, so the pending action has to outlive the scope.
+        services.AddSingleton<IPendingActionStore, InMemoryPendingActionStore>();
         services.AddScoped<AssistantOrchestrator>();
         services.AddScoped<DeviceSyncService>();
         services.AddScoped<EventStreamPublishService>();

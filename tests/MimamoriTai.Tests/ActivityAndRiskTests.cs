@@ -142,6 +142,102 @@ public class RiskAssessmentServiceTests
 
         Assert.True(result.Score <= 100);
     }
+
+    private static DailyActivity Normal(DateOnly today) => Day(today, 6);
+
+    [Fact]
+    public void A_light_on_briefly_is_not_flagged()
+    {
+        var today = new DateOnly(2026, 8, 8);
+        var leftOn = new[] { new LeftOnDevice("リビング照明", DeviceType.Light, TimeSpan.FromHours(2)) };
+
+        var result = RiskAssessmentService.Evaluate(Normal(today), Baseline(today), new TimeOnly(20, 0), leftOn);
+
+        Assert.DoesNotContain("つけっぱなし", result.Reason);
+    }
+
+    [Fact]
+    public void A_light_on_all_day_is_flagged()
+    {
+        var today = new DateOnly(2026, 8, 8);
+        var leftOn = new[] { new LeftOnDevice("リビング照明", DeviceType.Light, TimeSpan.FromHours(13)) };
+
+        var result = RiskAssessmentService.Evaluate(Normal(today), Baseline(today), new TimeOnly(20, 0), leftOn);
+
+        Assert.Contains("つけっぱなし", result.Reason);
+        Assert.Contains("リビング照明", result.Reason);
+    }
+
+    [Fact]
+    public void At_night_a_light_is_flagged_much_sooner()
+    {
+        var today = new DateOnly(2026, 8, 8);
+        var leftOn = new[] { new LeftOnDevice("リビング照明", DeviceType.Light, TimeSpan.FromHours(5)) };
+
+        var atNight = RiskAssessmentService.Evaluate(Normal(today), Baseline(today), new TimeOnly(3, 0), leftOn);
+        var inTheDay = RiskAssessmentService.Evaluate(Normal(today), Baseline(today), new TimeOnly(15, 0), leftOn);
+
+        Assert.Contains("つけっぱなし", atNight.Reason);
+        Assert.DoesNotContain("つけっぱなし", inTheDay.Reason);
+    }
+
+    [Fact]
+    public void A_heater_left_on_is_treated_as_urgent()
+    {
+        var today = new DateOnly(2026, 8, 8);
+        var leftOn = new[] { new LeftOnDevice("電気ストーブ", DeviceType.Heater, TimeSpan.FromHours(3)) };
+
+        var result = RiskAssessmentService.Evaluate(Normal(today), Baseline(today), new TimeOnly(14, 0), leftOn);
+
+        Assert.Equal(RiskLevel.High, result.Level);
+        Assert.Contains("火災", result.Reason);
+    }
+
+    [Fact]
+    public void Several_lights_on_do_not_stack_into_a_false_emergency()
+    {
+        var today = new DateOnly(2026, 8, 8);
+        var many = Enumerable.Range(0, 6)
+            .Select(i => new LeftOnDevice($"照明{i}", DeviceType.Light, TimeSpan.FromHours(13)))
+            .ToArray();
+
+        var one = RiskAssessmentService.Evaluate(
+            Normal(today), Baseline(today), new TimeOnly(20, 0),
+            [new LeftOnDevice("照明0", DeviceType.Light, TimeSpan.FromHours(13))]);
+
+        var all = RiskAssessmentService.Evaluate(Normal(today), Baseline(today), new TimeOnly(20, 0), many);
+
+        Assert.Equal(one.Score, all.Score);
+        Assert.NotEqual(RiskLevel.High, all.Level);
+    }
+
+    [Fact]
+    public void The_heater_is_reported_ahead_of_a_light()
+    {
+        var today = new DateOnly(2026, 8, 8);
+        var leftOn = new[]
+        {
+            new LeftOnDevice("リビング照明", DeviceType.Light, TimeSpan.FromHours(20)),
+            new LeftOnDevice("電気ストーブ", DeviceType.Heater, TimeSpan.FromHours(3))
+        };
+
+        var result = RiskAssessmentService.Evaluate(Normal(today), Baseline(today), new TimeOnly(14, 0), leftOn);
+
+        Assert.Contains("電気ストーブ", result.Reason);
+        Assert.DoesNotContain("リビング照明", result.Reason);
+    }
+
+    [Fact]
+    public void Nothing_left_on_keeps_the_previous_behaviour()
+    {
+        var today = new DateOnly(2026, 8, 8);
+
+        var without = RiskAssessmentService.Evaluate(Normal(today), Baseline(today), new TimeOnly(20, 0));
+        var withEmpty = RiskAssessmentService.Evaluate(Normal(today), Baseline(today), new TimeOnly(20, 0), []);
+
+        Assert.Equal(without.Score, withEmpty.Score);
+        Assert.Equal(without.Reason, withEmpty.Reason);
+    }
 }
 
 public class HouseholdTimeTests
