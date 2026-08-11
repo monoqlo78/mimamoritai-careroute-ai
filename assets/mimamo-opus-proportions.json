@@ -1,0 +1,99 @@
+{
+  "_comment": "Mimamo mascot proportion table measured from the canonical reference poster. TOTAL HEIGHT = 1.0. This file is the single source of truth for all modelling; do not model without it.",
+  "reference_image": {
+    "file": "09f6fd54-74b5-4ae0-90b4-b88b0e31fccf-ChatGPT Image 2026-08-09 19_57_40.png",
+    "pixels": [1122, 1402],
+    "character_bbox_px": { "x0": 212, "y0": 255, "x1": 862, "y1": 1104 },
+    "centre_line_x_px": 555.0,
+    "note": "y grows downward in image space. Total height spans the antenna heart tip (y=255) to the sole (y=1104) = 849 px."
+  },
+
+  "height_axis": {
+    "blender": "Z (Z-up). Feet plane = Z 0.0, character grows to +Z.",
+    "gltf_export": "Y (Y-up, export_yup=True). Feet plane = Y 0.0.",
+    "total_height_m": 1.5,
+    "metres_per_reference_pixel": 0.0017667844522968198,
+    "reference_total_height_px": 849.0
+  },
+
+  "_ratio_definition": "ratio = (sole_y_px - landmark_y_px) / 849. 0.0 = sole, 1.0 = antenna heart tip.",
+
+  "height_ratios": {
+    "antenna_heart_top":   { "ref_y_px": 255.0,  "ratio": 1.000000, "metres": 1.500000 },
+    "antenna_heart_bottom":{ "ref_y_px": 318.0,  "ratio": 0.925795, "metres": 1.388693 },
+    "antenna_stem_base":   { "ref_y_px": 345.0,  "ratio": 0.894003, "metres": 1.341004 },
+    "head_crown":          { "ref_y_px": 378.0,  "ratio": 0.855124, "metres": 1.282686 },
+    "forehead_heart_centre":{"ref_y_px": 432.0,  "ratio": 0.791519, "metres": 1.187279 },
+    "crest_bottom":        { "ref_y_px": 516.0,  "ratio": 0.692580, "metres": 1.038869 },
+    "brow_centre":         { "ref_y_px": 523.5,  "ratio": 0.683746, "metres": 1.025619 },
+    "eye_top":             { "ref_y_px": 562.0,  "ratio": 0.638398, "metres": 0.957597 },
+    "eye_centre":          { "ref_y_px": 607.5,  "ratio": 0.584806, "metres": 0.877209 },
+    "eye_bottom":          { "ref_y_px": 653.0,  "ratio": 0.531213, "metres": 0.796820 },
+    "nose":                { "ref_y_px": 646.0,  "ratio": 0.539458, "metres": 0.809187 },
+    "mouth_top":           { "ref_y_px": 661.0,  "ratio": 0.521790, "metres": 0.782685 },
+    "mouth_centre":        { "ref_y_px": 674.5,  "ratio": 0.505889, "metres": 0.758834 },
+    "mouth_bottom":        { "ref_y_px": 688.0,  "ratio": 0.489988, "metres": 0.734982 },
+    "blush_centre":        { "ref_y_px": 665.0,  "ratio": 0.517079, "metres": 0.775618 },
+    "chin":                { "ref_y_px": 735.0,  "ratio": 0.434629, "metres": 0.651943 },
+    "neck_top":            { "ref_y_px": 700.0,  "ratio": 0.475854, "metres": 0.713781 },
+    "neck_base":           { "ref_y_px": 748.0,  "ratio": 0.419317, "metres": 0.628976 },
+    "shoulder":            { "ref_y_px": 780.0,  "ratio": 0.381625, "metres": 0.572438 },
+    "chest_heart_top":     { "ref_y_px": 768.0,  "ratio": 0.395760, "metres": 0.593640 },
+    "chest_heart_centre":  { "ref_y_px": 833.5,  "ratio": 0.318610, "metres": 0.477915 },
+    "chest_heart_bottom":  { "ref_y_px": 899.0,  "ratio": 0.241461, "metres": 0.362191 },
+    "waist_belt_centre":   { "ref_y_px": 889.5,  "ratio": 0.252650, "metres": 0.378975 },
+    "hip":                 { "ref_y_px": 910.0,  "ratio": 0.228504, "metres": 0.342756 },
+    "knee":                { "ref_y_px": 958.0,  "ratio": 0.171967, "metres": 0.257951 },
+    "boot_cuff_top":       { "ref_y_px": 995.0,  "ratio": 0.128386, "metres": 0.192579 },
+    "sole":                { "ref_y_px": 1104.0, "ratio": 0.000000, "metres": 0.000000 },
+    "wrist_left_waving":   { "ref_y_px": 772.0,  "ratio": 0.391048, "metres": 0.586572 },
+    "wrist_right_phone":   { "ref_y_px": 856.0,  "ratio": 0.292109, "metres": 0.438163 }
+  },
+
+  "width_ratios": {
+    "_definition": "width / total_height (849 px). Widths are full widths, not half-widths.",
+    "head_width":              { "ref_px": 415.0, "ratio": 0.488811, "metres": 0.733216 },
+    "head_width_with_earpods": { "ref_px": 600.0, "ratio": 0.706714, "metres": 1.060071 },
+    "head_height":             { "ref_px": 357.0, "ratio": 0.420495, "metres": 0.630742 },
+    "eye_spacing_centres":     { "ref_px": 188.0, "ratio": 0.221437, "metres": 0.332155 },
+    "eye_width":               { "ref_px":  83.0, "ratio": 0.097762, "metres": 0.146643 },
+    "eye_height":              { "ref_px":  91.0, "ratio": 0.107185, "metres": 0.160777 },
+    "brow_width":              { "ref_px":  38.0, "ratio": 0.044758, "metres": 0.067138 },
+    "mouth_width":             { "ref_px":  52.0, "ratio": 0.061249, "metres": 0.091873 },
+    "shoulder_width":          { "ref_px": 206.0, "ratio": 0.242638, "metres": 0.363957 },
+    "torso_max_width":         { "ref_px": 226.0, "ratio": 0.266196, "metres": 0.399293 },
+    "waist_width":             { "ref_px": 227.0, "ratio": 0.267373, "metres": 0.401060 },
+    "hip_width":               { "ref_px": 224.0, "ratio": 0.263839, "metres": 0.395759 },
+    "foot_span_outer":         { "ref_px": 260.0, "ratio": 0.306243, "metres": 0.459364 },
+    "antenna_heart_width":     { "ref_px": 105.0, "ratio": 0.123675, "metres": 0.185512 },
+    "earpod_width":            { "ref_px": 110.0, "ratio": 0.129564, "metres": 0.194346 },
+    "silhouette_width":        { "ref_px": 650.0, "ratio": 0.765607, "metres": 1.148410 }
+  },
+
+  "derived_checks": {
+    "head_width_over_head_height": 1.162465,
+    "head_height_over_total_height": 0.420495,
+    "head_width_over_total_height": 0.488811,
+    "head_width_over_crown_to_sole": 0.571625,
+    "eye_width_over_head_width": 0.200000,
+    "eye_height_over_eye_width": 1.096386,
+    "eye_spacing_over_head_width": 0.453012,
+    "eye_centre_below_crown_over_head_height": 0.642857,
+    "crown_to_sole_px": 726.0,
+    "_note": "The brief's quoted 'reference head_w/height ~0.625' corresponds to head_width_with_earpods / crown_to_sole = 600/726 = 0.826, or head_width / head_height style metrics. The authoritative values are the explicitly named ratios above."
+  },
+
+  "x_centres_ref_px": {
+    "body_centre": 555.0,
+    "eye_L_screen_left": 461.0,
+    "eye_R_screen_right": 649.0,
+    "earpod_L_screen_left": 310.0,
+    "earpod_R_screen_right": 800.0,
+    "shoulder_L_screen_left": 452.0,
+    "shoulder_R_screen_right": 658.0,
+    "wrist_L_screen_left": 336.0,
+    "wrist_R_screen_right": 818.0,
+    "leg_centre_offset": 62.0,
+    "phone_centre": 749.0
+  }
+}

@@ -1,0 +1,305 @@
+@page "/settings/switchbot"
+@rendermode InteractiveServer
+@using MimamoriTai.Core.Abstractions
+@using MimamoriTai.Core.Application
+@using MimamoriTai.Core.Domain
+@inject HouseholdAccessService HouseholdAccess
+@inject SwitchBotConnectionService ConnectionService
+@inject IHouseholdSwitchBotClientFactory ClientFactory
+@inject LineLinkCodeService LineLinkCodeService
+@inject ICurrentUserAccessor CurrentUserAccessor
+@inject IAppDbContext Db
+@inject TimeProvider Clock
+
+<PageTitle>SwitchBot 設定 / 見守り隊</PageTitle>
+
+<header class="topbar">
+    <div class="brand">
+        <span class="brand-mark" aria-hidden="true">み</span>
+        <div>
+            <h1>SwitchBot 設定</h1>
+            <p>ご家庭のSwitchBotアカウントを接続します</p>
+        </div>
+    </div>
+    <div class="topbar-actions">
+        <a class="ghost small" href="/">← ダッシュボードに戻る</a>
+    </div>
+</header>
+
+@if (_anonymous)
+{
+    <div class="notice notice-warn" role="status" aria-live="polite">
+        <span class="notice-icon">⚠</span>
+        <span>この画面を利用するにはサインインが必要です。</span>
+    </div>
+}
+else if (!_isOwner)
+{
+    <div class="notice notice-warn" role="status" aria-live="polite">
+        <span class="notice-icon">⚠</span>
+        <span>この設定を変更できるのは、ご家庭のオーナーのみです。</span>
+    </div>
+}
+else
+{
+    @if (_notice is not null)
+    {
+        <div class="notice notice-@_noticeKind" role="status" aria-live="polite">
+            <span class="notice-icon">@(_noticeKind == "ok" ? "✓" : "⚠")</span>
+            <span>@_notice</span>
+            <button class="notice-close" @onclick="() => _notice = null" aria-label="閉じる">✕</button>
+        </div>
+    }
+
+    @if (_busy)
+    {
+        <div class="busy-bar" role="status" aria-live="polite">処理中…</div>
+    }
+
+    <article class="card">
+        <p class="eyebrow">接続状況</p>
+        <h2>@StatusLabel(_status?.Status)</h2>
+        <p class="muted">
+            最終確認: @FormatLocal(_status?.LastValidatedAtUtc) ・ 最終同期: @FormatLocal(_status?.LastSyncAtUtc)
+        </p>
+        @if (!string.IsNullOrEmpty(_status?.LastErrorMessage))
+        {
+            <p class="notice-warn">@_status.LastErrorMessage</p>
+        }
+
+        @if (_status?.Status == SwitchBotConnectionStatus.Connected)
+        {
+            <div class="device-actions">
+                <button class="secondary-button" @onclick="SyncNowAsync" disabled="@_busy">今すぐ同期する</button>
+                <button class="secondary-button" @onclick="DisconnectAsync" disabled="@_busy">接続を解除する</button>
+            </div>
+        }
+    </article>
+
+    <article class="card">
+        <p class="eyebrow">トークン・シークレットの入力</p>
+        <h2>@(_status?.Status == SwitchBotConnectionStatus.Connected ? "接続情報を更新する" : "SwitchBotに接続する")</h2>
+        <p class="muted">
+            SwitchBotアプリの「プロフィール」→「設定」→「App Version」を10回前後タップして開発者向けオプションを表示し、
+            発行されたトークンとシークレットキーをここに入力してください（実機のタップ回数には個体差があります）。
+            保存前に実際にSwitchBot APIへ接続できるか確認します。保存後はトークン・シークレットの内容を再表示することはありません。
+        </p>
+
+        <div class="settings-form">
+            <label>
+                トークン
+                <input type="password" autocomplete="off" @bind="_token" disabled="@_busy" />
+            </label>
+            <label>
+                シークレット
+                <input type="password" autocomplete="off" @bind="_secret" disabled="@_busy" />
+            </label>
+            <button class="primary-button" @onclick="SaveAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_token) || string.IsNullOrWhiteSpace(_secret))">
+                確認して保存する
+            </button>
+        </div>
+    </article>
+
+    <article class="card">
+        <p class="eyebrow">LINE連携</p>
+        <h2>LINEでお知らせを受け取る</h2>
+        <p class="muted">
+            見守り隊の公式LINEアカウントを友だち追加したあと、下のボタンでコードを発行し、
+            LINEのトーク画面で「連携 123456」のように送信してください（123456の部分は発行されたコードに置き換えます）。
+            コードは発行から10分間・1回のみ有効です。
+        </p>
+
+        @if (_lineNotice is not null)
+        {
+            <p class="notice-@_lineNoticeKind">@_lineNotice</p>
+        }
+
+        @if (_lineCode is not null)
+        {
+            <div class="line-code-display">
+                <span class="line-code-value">連携 @_lineCode</span>
+                <span class="muted">有効期限: @FormatLocal(_lineCodeExpiresAtUtc) まで</span>
+            </div>
+        }
+
+        <div class="device-actions">
+            <button class="secondary-button" @onclick="GenerateLineCodeAsync" disabled="@_lineBusy">
+                連携コードを発行する
+            </button>
+        </div>
+    </article>
+}
+
+@code {
+    private Guid _householdId;
+    private bool _anonymous;
+    private bool _isOwner;
+    private SwitchBotConnectionStatusView? _status;
+    private string _token = string.Empty;
+    private string _secret = string.Empty;
+    private bool _busy;
+    private string? _notice;
+    private string _noticeKind = "ok";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var user = CurrentUserAccessor.Current;
+        if (user is null)
+        {
+            _anonymous = true;
+            return;
+        }
+
+        // Mirrors Home.razor's "実機につなぐ" flow: idempotently resolve (or create)
+        // the current user's own Production household -- this is the household this
+        // page configures. EnsureProductionHouseholdAsync always grants the caller an
+        // Owner membership, so _isOwner is trivially true right after this call.
+        _householdId = await HouseholdAccess.EnsureProductionHouseholdAsync("わが家");
+        _isOwner = await ConnectionService.IsOwnerAsync(_householdId, user.AppUserId);
+
+        if (_isOwner)
+        {
+            await ReloadStatusAsync();
+        }
+    }
+
+    private async Task ReloadStatusAsync() => _status = await ConnectionService.GetStatusAsync(_householdId);
+
+    private async Task SaveAsync()
+    {
+        if (_busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        StateHasChanged();
+
+        try
+        {
+            var outcome = await ConnectionService.ValidateAndSaveAsync(_householdId, _token, _secret);
+            // Discard the entered values from page state immediately, whether the
+            // save succeeded or not -- they must never linger in memory longer than
+            // this single operation, and are never re-displayed either way.
+            _token = string.Empty;
+            _secret = string.Empty;
+
+            if (outcome == SwitchBotConnectionSaveOutcome.Saved)
+            {
+                _notice = "SwitchBotへの接続を確認し、保存しました。";
+                _noticeKind = "ok";
+            }
+            else
+            {
+                _notice = "SwitchBotへの接続を確認できませんでした。トークン・シークレットをご確認ください。";
+                _noticeKind = "warn";
+            }
+
+            await ReloadStatusAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task DisconnectAsync()
+    {
+        if (_busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        StateHasChanged();
+
+        try
+        {
+            await ConnectionService.DisconnectAsync(_householdId);
+            _notice = "接続を解除しました。";
+            _noticeKind = "ok";
+            await ReloadStatusAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task SyncNowAsync()
+    {
+        if (_busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        StateHasChanged();
+
+        try
+        {
+            // Household-scoped provider resolved fresh for this single call -- never
+            // the ambient DataSourceAwareDeviceProvider/global SwitchBotOptions path,
+            // so this always syncs with THIS household's own stored credentials.
+            var provider = await ClientFactory.GetDeviceProviderAsync(_householdId);
+            if (!provider.IsConfigured)
+            {
+                _notice = "SwitchBotが未接続のため同期できません。";
+                _noticeKind = "warn";
+                return;
+            }
+
+            var syncService = new DeviceSyncService(Db, provider, Clock);
+            var result = await syncService.SyncAsync(_householdId);
+            await ConnectionService.MarkSyncedAsync(_householdId);
+
+            _notice = $"同期しました（追加 {result.Added}／更新 {result.Updated}／無効化 {result.Deactivated}）。";
+            _noticeKind = "ok";
+            await ReloadStatusAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private static string StatusLabel(SwitchBotConnectionStatus? status) => status switch
+    {
+        SwitchBotConnectionStatus.Connected => "接続済み",
+        SwitchBotConnectionStatus.Error => "エラー",
+        _ => "未接続"
+    };
+
+    private static string FormatLocal(DateTimeOffset? utc) =>
+        utc is null ? "—" : HouseholdTime.ToLocal(utc.Value).ToString("M/d HH:mm");
+
+    private string? _lineCode;
+    private DateTimeOffset? _lineCodeExpiresAtUtc;
+    private bool _lineBusy;
+    private string? _lineNotice;
+    private string _lineNoticeKind = "ok";
+
+    private async Task GenerateLineCodeAsync()
+    {
+        if (_lineBusy)
+        {
+            return;
+        }
+
+        _lineBusy = true;
+        StateHasChanged();
+
+        try
+        {
+            var generated = await LineLinkCodeService.GenerateCodeAsync(_householdId);
+            _lineCode = generated.Code;
+            _lineCodeExpiresAtUtc = generated.ExpiresAtUtc;
+            _lineNotice = "コードを発行しました。LINEのトーク画面で送信してください。";
+            _lineNoticeKind = "ok";
+        }
+        finally
+        {
+            _lineBusy = false;
+        }
+    }
+}

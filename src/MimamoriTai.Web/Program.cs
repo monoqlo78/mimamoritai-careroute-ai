@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using MimamoriTai.Infrastructure;
 using MimamoriTai.Infrastructure.Data;
+using MimamoriTai.Infrastructure.Security;
 using MimamoriTai.Web.Components;
 using MimamoriTai.Web.Endpoints;
 using MimamoriTai.Web.Services;
@@ -13,13 +15,33 @@ builder.Services.AddRazorComponents()
 builder.Services.AddMimamoriTaiInfrastructure(builder.Configuration);
 builder.Services.AddMimamoriTaiAuthentication(builder.Configuration);
 builder.Services.AddScoped<DashboardService>();
+builder.Services.AddScoped<DeviceDetailService>();
+builder.Services.AddScoped<AdminConsoleService>();
 builder.Services.AddOpenApi();
 builder.Services.AddHostedService<WatchAlertBackgroundService>();
 builder.Services.AddHostedService<SwitchBotPollingBackgroundService>();
 builder.Services.AddHostedService<DemoDataTopUpBackgroundService>();
 builder.Services.AddHostedService<EventStreamPublishBackgroundService>();
+builder.Services.AddHostedService<PlugMiniReadingPublishBackgroundService>();
 
 var app = builder.Build();
+
+// Fail fast rather than silently running with an ephemeral Data Protection key
+// ring: per-household SwitchBot credentials are encrypted with this key ring, so
+// losing it on every restart/redeploy in a real (non-Development) environment
+// would make every already-saved SwitchBotConnection permanently undecryptable.
+// Local dev may rely on ASP.NET Core's own default local key ring.
+if (!app.Environment.IsDevelopment())
+{
+    var dataProtectionOptions = app.Services.GetRequiredService<IOptions<MimamoriDataProtectionOptions>>().Value;
+    if (!dataProtectionOptions.IsDurablePathConfigured)
+    {
+        throw new InvalidOperationException(
+            "DataProtection:KeyDirectory must be configured with a durable, persistent path in non-Development " +
+            "environments (see docs/SECURITY.md). Without it, the Data Protection key ring is ephemeral and every " +
+            "per-household SwitchBot credential encrypted under it becomes unreadable after the next restart or deploy.");
+    }
+}
 
 if (!app.Environment.IsDevelopment())
 {
@@ -54,6 +76,7 @@ app.MapWebhookEndpoints();
 app.MapSimulatorEndpoints();
 app.MapAlertEndpoints();
 app.MapDeviceSyncEndpoints();
+app.MapSwitchBotConnectionEndpoints();
 app.MapAuthEndpoints();
 
 await InitializeDatabaseAsync(app);

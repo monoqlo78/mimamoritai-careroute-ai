@@ -33,6 +33,21 @@ public sealed class LineOptions
     /// <summary>Minutes between automatic background evaluations of the watch alert.</summary>
     public double AlertPollIntervalMinutes { get; set; } = 5;
 
+    /// <summary>
+    /// Controls the webhook's behavior for a LINE source (userId/groupId) that has
+    /// never been linked to any household via a link code or an existing active
+    /// LineRecipient row. When true, that source is bound to
+    /// HouseholdAccessService.ResolveDefaultAsync (the current demo/local
+    /// single-user experience). When false (the default, and the only safe setting
+    /// once more than one real household exists), an unlinked source is never
+    /// silently attached to any household: it is only ever told, via the follow/
+    /// message reply, to send "連携 123456" using a code generated from the
+    /// Settings UI. Already-linked sources always resolve their own household
+    /// regardless of this flag -- this flag only controls the fallback for
+    /// genuinely unknown sources.
+    /// </summary>
+    public bool AllowDefaultHouseholdFallback { get; set; }
+
     public bool IsConfigured =>
         Enabled
         && !string.IsNullOrWhiteSpace(ChannelAccessToken)

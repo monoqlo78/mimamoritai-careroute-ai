@@ -17,11 +17,22 @@ public sealed class FakeSwitchBotClient : ISwitchBotClient
 
     public List<(string DeviceId, string Command, string Parameter, string CommandType)> SentCommands { get; } = [];
 
+    /// <summary>
+    /// Every deviceId passed to <see cref="GetDeviceStatusRawAsync"/>, in call order.
+    /// Lets tests assert the transport-level call count for GET .../status directly
+    /// (e.g. that SwitchBotPollingCycleService/SwitchBotDeviceProvider never call the
+    /// live status endpoint twice for the same device in one poll cycle).
+    /// </summary>
+    public List<string> StatusRequests { get; } = [];
+
     public Task<string> GetDeviceListRawAsync(CancellationToken ct = default) =>
         Task.FromResult(DeviceListResponse);
 
-    public Task<string> GetDeviceStatusRawAsync(string deviceId, CancellationToken ct = default) =>
-        Task.FromResult(DeviceStatusResponse);
+    public Task<string> GetDeviceStatusRawAsync(string deviceId, CancellationToken ct = default)
+    {
+        StatusRequests.Add(deviceId);
+        return Task.FromResult(DeviceStatusResponse);
+    }
 
     public Task<string> SendCommandRawAsync(string deviceId, string command, string parameter, string commandType, CancellationToken ct = default)
     {
@@ -266,4 +277,152 @@ public class SwitchBotDeviceProviderTests
         Assert.False(result.Success);
         Assert.Empty(client.SentCommands);
     }
+
+    [Fact]
+    public async Task GetPlugMiniReadingAsync_Maps_Voltage_Current_Weight_And_ElectricityOfDay()
+    {
+        var client = new FakeSwitchBotClient
+        {
+            DeviceStatusResponse = """
+                {"statusCode":100,"message":"success","body":{"deviceId":"BBBBBBBBBBBB","deviceType":"Plug Mini (JP)","voltage":100.5,"weight":12.3,"electricityOfDay":30,"electricCurrent":0.5}}
+                """
+        };
+        var provider = Create(client);
+
+        var reading = await provider.GetPlugMiniReadingAsync("BBBBBBBBBBBB");
+
+        Assert.NotNull(reading);
+        Assert.Equal("BBBBBBBBBBBB", reading!.ExternalDeviceId);
+        Assert.Equal(100.5, reading.VoltageV);
+        Assert.Equal(0.5, reading.CurrentMa);
+        Assert.Equal(12.3, reading.DailyEnergyWh);
+        Assert.Equal(30, reading.UsageMinutesToday);
+        // ApproxWatts = voltage * current / 1000 (power-factor-1 approximation).
+        Assert.Equal(100.5 * 0.5 / 1000, reading.ApproxWatts);
+    }
+
+    [Fact]
+    public async Task GetPlugMiniReadingAsync_Returns_Null_For_A_Non_PlugMini_Device()
+    {
+        // A plain Bot reports only "power"; none of the Plug Mini telemetry fields are present.
+        var client = new FakeSwitchBotClient
+        {
+            DeviceStatusResponse = """{"statusCode":100,"message":"success","body":{"deviceId":"AAAAAAAAAAAA","deviceType":"Bot","power":"on"}}"""
+        };
+        var provider = Create(client);
+
+        var reading = await provider.GetPlugMiniReadingAsync("AAAAAAAAAAAA");
+
+        Assert.Null(reading);
+    }
+
+    [Fact]
+    public async Task GetPlugMiniReadingAsync_Returns_Null_When_StatusCode_Is_Not_100()
+    {
+        var client = new FakeSwitchBotClient
+        {
+            DeviceStatusResponse = """{"statusCode":401,"message":"Unauthorized","body":{}}"""
+        };
+        var provider = Create(client);
+
+        var reading = await provider.GetPlugMiniReadingAsync("BBBBBBBBBBBB");
+
+        Assert.Null(reading);
+    }
+
+    [Fact]
+    public async Task GetPlugMiniReadingAsync_Returns_Null_And_Does_Not_Throw_On_Malformed_Json()
+    {
+        var client = new FakeSwitchBotClient { DeviceStatusResponse = "not json at all" };
+        var provider = Create(client);
+
+        var reading = await provider.GetPlugMiniReadingAsync("BBBBBBBBBBBB");
+
+        Assert.Null(reading);
+    }
+
+    [Fact]
+    public async Task GetPlugMiniReadingAsync_Handles_Partial_Telemetry_Gracefully()
+    {
+        // Only electricCurrent present (e.g. a transient/incomplete poll): still
+        // recognized as Plug Mini telemetry, remaining fields surface as null rather
+        // than the whole reading being discarded.
+        var client = new FakeSwitchBotClient
+        {
+            DeviceStatusResponse = """{"statusCode":100,"message":"success","body":{"deviceId":"BBBBBBBBBBBB","deviceType":"Plug Mini (JP)","electricCurrent":0.2}}"""
+        };
+        var provider = Create(client);
+
+        var reading = await provider.GetPlugMiniReadingAsync("BBBBBBBBBBBB");
+
+        Assert.NotNull(reading);
+        Assert.Null(reading!.VoltageV);
+        Assert.Equal(0.2, reading.CurrentMa);
+        Assert.Null(reading.DailyEnergyWh);
+        Assert.Null(reading.UsageMinutesToday);
+        Assert.Null(reading.ApproxWatts); // needs both voltage AND current to compute
+    }
+
+    [Fact]
+    public async Task GetStatusSnapshotAsync_Issues_Exactly_One_Status_Request_For_A_Plug_Mini_Device()
+    {
+        var client = new FakeSwitchBotClient
+        {
+            DeviceStatusResponse = """
+                {"statusCode":100,"message":"success","body":{"deviceId":"BBBBBBBBBBBB","deviceType":"Plug Mini (JP)","voltage":100.5,"weight":12.3,"electricityOfDay":30,"electricCurrent":0.5}}
+                """
+        };
+        var provider = Create(client);
+
+        var snapshot = await provider.GetStatusSnapshotAsync("BBBBBBBBBBBB");
+
+        // Exactly one call to the underlying transport for this one snapshot call --
+        // the whole point of GetStatusSnapshotAsync is to avoid the previous
+        // double-fetch (one for GetStatusAsync, one for GetPlugMiniReadingAsync).
+        Assert.Single(client.StatusRequests);
+        Assert.Equal("BBBBBBBBBBBB", client.StatusRequests[0]);
+
+        // Both projections must come out of that single request.
+        Assert.NotNull(snapshot.Status);
+        Assert.Equal("on", snapshot.Status!.State); // electricCurrent > 0 => on
+        Assert.NotNull(snapshot.PlugMiniReading);
+        Assert.Equal(100.5, snapshot.PlugMiniReading!.VoltageV);
+        Assert.Equal(0.5, snapshot.PlugMiniReading.CurrentMa);
+        Assert.Equal(12.3, snapshot.PlugMiniReading.DailyEnergyWh);
+        Assert.Equal(30, snapshot.PlugMiniReading.UsageMinutesToday);
+    }
+
+    [Fact]
+    public async Task GetStatusSnapshotAsync_Returns_Null_PlugMiniReading_And_One_Request_For_A_Non_PlugMini_Device()
+    {
+        var client = new FakeSwitchBotClient
+        {
+            DeviceStatusResponse = """{"statusCode":100,"message":"success","body":{"deviceId":"AAAAAAAAAAAA","deviceType":"Bot","power":"on"}}"""
+        };
+        var provider = Create(client);
+
+        var snapshot = await provider.GetStatusSnapshotAsync("AAAAAAAAAAAA");
+
+        Assert.Single(client.StatusRequests); // one request, not a second one to "check" for Plug Mini fields
+        Assert.NotNull(snapshot.Status);
+        Assert.Equal("on", snapshot.Status!.State);
+        Assert.Null(snapshot.PlugMiniReading); // no Plug-specific work/data for a non-Plug-Mini device
+    }
+
+    [Fact]
+    public async Task GetStatusSnapshotAsync_Returns_All_Null_When_StatusCode_Is_Not_100()
+    {
+        var client = new FakeSwitchBotClient
+        {
+            DeviceStatusResponse = """{"statusCode":401,"message":"Unauthorized","body":{}}"""
+        };
+        var provider = Create(client);
+
+        var snapshot = await provider.GetStatusSnapshotAsync("BBBBBBBBBBBB");
+
+        Assert.Single(client.StatusRequests);
+        Assert.Null(snapshot.Status);
+        Assert.Null(snapshot.PlugMiniReading);
+    }
 }
+

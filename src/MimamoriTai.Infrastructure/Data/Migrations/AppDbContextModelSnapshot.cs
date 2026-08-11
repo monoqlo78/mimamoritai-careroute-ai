@@ -429,6 +429,41 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                     b.ToTable("HouseholdMembers", "mimamori");
                 });
 
+            modelBuilder.Entity("MimamoriTai.Core.Domain.LineLinkCode", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int");
+
+                    b.Property<string>("CodeHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("ExpiresAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<Guid>("HouseholdId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset?>("UsedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("HouseholdId");
+
+                    b.HasIndex("CodeHash", "UsedAtUtc", "ExpiresAtUtc");
+
+                    b.ToTable("LineLinkCodes", "mimamori");
+                });
+
             modelBuilder.Entity("MimamoriTai.Core.Domain.LineRecipient", b =>
                 {
                     b.Property<Guid>("Id")
@@ -493,6 +528,54 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                     b.ToTable("People", "mimamori");
                 });
 
+            modelBuilder.Entity("MimamoriTai.Core.Domain.PlugMiniReading", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<double?>("ApproxWatts")
+                        .HasColumnType("float");
+
+                    b.Property<double?>("CurrentMa")
+                        .HasColumnType("float");
+
+                    b.Property<double?>("DailyEnergyWh")
+                        .HasColumnType("float");
+
+                    b.Property<Guid>("DeviceId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<Guid>("HouseholdId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("OccurredAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("PublishedToStreamAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset>("ReceivedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<int?>("UsageMinutesToday")
+                        .HasColumnType("int");
+
+                    b.Property<double?>("VoltageV")
+                        .HasColumnType("float");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DeviceId");
+
+                    b.HasIndex("PublishedToStreamAtUtc");
+
+                    b.HasIndex("HouseholdId", "DeviceId", "OccurredAtUtc")
+                        .IsUnique();
+
+                    b.ToTable("PlugMiniReadings", "mimamori");
+                });
+
             modelBuilder.Entity("MimamoriTai.Core.Domain.RiskAssessment", b =>
                 {
                     b.Property<Guid>("Id")
@@ -526,6 +609,54 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                     b.HasIndex("HouseholdId", "CreatedAtUtc");
 
                     b.ToTable("RiskAssessments", "mimamori");
+                });
+
+            modelBuilder.Entity("MimamoriTai.Core.Domain.SwitchBotConnection", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("EncryptedSecret")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<string>("EncryptedToken")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)");
+
+                    b.Property<Guid>("HouseholdId")
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("LastErrorMessage")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)");
+
+                    b.Property<DateTimeOffset?>("LastSyncAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<DateTimeOffset?>("LastValidatedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("datetimeoffset");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("HouseholdId")
+                        .IsUnique();
+
+                    b.ToTable("SwitchBotConnections", "mimamori");
                 });
 
             modelBuilder.Entity("MimamoriTai.Core.Domain.WatchAlert", b =>
@@ -636,6 +767,17 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                     b.Navigation("Household");
                 });
 
+            modelBuilder.Entity("MimamoriTai.Core.Domain.LineLinkCode", b =>
+                {
+                    b.HasOne("MimamoriTai.Core.Domain.Household", "Household")
+                        .WithMany()
+                        .HasForeignKey("HouseholdId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Household");
+                });
+
             modelBuilder.Entity("MimamoriTai.Core.Domain.LineRecipient", b =>
                 {
                     b.HasOne("MimamoriTai.Core.Domain.Household", "Household")
@@ -651,6 +793,28 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                 {
                     b.HasOne("MimamoriTai.Core.Domain.Household", "Household")
                         .WithMany("People")
+                        .HasForeignKey("HouseholdId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Household");
+                });
+
+            modelBuilder.Entity("MimamoriTai.Core.Domain.PlugMiniReading", b =>
+                {
+                    b.HasOne("MimamoriTai.Core.Domain.Device", "Device")
+                        .WithMany()
+                        .HasForeignKey("DeviceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Device");
+                });
+
+            modelBuilder.Entity("MimamoriTai.Core.Domain.SwitchBotConnection", b =>
+                {
+                    b.HasOne("MimamoriTai.Core.Domain.Household", "Household")
+                        .WithMany()
                         .HasForeignKey("HouseholdId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();

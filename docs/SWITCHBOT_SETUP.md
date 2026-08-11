@@ -1,13 +1,23 @@
 # SwitchBot API セットアップ ＆ 実装状況
 
+## 0. 本番運用: 世帯ごとにWeb UIから接続する（推奨）
+
+**本番環境では、Token/SecretはApp Serviceの設定や `dotnet user-secrets` には入れません。** 各世帯のオーナーが、ログイン後に **「LINE連携設定」画面（`/settings/switchbot`）** で自分のSwitchBot Token/Secretを直接入力します。入力された値は保存前に `GET /v1.1/devices` で疎通確認され、成功した場合のみ ASP.NET Core Data Protection で暗号化された状態で世帯ごとに（`SwitchBotConnection` テーブルへ）保存されます。平文はデータベースにもログにも一切残りません。詳細は `docs/SECURITY.md`「世帯ごとのSwitchBot認証情報」を参照してください。
+
+以下の「1. SwitchBotアプリでToken/Secretを取得する」の手順自体は、本番でもローカル開発でも同じです（取得したToken/Secretの**入力先**が異なるだけです）。
+
 ## 1. SwitchBotアプリでToken/Secretを取得する
 
 1. スマートフォンの **SwitchBot アプリ** を開きます。
 2. 「プロフィール」タブ →「設定」（Preferences）を開きます。
-3. 「App Version」の項目を **10回連続でタップ** します（開発者向け画面が有効化されます）。
+3. 「App Version」の項目を **10回前後連続でタップ** します（開発者向け画面が有効化されます。タップ回数は実機・アプリバージョンによって多少前後することがあります）。
 4. 表示された「Developer Options（開発者向けオプション）」を開き、以下を取得します。
-   - **Token** → `SwitchBot:Token`
-   - **Secret** → `SwitchBot:Secret`
+   - **Token**
+   - **Secret**
+
+**本番（各世帯のオーナー）**: 上記で取得したToken/Secretを、ログイン後に開く「LINE連携設定」画面（`/settings/switchbot`）にそのまま貼り付けて保存してください。
+
+**ローカル開発（グローバル/ブートストラップ用の唯一の経路）**: 開発時に世帯ごとの設定UIを経由せず素早く動作確認したい場合のみ、以下のUser Secretsを使えます。
 
 ```powershell
 cd src/MimamoriTai.Web
@@ -16,6 +26,8 @@ dotnet user-secrets set "SwitchBot:Secret" "<your-switchbot-secret>"
 ```
 
 `SwitchBot:Enabled` を `true` にすることも忘れないでください（`appsettings.Development.json` または環境変数 `SwitchBot__Enabled=true`）。ポーリング間隔（既定5分）を変えたい場合は `SwitchBot:PollIntervalMinutes`（環境変数なら `SwitchBot__PollIntervalMinutes`）を設定してください。
+
+このグローバル設定は、**`SwitchBot:AllowGlobalFallback=true` のときのみ**、かつ対象世帯に世帯ごとの `SwitchBotConnection` が1件も保存されていないときのみフォールバックとして使われます（`HouseholdSwitchBotClientFactory` の優先順位: ① 世帯ごとの暗号化済み接続 → ②（`AllowGlobalFallback=true` の場合のみ）グローバル `SwitchBotOptions` → ③ 未設定）。既定値は `false` で、本番向けの設定（`appsettings.json` 等）では明示的に有効化しない限りこのフォールバックは効きません。`appsettings.Development.json` でのみ `true` にすることを想定しています。
 
 ## 2. v1.1 の署名方式
 

@@ -21,6 +21,11 @@ public sealed class EventhouseOptions
 
     public string MappingName { get; set; } = "DeviceEventsMapping";
 
+    /// <summary>Table for the per-poll-cycle Plug Mini telemetry stream (see docs/FABRIC_SETUP.md).</summary>
+    public string PlugMiniTableName { get; set; } = "SwitchBotPlugReadings";
+
+    public string PlugMiniMappingName { get; set; } = "SwitchBotPlugReadingsMapping";
+
     public int TimeoutSeconds { get; set; } = 30;
 
     public bool IsConfigured =>

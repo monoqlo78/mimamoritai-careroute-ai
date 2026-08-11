@@ -31,6 +31,10 @@ public class LineWebhookEventsTests
         "{\"events\":[{\"type\":\"message\",\"replyToken\":\"reply-1\",\"source\":{\"type\":\"group\",\"groupId\":\"" + groupId +
         "\"},\"message\":{\"type\":\"text\",\"text\":\"" + text + "\"}}]}";
 
+    private static string PostbackEventJson(string userId, string data, string replyToken = "reply-1") =>
+        "{\"events\":[{\"type\":\"postback\",\"replyToken\":\"" + replyToken + "\",\"source\":{\"type\":\"user\",\"userId\":\"" + userId +
+        "\"},\"postback\":{\"data\":\"" + data + "\"}}]}";
+
     [Fact]
     public void ParseEvents_Extracts_A_Follow_Event()
     {
@@ -93,6 +97,28 @@ public class LineWebhookEventsTests
         var evt = Assert.Single(events);
         Assert.Equal("follow", evt.Type);
         Assert.Null(evt.SourceId);
+    }
+
+    [Fact]
+    public void ParseEvents_Extracts_A_Postback_Event_With_Data()
+    {
+        var events = WebhookEndpoints.ParseEvents(PostbackEventJson(FakeUserId, "action=emergency"));
+
+        var evt = Assert.Single(events);
+        Assert.Equal("postback", evt.Type);
+        Assert.Equal("reply-1", evt.ReplyToken);
+        Assert.Equal(FakeUserId, evt.SourceId);
+        Assert.Equal("action=emergency", evt.PostbackData);
+        Assert.Null(evt.Text);
+    }
+
+    [Fact]
+    public void ParseEvents_MessageEvent_HasNullPostbackData()
+    {
+        var events = WebhookEndpoints.ParseEvents(MessageEventJson(FakeUserId, "こんにちは"));
+
+        var evt = Assert.Single(events);
+        Assert.Null(evt.PostbackData);
     }
 
     [Fact]

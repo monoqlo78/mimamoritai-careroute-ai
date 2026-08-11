@@ -71,6 +71,41 @@ public class HouseholdAccessTests
 
         var accessible = await signedIn.ListAccessibleAsync();
         Assert.Contains(accessible, h => h.Id == sampleId && h.DataSourceMode == DataSourceMode.Sample);
+        Assert.All(accessible.Where(h => h.DataSourceMode == DataSourceMode.Sample), h => Assert.Equal("デモデータ", h.AnalyticsLabel));
+    }
+
+    [Fact]
+    public async Task ListAccessibleAsync_LabelsProductionHouseholdByActiveLineAccount()
+    {
+        using var testDb = new TestDb();
+        await testDb.SeedAsync();
+
+        var owner = FakeCurrentUserAccessor.User(Guid.NewGuid(), "所有者");
+        var service = Service(testDb, owner);
+        var householdId = await service.EnsureProductionHouseholdAsync("わが家");
+        testDb.Context.LineRecipients.AddRange(
+            new LineRecipient
+            {
+                HouseholdId = householdId,
+                LineUserId = "Uinactive",
+                DisplayName = "古い利用者",
+                IsActive = false,
+                LastSeenAt = DateTimeOffset.UtcNow
+            },
+            new LineRecipient
+            {
+                HouseholdId = householdId,
+                LineUserId = "Uactive",
+                DisplayName = "まさあき",
+                IsActive = true,
+                LastSeenAt = DateTimeOffset.UtcNow.AddMinutes(-1)
+            });
+        await testDb.Context.SaveChangesAsync();
+
+        var accessible = await service.ListAccessibleAsync();
+
+        var production = Assert.Single(accessible.Where(h => h.Id == householdId));
+        Assert.Equal("まさあき（LINE）", production.AnalyticsLabel);
     }
 
     [Fact]

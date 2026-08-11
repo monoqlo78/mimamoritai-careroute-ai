@@ -1,0 +1,44 @@
+.settings-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    max-width: 360px;
+}
+
+.settings-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 13px;
+    color: var(--cp-text-muted);
+}
+
+.settings-form input {
+    min-height: 36px;
+    padding: 6px 10px;
+    border: 1px solid var(--cp-border);
+    border-radius: 0.5rem;
+    background: var(--cp-surface);
+    color: inherit;
+    font-size: 14px;
+}
+
+.settings-form button {
+    align-self: flex-start;
+}
+
+.line-code-display {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 12px 16px;
+    border: 1px dashed var(--cp-border);
+    border-radius: 0.5rem;
+    max-width: 320px;
+}
+
+.line-code-value {
+    font-size: 20px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+}

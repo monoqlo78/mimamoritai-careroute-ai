@@ -14,9 +14,34 @@
   - `appsettings.json` にはこれらのGUIDをハードコードしていません（`WorkspaceId`/`DataAgentId`/`McpUrl` は空文字のまま）。環境ごとにApp Serviceのアプリ設定または `dotnet user-secrets` で注入してください。
 - ※未検証：以下の「1. ワークスペースの作成」〜「3. Data Agent の作成」の手順・画面名は、実際のFabricポータルで操作を確認したものではなく一般的な知識をもとに記載しています。Fabricの機能・UIは頻繁に更新されるため、実施前に必ず最新のFabricポータル・公式ドキュメント（`docs/REFERENCES.md`）で確認してください。
 
-## 1. ワークスペースの作成
+## 0. SwitchBotPlugReadings テーブル（Plug Miniの毎周期テレメトリ）
 
-1. [Microsoft Fabric](https://app.fabric.microsoft.com) にサインインします。
+`DeviceEvents`（状態変化イベントのみ）とは別に、Plug Mini（JP）クラスの機器から**ポーリング周期ごとに（状態変化の有無に関わらず）**電力テレメトリを取り込む専用テーブルです。実装は `EventhousePlugMiniReadingStreamPublisher`（`src/MimamoriTai.Infrastructure/Fabric/EventhousePlugMiniReadingStreamPublisher.cs`）、Azure SQL側の正データは `PlugMiniReading` エンティティ（`Core/Domain/Entities.cs`）です。`DeviceEvents` 用のストリーミング取り込みロジックとは意図的にコードを共有せず、片方の障害・設定ミスがもう片方に波及しないようにしています。
+
+- **データベース**: `MimamoriEventhouse`（`DeviceEvents` と同じKQLデータベース、`Eventhouse:DatabaseName`）
+- **テーブル名**: `SwitchBotPlugReadings`（`Eventhouse:PlugMiniTableName`、既定値）
+- **マッピング名**: `SwitchBotPlugReadingsMapping`（`Eventhouse:PlugMiniMappingName`、既定値。JSON取り込み用マッピングオブジェクトはEventhouse側で別途作成が必要 — 本ドキュメントはコード内の設定キーのみを記載し、実際のマッピング/テーブル作成は行っていません）
+- **列一覧**（`PlugMiniReadingRecord`、`Core/Abstractions/IPlugMiniReadingStreamPublisher.cs` 参照）:
+
+  | 列名 | 型 | 説明 |
+  |---|---|---|
+  | `readingId` | guid | 一意なレコードID（`PlugMiniReading.Id`） |
+  | `householdId` | guid | 世帯ID |
+  | `deviceId` | guid | 機器ID |
+  | `deviceName` | string | 機器名（取り込み時点のスナップショット） |
+  | `room` | string | 部屋名（取り込み時点のスナップショット） |
+  | `voltageV` | real (nullable) | 電圧（V）。SwitchBot Plug Mini (JP) ステータスの `voltage` フィールドをそのまま使用 |
+  | `currentMa` | real (nullable) | 電流（mA）。ステータスの `electricCurrent` フィールド |
+  | `dailyEnergyWh` | real (nullable) | **注意（仕様の曖昧さ）**: SwitchBot公式ドキュメントのPlug Mini (JP) ステータスにある `weight` フィールドを直接この列にマッピングしています。既存コードのコメント（`SwitchBotDeviceProvider.cs`）は「1日の消費電力量」としていますが、公式仕様は単位を明示的に確定できていません（Wh・W・その他の可能性）。本実装では **Wh（ワット時）として扱う判断をしました**が、これは実測値と突き合わせて検証していない仮定です。実機での検証が済むまで、この列の値は目安としてのみ扱ってください（TODO: 実機データでの単位検証）。 |
+  | `usageMinutesToday` | int (nullable) | 当日の稼働時間（分）。ステータスの `electricityOfDay` フィールド（`StatusBody` DTOに今回追加）。SwitchBot公式ドキュメントでは「今日の使用時間（分）」とされているフィールドです。 |
+  | `approxWatts` | real (nullable) | **近似値**: `voltageV * currentMa / 1000`（力率1と仮定した概算のみ）。`voltageV`/`currentMa` の両方が存在する場合のみ計算され、片方でも欠けている場合は null です。 |
+  | `occurredAtUtc` | datetime | ポーリング周期の時刻（UTC、ISO 8601） |
+
+- **重複排除キー**: Azure SQL側では `(HouseholdId, DeviceId, OccurredAtUtc)` の組をアプリケーションレベルの重複排除キーとして使用しています（同じポーリング周期内で同じ機器の読み取りを二重挿入しない。詳細は `SwitchBotPollingCycleService` とそのテスト参照）。Eventhouse側にはこの一意性を強制するインデックス/ポリシーは構築していません（KQLの性質上、重複投入されても分析クエリ側で `summarize arg_max(...)` 等で最新値のみを扱うか、`OccurredAtUtc` での重複排除を行うことを推奨します）。
+- **公開タイミング**: `PlugMiniReading.PublishedToStreamAtUtc` が null の行のみを対象に、`PlugMiniReadingPublishService`（`Core/Application/PlugMiniReadingPublishService.cs`）が `DeviceEvent`/`EventStreamPublishService` と全く同じ「バッチ公開 → 成功した行だけタイムスタンプを刻む」パターンでバックグラウンド公開します（`PlugMiniReadingPublishBackgroundService`）。Fabricへの送信が失敗しても例外は投げず、次回のバックグラウンド実行で再送されます。
+- **未実施の作業（人間が行う必要あり）**: 上記テーブル・マッピングオブジェクトの実際のEventhouse側での作成、および `Eventhouse:PlugMiniTableName`/`PlugMiniMappingName` に対応する取り込みロールの権限確認は、本セッションでは一切行っていません（Fabric側リソース作成はスコープ外のため）。
+
+## 1. ワークスペースの作成
 2. 左下の「ワークスペース」→「新しいワークスペースの作成」から、見守り隊専用のワークスペースを作成します（Fabric容量が必要）。
 
 ## 2. SQLデータのミラーリング／取り込み
@@ -27,6 +52,20 @@
 - **Data Pipeline / Dataflow による定期取り込み**: オンプレミスSQL Server や SQLite ファイルの場合は、Fabric Data Pipeline や Dataflow Gen2 でLakehouse/Warehouseへ定期コピーします。
 
 対象テーブルの例: `DeviceEvents`, `DailyActivitySummaries`（未実装のためビューで代用可）, `Devices`, `People`, `RiskAssessments`。
+
+### デモ／LINEアカウント別の表示切替
+
+移行 `AddAnalyticsProfileViews` は、Power BIまたはFabric Real-Time Intelligenceで同じプルダウンを作れるように次のSQLビューを用意します。
+
+- `mimamori.vw_AnalyticsProfiles`: 表示対象ディメンション。`AnalyticsProfileName` は `デモデータ`、`まさあき（LINE）`、`わが家（LINE未連携）` のような表示名です。
+- `mimamori.vw_CurrentDeviceStatus`
+- `mimamori.vw_DailyActivity`
+- `mimamori.vw_RecentDeviceActivity`
+- `mimamori.vw_PlugMiniReadings`
+
+各ファクトビューには `AnalyticsProfileId`、`AnalyticsProfileName`、`DataScope`（`Demo` / `LineAccount`）が含まれます。Power BIでは `vw_AnalyticsProfiles[AnalyticsProfileId]` から各ファクトビューの同名列へ1対多のリレーションを作り、`AnalyticsProfileName` をスライサーに配置します。`DataScope` を使えば「デモ／実データ」だけの切替もできます。
+
+LINEの生の `userId` は分析ビューに公開しません。1世帯に複数のLINE受信者がいる場合は、最後に利用した有効な受信者をその世帯の表示プロフィールとして採用します。センサーデータ自体はLINE受信者ではなく世帯に属するため、選択後の全ビジュアルは同じ `HouseholdId` のデータへ絞り込まれます。Webダッシュボード上部の「表示データ」プルダウンも同じ規則を使用します。
 
 ## 3. Data Agent の作成
 

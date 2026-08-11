@@ -1,0 +1,164 @@
+@page "/one-touch"
+@rendermode InteractiveServer
+@using MimamoriTai.Core.Application
+@using MimamoriTai.Infrastructure.Auth
+@inject HouseholdAccessService HouseholdAccess
+@inject LinePostbackActionService Actions
+@inject IJSRuntime JS
+
+<PageTitle>かんたん操作 | 見守り隊</PageTitle>
+
+<main class="one-touch-page">
+    <nav class="one-touch-nav" aria-label="ページ移動">
+        <a class="one-touch-brand" href="/">
+            <img src="/images/mimamo-robot-opus.png" alt="" />
+            <span><strong>見守り隊</strong><small>家族をつなぐ安心サービス</small></span>
+        </a>
+        <a class="line-return" href="https://line.me/R/ti/p/%40755ykcrx">
+            LINEへ戻る
+        </a>
+    </nav>
+
+    <section class="mascot-hero">
+        <div>
+            <p class="one-touch-eyebrow">いつでも、すぐそばに</p>
+            <h1>話しかけるように<br />かんたん見守り</h1>
+            <p class="hero-lead">ミマモをタップしたり、下のボタンを選んでください。表情や手を動かして応えてくれます。</p>
+            <div class="hero-links">
+                <a href="#one-touch-actions">かんたん操作へ</a>
+                <a class="secondary-link" href="/">詳しい見守り画面</a>
+            </div>
+        </div>
+
+        <div class="mascot-wrap">
+            <div class="mascot-speech" role="status" aria-live="polite">
+                <strong>@MascotHeading</strong>
+                <span>@MascotMessage</span>
+            </div>
+            <div class="mascot-viewer"
+                 data-mascot-model="/models/mimamo-robot-opus-rigged.glb"
+                 aria-label="参照イメージをもとにBlenderで制作した見守り隊の3Dキャラクター「ミマモ」。タップすると反応します。">
+                <canvas></canvas>
+                <img class="mascot-poster" src="/images/mimamo-robot-opus.png" alt="ハートのアンテナとマントを身につけた見守り隊のキャラクター「ミマモ」" />
+                <span class="mascot-loading">3Dミマモを準備中…</span>
+            </div>
+            <p class="mascot-caption">Blenderで制作した3Dキャラクター</p>
+        </div>
+    </section>
+
+    @if (_notice is not null)
+    {
+        <section class="one-touch-result @(_error ? "is-error" : "")" role="status" aria-live="polite">
+            <strong>@(_error ? "操作できませんでした" : "受け付けました")</strong>
+            <p>@_notice</p>
+        </section>
+    }
+
+    <section id="one-touch-actions" class="one-touch-actions">
+        <div class="action-heading">
+            <div>
+                <p class="one-touch-eyebrow">ワンタッチで伝わります</p>
+                <h2>今日はどうしましたか？</h2>
+            </div>
+            <p>迷ったときは「今日の様子」から確認できます。</p>
+        </div>
+        <div class="one-touch-grid" aria-label="見守り隊のかんたん操作">
+        <button class="one-touch-button emergency" data-mascot-reaction="emergency" @onclick="() => RunAsync(LinePostbackActionService.Emergency, true)" disabled="@_busy">
+            <span class="one-touch-icon" aria-hidden="true">!</span>
+            <strong>助けて</strong>
+            <small>家族へ緊急連絡</small>
+        </button>
+        <button class="one-touch-button unwell" data-mascot-reaction="unwell" @onclick="() => RunAsync(LinePostbackActionService.Unwell, true)" disabled="@_busy">
+            <span class="one-touch-icon" aria-hidden="true">＋</span>
+            <strong>体調が悪い</strong>
+            <small>家族へお知らせ</small>
+        </button>
+        <button class="one-touch-button okay" data-mascot-reaction="okay" @onclick="() => RunAsync(LinePostbackActionService.Okay, false)" disabled="@_busy">
+            <span class="one-touch-icon" aria-hidden="true">✓</span>
+            <strong>大丈夫</strong>
+            <small>安心を記録</small>
+        </button>
+        <button class="one-touch-button status" data-mascot-reaction="status" @onclick="() => RunAsync(LinePostbackActionService.Status, false)" disabled="@_busy">
+            <img src="/images/mimamo-robot-opus.png" alt="" aria-hidden="true" />
+            <strong>今日の様子</strong>
+            <small>Fabricの活動情報を確認</small>
+        </button>
+        <button class="one-touch-button family" data-mascot-reaction="contact_family" @onclick="() => RunAsync(LinePostbackActionService.ContactFamily, true)" disabled="@_busy">
+            <span class="one-touch-icon" aria-hidden="true">家</span>
+            <strong>家族に連絡</strong>
+            <small>連絡の希望を伝える</small>
+        </button>
+        <a class="one-touch-button dashboard" href="/">
+            <span class="one-touch-icon" aria-hidden="true">⌂</span>
+            <strong>詳しい画面</strong>
+            <small>センサーごとの状況を見る</small>
+        </a>
+        </div>
+    </section>
+
+    <footer class="one-touch-help">
+        <p><strong>命にかかわる緊急時は119番</strong><br />この画面はLINEからも、ブラウザーからも利用できます。</p>
+        <a href="https://line.me/R/ti/p/%40755ykcrx">見守り隊のLINEを開く</a>
+    </footer>
+</main>
+
+@code {
+    private bool _busy;
+    private bool _error;
+    private string? _notice;
+    private string MascotHeading => _busy ? "いま届けています" : _error ? "もう一度ためしてね" : _notice is null ? "そばで見守っています" : "受け付けました";
+    private string MascotMessage => _busy ? "少しだけ待ってください。" : _notice ?? "気になることがあれば、ボタンを押してください。";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await JS.InvokeVoidAsync("mimamoriUi.initMascot");
+        }
+    }
+
+    private async Task RunAsync(string action, bool requiresConfirmation)
+    {
+        await JS.InvokeVoidAsync("mimamoriUi.reactMascot", action);
+
+        if (requiresConfirmation)
+        {
+            var confirmed = await JS.InvokeAsync<bool>(
+                "confirm",
+                "この内容を家族へ知らせます。よろしいですか？");
+            if (!confirmed)
+            {
+                return;
+            }
+        }
+
+        _busy = true;
+        _error = false;
+        _notice = "処理しています…";
+
+        try
+        {
+            var householdId = await HouseholdAccess.ResolveDefaultAsync();
+            if (householdId is null)
+            {
+                _error = true;
+                _notice = "ご家庭の情報が見つかりません。詳しい画面からログインしてください。";
+                return;
+            }
+
+            var outcome = await Actions.HandleAsync(householdId.Value, null, action);
+            _notice = outcome.ReplyText;
+            await JS.InvokeVoidAsync("mimamoriUi.reactMascot", "celebrate");
+        }
+        catch (Exception)
+        {
+            _error = true;
+            _notice = "通信に失敗しました。少し待ってから、もう一度お試しください。";
+            await JS.InvokeVoidAsync("mimamoriUi.reactMascot", "concern");
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

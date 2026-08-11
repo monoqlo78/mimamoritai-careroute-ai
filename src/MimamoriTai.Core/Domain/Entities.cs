@@ -237,3 +237,130 @@ public class LineRecipient
 
     public Household? Household { get; set; }
 }
+
+/// <summary>
+/// Per-household SwitchBot API credentials. Exactly one row per household (unique
+/// index on <see cref="HouseholdId"/>). <see cref="EncryptedToken"/> and
+/// <see cref="EncryptedSecret"/> are opaque blobs produced by
+/// <see cref="MimamoriTai.Core.Abstractions.ICredentialProtector"/> (ASP.NET Core Data
+/// Protection) -- the plaintext Token/Secret is never stored, logged or returned to
+/// the UI once saved. Only <see cref="Status"/>, <see cref="LastValidatedAtUtc"/>,
+/// <see cref="LastSyncAtUtc"/> and <see cref="LastErrorMessage"/> are safe to surface.
+/// </summary>
+public class SwitchBotConnection
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid HouseholdId { get; set; }
+
+    /// <summary>Data-Protection-protected SwitchBot open token. Never plaintext.</summary>
+    public string EncryptedToken { get; set; } = string.Empty;
+
+    /// <summary>Data-Protection-protected SwitchBot secret (HMAC signing key). Never plaintext.</summary>
+    public string EncryptedSecret { get; set; } = string.Empty;
+
+    public SwitchBotConnectionStatus Status { get; set; } = SwitchBotConnectionStatus.NotConfigured;
+
+    public DateTimeOffset? LastValidatedAtUtc { get; set; }
+    public DateTimeOffset? LastSyncAtUtc { get; set; }
+
+    /// <summary>Human-readable failure summary only. Must never include the token/secret value.</summary>
+    public string? LastErrorMessage { get; set; }
+
+    public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+    public DateTimeOffset UpdatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+
+    public Household? Household { get; set; }
+}
+
+/// <summary>
+/// One polled SwitchBot Plug Mini reading, recorded on every poll cycle (unlike
+/// <see cref="DeviceEvent"/>, which is only written on an observed state change) so
+/// voltage/current/energy usage can be graphed as a time series in Fabric.
+///
+/// Field semantics, per the SwitchBot OpenAPI v1.1 Plug Mini (JP) status response:
+///   - <see cref="VoltageV"/> &lt;- `voltage`: instantaneous line voltage, Volts.
+///   - <see cref="CurrentMa"/> &lt;- `electricCurrent`: instantaneous current draw, mA.
+///   - <see cref="DailyEnergyWh"/> &lt;- `weight`: SwitchBot's own documentation only
+///     describes this as "the amount of electricity used today" without a fully
+///     unambiguous unit. This codebase's existing <c>SwitchBotDeviceProvider.ResolveState</c>
+///     mapping already treats the same field as an instantaneous watts-like reading
+///     for <c>ProviderDeviceStatus.PowerWatts</c> (and that mapping/its test must not
+///     change). For this new time-series table the same raw value is stored again,
+///     labelled "Wh" to match the SwitchBot JP app's own label ("本日の使用電力量
+///     (Wh)"), i.e. a *daily cumulative* energy reading rather than an instantaneous
+///     power reading. This is a deliberate, documented judgment call, not a value
+///     confirmed against a live device -- see docs/FABRIC_SETUP.md.
+///   - <see cref="UsageMinutesToday"/> &lt;- `electricityOfDay`: minutes the outlet has
+///     been switched on today; reset by the device at local midnight.
+///   - <see cref="ApproxWatts"/>: voltage * current / 1000, a power-factor-1
+///     approximation of instantaneous real power. Not accurate for reactive loads;
+///     clearly an approximation, never treated as a certified power reading.
+/// </summary>
+public class PlugMiniReading
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid HouseholdId { get; set; }
+    public Guid DeviceId { get; set; }
+
+    public double? VoltageV { get; set; }
+    public double? CurrentMa { get; set; }
+    public double? DailyEnergyWh { get; set; }
+    public int? UsageMinutesToday { get; set; }
+
+    /// <summary>Approximation only: voltage * current / 1000W, assumes power factor 1.</summary>
+    public double? ApproxWatts { get; set; }
+
+    public DateTimeOffset OccurredAtUtc { get; set; }
+    public DateTimeOffset ReceivedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// Stamped only on a successful Fabric Eventhouse publish, mirroring
+    /// <see cref="DeviceEvent.PublishedToStreamAtUtc"/>: null rows are retried, never
+    /// silently dropped.
+    /// </summary>
+    public DateTimeOffset? PublishedToStreamAtUtc { get; set; }
+
+    public Device? Device { get; set; }
+}
+
+/// <summary>
+/// A short-lived, single-use pairing code that lets a signed-in household owner link
+/// a LINE Messaging API source (userId/groupId) to their household by sending
+/// "連携 123456" to the bot, without ever displaying or storing the LINE userId in
+/// the Settings UI, and without the webhook ever guessing which household an
+/// unrecognized LINE source belongs to (see WebhookEndpoints and
+/// docs/LINE_SETUP.md for the full flow this replaces).
+///
+/// The plaintext 6-digit code is shown to the household owner exactly once (at
+/// generation time) and is never persisted: only <see cref="CodeHash"/> (a keyed
+/// hash, see LineLinkCodeService) is stored, so a leaked database row cannot be
+/// replayed to redeem the code. Only one code may be active (unused and unexpired)
+/// per household at a time -- generating a new one invalidates any prior one.
+/// </summary>
+public class LineLinkCode
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid HouseholdId { get; set; }
+
+    /// <summary>Keyed hash of the plaintext code. Never the plaintext code itself.</summary>
+    public string CodeHash { get; set; } = string.Empty;
+
+    public DateTimeOffset ExpiresAtUtc { get; set; }
+
+    /// <summary>Set once this code is successfully redeemed; makes redemption single-use.</summary>
+    public DateTimeOffset? UsedAtUtc { get; set; }
+
+    /// <summary>
+    /// Failed-redemption attempts observed while this code was still active. Every
+    /// currently-active code's counter is incremented on any failed redemption
+    /// attempt system-wide (not only attempts targeting this exact code), and a code
+    /// is force-expired once its counter reaches the configured limit. This is a
+    /// deliberately simple, no-new-infrastructure brute-force guard: see
+    /// LineLinkCodeService for the exact policy and rationale.
+    /// </summary>
+    public int AttemptCount { get; set; }
+
+    public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
+
+    public Household? Household { get; set; }
+}

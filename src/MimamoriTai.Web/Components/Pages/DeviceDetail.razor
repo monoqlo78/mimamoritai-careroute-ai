@@ -1,0 +1,309 @@
+@page "/devices/{DeviceId:guid}"
+@rendermode InteractiveServer
+@using MimamoriTai.Core.Abstractions
+@using MimamoriTai.Core.Application
+@using MimamoriTai.Core.Domain
+@using MimamoriTai.Web.Services
+@inject DeviceDetailService DeviceDetailReadModel
+@inject DeviceInsightQuestionService Insight
+@inject DeviceControlService Control
+
+<PageTitle>@(_model is null ? "デバイス詳細" : _model.Name) / 見守り隊</PageTitle>
+
+<header class="topbar">
+    <div class="brand">
+        <span class="brand-mark" aria-hidden="true">み</span>
+        <div>
+            <h1>@(_model?.Name ?? "デバイス詳細")</h1>
+            <p>@(_model is null ? "デバイスの詳しい情報" : $"{_model.Room} ・ {DeviceTypeLabel(_model.DeviceType)}")</p>
+        </div>
+    </div>
+    <div class="topbar-actions">
+        <a class="ghost small" href="/">← ダッシュボードに戻る</a>
+    </div>
+</header>
+
+@if (_notFoundOrDenied)
+{
+    <div class="notice notice-warn" role="status" aria-live="polite">
+        <span class="notice-icon">⚠</span>
+        <span>このデバイスは見つからないか、閲覧する権限がありません。</span>
+    </div>
+}
+else if (_model is null)
+{
+    <p class="loading">読み込み中…</p>
+}
+else
+{
+    @if (_notice is not null)
+    {
+        <div class="notice notice-@_noticeKind" role="status" aria-live="polite">
+            <span class="notice-icon">@(_noticeKind == "ok" ? "✓" : _noticeKind == "blocked" ? "⛔" : "⚠")</span>
+            <span>@_notice</span>
+            <button class="notice-close" @onclick="() => _notice = null" aria-label="閉じる">✕</button>
+        </div>
+    }
+
+    @if (_busy)
+    {
+        <div class="busy-bar" role="status" aria-live="polite">処理中…</div>
+    }
+
+    @if (!_model.IsActive)
+    {
+        <div class="notice notice-warn" role="status">
+            <span class="notice-icon">⚠</span>
+            <span>この機器は現在システムに接続されていません（無効化済み）。過去の記録のみ表示しています。</span>
+        </div>
+    }
+
+    <section class="status-card @(_model.IsOn ? "risk-low" : "")">
+        <div class="status-icon" aria-hidden="true">@(_model.IsOn ? "✓" : "―")</div>
+        <div class="status-copy">
+            <p class="eyebrow">現在の状態</p>
+            <h2>@(_model.IsOn ? "使用中" : "停止中")</h2>
+            <p class="status-reason">
+                @if (_model.PowerWatts is { } watts)
+                {
+                    @($"消費電力 約{watts:0.#}W ・ ")
+                }
+                最終確認 @FormatLocal(_model.StatusObservedAtUtc)
+            </p>
+        </div>
+        <div class="device-actions">
+            <button class="secondary-button"
+                    title="@(_model.SafetyClass == "Restricted" ? "危険機器のためONは拒否されます" : "ONにする")"
+                    @onclick="@(() => ControlAsync(DeviceAction.TurnOn))"
+                    disabled="@(_busy || !_model.IsEnabled)">つける</button>
+            <button class="secondary-button"
+                    @onclick="@(() => ControlAsync(DeviceAction.TurnOff))"
+                    disabled="@(_busy || !_model.IsEnabled)">消す</button>
+        </div>
+    </section>
+    @if (_model.SafetyClass == "Restricted")
+    {
+        <p class="restricted-note">安全のため、遠隔では消す操作だけできます</p>
+    }
+
+    <div class="today-summary">
+        <div class="summary-item">
+            <span>今日の使用回数</span>
+            <strong>@_model.TodayUsageCount 回</strong>
+        </div>
+        <div class="summary-item">
+            <span>直近@(_model.PeriodDays)日間の合計</span>
+            <strong>@_model.PeriodUsageCount 回</strong>
+        </div>
+        <div class="summary-item">
+            <span>1日あたりの平均</span>
+            <strong>@_model.AveragePerDay.ToString("0.#") 回</strong>
+        </div>
+    </div>
+
+    <section class="primary-grid">
+        <article class="card">
+            <p class="eyebrow">最近の動き</p>
+            <h2>イベント履歴</h2>
+            @if (_model.Timeline.Count == 0)
+            {
+                <p class="empty-state">まだ記録がありません</p>
+            }
+            else
+            {
+                <ul class="timeline">
+                @foreach (var item in _model.Timeline.Take(15))
+                {
+                    <li>
+                        <span class="time">@FormatLocal(item.OccurredAtUtc)</span>
+                        <span>
+                            @EventTypeLabel(item.EventType)
+                            @if (item.NumericValue is { } value)
+                            {
+                                @($"（{value:0.#}{item.Unit}）")
+                            }
+                        </span>
+                        <span class="state @item.State">@StateLabel(item.State)</span>
+                    </li>
+                }
+                </ul>
+            }
+        </article>
+
+        <article class="card">
+            <p class="eyebrow">Fabric インサイト</p>
+            <h2>利用傾向</h2>
+            @if (_insightLoading)
+            {
+                <p class="muted">分析中…</p>
+            }
+            else if (_insight is not null)
+            {
+                <p>@_insight.Answer</p>
+                <span class="chip @(_insight.Source == "Fabric" ? "on" : "mock")">
+                    @(_insight.Source == "Fabric" ? "Fabric" : "ローカル集計")
+                </span>
+            }
+            else
+            {
+                <p class="muted">インサイトを準備しています…</p>
+            }
+        </article>
+    </section>
+
+    <details class="detail-panel" open>
+        <summary>
+            <span>直近@(_model.PeriodDays)日間の使用回数</span>
+            <span class="summary-meta">1日あたり平均 @_model.AveragePerDay.ToString("0.#") 回</span>
+        </summary>
+        <div class="detail-content">
+            @if (_model.DailyBreakdown.Count == 0)
+            {
+                <p class="empty-state">まだ記録がありません</p>
+            }
+            else
+            {
+                <ul class="history">
+                    @foreach (var day in _model.DailyBreakdown.AsEnumerable().Reverse())
+                    {
+                        <li>
+                            <span class="date">@day.Date.ToString("M/d")</span>
+                            <span class="bar" style="width:@(Math.Min(day.OnCount * 12, 200))px"></span>
+                            <span class="muted">@day.OnCount 回</span>
+                        </li>
+                    }
+                </ul>
+            }
+        </div>
+    </details>
+}
+
+@code {
+    [Parameter] public Guid DeviceId { get; set; }
+
+    private DeviceDetailModel? _model;
+    private FabricAnswer? _insight;
+    private bool _insightLoading;
+    private bool _notFoundOrDenied;
+    private bool _busy;
+    private string? _notice;
+    private string _noticeKind = "ok";
+    private Guid _loadedDeviceId;
+
+    protected override async Task OnInitializedAsync() => await ReloadAsync();
+
+    /// <summary>
+    /// Handles navigating directly between two device detail pages (e.g. via browser
+    /// back/forward or an in-app link) without a full circuit reconnect, matching
+    /// Blazor Server's routing model where OnInitializedAsync only runs once per circuit.
+    /// </summary>
+    protected override async Task OnParametersSetAsync()
+    {
+        if (DeviceId != _loadedDeviceId)
+        {
+            await ReloadAsync();
+        }
+    }
+
+    private async Task ReloadAsync()
+    {
+        _loadedDeviceId = DeviceId;
+        _model = await DeviceDetailReadModel.LoadAsync(DeviceId);
+        _notFoundOrDenied = _model is null;
+        _insight = null;
+
+        if (_model is not null)
+        {
+            // Deferred so the bounded-timeout Fabric call (or its local fallback) never
+            // delays the initial page render - the panel shows a loading state until it resolves.
+            _ = LoadInsightAsync(_model.HouseholdId, DeviceId);
+        }
+    }
+
+    private async Task LoadInsightAsync(Guid householdId, Guid deviceId)
+    {
+        _insightLoading = true;
+        StateHasChanged();
+
+        try
+        {
+            _insight = await Insight.GetInsightAsync(householdId, deviceId);
+        }
+        finally
+        {
+            _insightLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ControlAsync(DeviceAction action)
+    {
+        if (_model is null || _busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        StateHasChanged();
+
+        try
+        {
+            var outcome = await Control.ExecuteAsync(
+                _model.HouseholdId,
+                _model.Alias,
+                action,
+                confidence: 1.0,
+                originalText: $"[デバイス詳細] {_model.Alias} / {action}",
+                source: CommandSource.Web,
+                requestedByPersonId: null,
+                aiResolvedModel: null);
+
+            _notice = outcome.Message;
+            _noticeKind = outcome.Status switch
+            {
+                CommandStatus.Succeeded => "ok",
+                CommandStatus.Rejected => "blocked",
+                _ => "warn"
+            };
+
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private static string DeviceTypeLabel(string type) => type switch
+    {
+        "Light" => "照明",
+        "Fan" => "扇風機",
+        "Plug" => "プラグ",
+        "MotionSensor" => "人感センサー",
+        "ContactSensor" => "開閉センサー",
+        "Heater" => "ヒーター",
+        "Kettle" => "電気ケトル",
+        "Microwave" => "電子レンジ",
+        "CookingDevice" => "調理機器",
+        "DemoDevice" => "デモ機器",
+        _ => type
+    };
+
+    private static string EventTypeLabel(string eventType) => eventType switch
+    {
+        "PowerState" => "電源状態の変化",
+        _ => eventType
+    };
+
+    private static string StateLabel(string state) => state.ToLowerInvariant() switch
+    {
+        "on" => "使用",
+        "off" => "停止",
+        "active" => "動きあり",
+        "inactive" => "動きなし",
+        _ => state
+    };
+
+    private static string FormatLocal(DateTimeOffset? utc) =>
+        utc is null ? "—" : HouseholdTime.ToLocal(utc.Value).ToString("M/d HH:mm");
+}

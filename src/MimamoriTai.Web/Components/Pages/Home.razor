@@ -20,21 +20,31 @@
 @inject MimamoriTai.Core.Abstractions.IEventStreamPublisher StreamPublisher
 @inject ICurrentUserAccessor CurrentUserAccessor
 @inject IOptions<AuthOptions> AuthOptionsAccessor
+@inject MimamoriTai.Infrastructure.Auth.AdminAccessService AdminAccess
 @inject IJSRuntime JS
 
 <PageTitle>CareRoute AI / 見守り隊</PageTitle>
 
-<header class="hero">
-    <div>
-        <h1>CareRoute AI <span class="jp">見守り隊</span></h1>
-        <p class="tagline">離れていても、家族の“いつも”をAIがつなぐ。</p>
+<header class="topbar">
+    <div class="brand">
+        <span class="brand-mark" aria-hidden="true">み</span>
+        <div>
+            <h1>見守り隊</h1>
+            <p>離れて暮らす家族の、今日がわかる</p>
+        </div>
     </div>
-    <div class="account">
+    <div class="topbar-actions">
+        <a class="primary-link" href="/one-touch">かんたん操作</a>
+        <a class="ghost small" href="/settings/switchbot">SwitchBot設定</a>
+        @if (AdminAccess.IsAdmin)
+        {
+            <a class="ghost small" href="/admin">運用コンソール</a>
+        }
         @if (AuthOptionsAccessor.Value.IsConfigured)
         {
             @if (CurrentUserAccessor.Current is { } user)
             {
-                <span class="chip on">@user.DisplayName さん</span>
+                <span class="user-name">@user.DisplayName さん</span>
                 <a class="ghost small" href="/auth/logout">ログアウト</a>
             }
             else
@@ -44,52 +54,29 @@
         }
         else
         {
-            <span class="chip neutral">デモモード（未認証）</span>
-        }
-    </div>
-    <div class="integrations">
-        @if (_model is not null)
-        {
-            <span class="chip @(_model.Integrations.SwitchBotConfigured ? "on" : "mock")">
-                データ: @(_model.Integrations.SwitchBotConfigured ? "実機（SwitchBot）" : "デモ")
-            </span>
-            <span class="chip @(_model.Integrations.DeviceProvider == "SwitchBot" ? "on" : "mock")">
-                Devices: @_model.Integrations.DeviceProvider
-            </span>
-            <span class="chip @(_model.Integrations.OrcaRouterConfigured ? "on" : "mock")">
-                OrcaRouter: @(_model.Integrations.OrcaRouterConfigured ? "Live" : "Mock")
-            </span>
-            <span class="chip @(_model.Integrations.FabricConfigured ? "on" : "mock")">
-                Fabric: @(_model.Integrations.FabricConfigured ? "Live" : "Local")
-            </span>
-            <span class="chip @(_model.Integrations.LineConfigured ? "on" : "mock")">
-                LINE: @(_model.Integrations.LineConfigured ? "Live" : "Mock")
-            </span>
-            <span class="chip @(_model.Integrations.EventhouseConfigured ? "on" : "mock")">
-                Stream: @(_model.Integrations.EventhouseConfigured ? "実ストリーム" : "デモ")
-            </span>
-            <span class="chip neutral">DB: @_model.Integrations.Database</span>
+            <span class="source-badge">デモ</span>
         }
     </div>
     @if (_model is not null)
     {
-        <div class="datasource">
-            <select class="datasource-select" @onchange="OnHouseholdSelectedAsync" disabled="@_busy">
+        <div class="household-picker">
+            <label class="picker-label" for="analytics-profile">表示データ</label>
+            <select id="analytics-profile" class="datasource-select" @onchange="OnHouseholdSelectedAsync" disabled="@_busy">
                 @foreach (var h in _households)
                 {
                     <option value="@h.Id" selected="@(h.Id == _model.HouseholdId)">
-                        @(h.DataSourceMode == DataSourceMode.Sample ? $"サンプル: {h.Name}" : $"本番: {h.Name}")
+                        @h.AnalyticsLabel
                     </option>
                 }
             </select>
-            <span class="chip @(_model.DataSourceMode == DataSourceMode.Sample ? "neutral" : "on")">
-                @(_model.DataSourceMode == DataSourceMode.Sample ? "サンプルデータ" : "本番データ")
+            <span class="source-badge">
+                @(_model.DataSourceMode == DataSourceMode.Sample ? "デモ" : "実データ")
             </span>
             @if (!_households.Any(h => h.DataSourceMode == DataSourceMode.Production))
             {
-                <button class="ghost small" title="実際のSwitchBot機器を使った本番データのご家庭を作成し、同期します"
+                <button class="link-button" title="実際のSwitchBot機器を使った本番データのご家庭を作成し、同期します"
                         @onclick="StartProductionAsync" disabled="@_busy">
-                    本番データを開始
+                    実機につなぐ
                 </button>
             }
         </div>
@@ -116,106 +103,50 @@ else
         <div class="busy-bar" role="status" aria-live="polite">処理中…</div>
     }
 
-    <section class="grid">
-        <article class="card risk risk-@_model.Risk.Level.ToString().ToLowerInvariant()">
-            <h2>現在の見守りステータス</h2>
-            <p class="risk-level">@RiskLabel(_model.Risk.Level)</p>
-            <p class="risk-reason">@_model.Risk.Reason</p>
-            <p class="muted">スコア @_model.Risk.Score / 100 ・ ルールベース判定</p>
-            <button class="ghost small" title="現在のリスクを評価し、必要であればLINEにアラートを送信します"
-                    @onclick="EvaluateAlertAsync" disabled="@_busy">
-                見守りアラートを確認
-            </button>
-        </article>
-
-        <article class="card">
-            <h2>家族メンバー</h2>
-            <ul class="people">
-                @foreach (var person in _model.People)
-                {
-                    <li><span class="role">@RoleLabel(person.Role)</span> @person.DisplayName</li>
-                }
-            </ul>
-            <h3>今日のサマリー</h3>
-            <p class="muted">
-                最初の活動: @(_model.Today.FirstActivityTime?.ToString("HH\\:mm") ?? "—") ／
-                最後の活動: @(_model.Today.LastActivityTime?.ToString("HH\\:mm") ?? "—") ／
-                利用回数: @_model.Today.DeviceUsageCount 回
-            </p>
-        </article>
-
-        <article class="card ai">
-            <h2>AIルーティング</h2>
-            <p class="model-name">@(_model.LastResolvedModel ?? "未使用")</p>
-            <p class="muted">OrcaRouter が解決した直近のモデル名</p>
-        </article>
+    <section class="status-card risk-@_model.Risk.Level.ToString().ToLowerInvariant()">
+        <div class="status-icon" aria-hidden="true">@RiskIcon(_model.Risk.Level)</div>
+        <div class="status-copy">
+            <p class="eyebrow">@ResidentDisplayName(_model.ResidentName)の今日</p>
+            <h2>@RiskLabel(_model.Risk.Level)</h2>
+            <p class="status-reason">@_model.Risk.Reason</p>
+        </div>
+        <button class="secondary-button" title="現在の状態を再評価し、必要であればLINEに通知します"
+                @onclick="EvaluateAlertAsync" disabled="@_busy">
+            状態を確認
+        </button>
     </section>
 
-    <section class="devices">
-        <div class="section-head">
-            <h2>デバイス</h2>
-            <span class="muted">ボタン操作も自然言語と同じ安全ガードレールを通ります</span>
+    <section class="today-summary" aria-label="今日の活動">
+        <div class="summary-item">
+            <span>最初の活動</span>
+            <strong>@(_model.Today.FirstActivityTime?.ToString("HH\\:mm") ?? "まだありません")</strong>
         </div>
-        <div class="device-grid">
-            @foreach (var device in _model.Devices)
-            {
-                var d = device;
-                <div class="device-card @(d.IsOn ? "on" : "off") @(d.SafetyClass == "Restricted" ? "restricted" : "")">
-                    <div class="device-head">
-                        <strong>@d.Name</strong>
-                        <span class="state">@(d.IsOn ? "ON" : "OFF")</span>
-                    </div>
-                    <p class="muted">@d.Room ・ @d.DeviceType ・ @d.Alias</p>
-                    <p class="muted">最終利用: @FormatLocal(d.LastUsedUtc)</p>
-                    <p class="muted">今日の利用: @d.TodayUsageCount 回</p>
-                    <p class="muted">
-                        遠隔操作: @(d.RemoteControlAllowed ? "許可" : "禁止") ・
-                        <span class="safety safety-@d.SafetyClass.ToLowerInvariant()">@d.SafetyClass</span>
-                    </p>
-
-                    <div class="device-actions">
-                        <button class="btn-on"
-                                title="@(d.SafetyClass == "Restricted" ? "危険機器のためONは拒否されます" : "ONにする")"
-                                @onclick="@(() => ControlAsync(d.Alias, DeviceAction.TurnOn))"
-                                disabled="@_busy">
-                            ON
-                        </button>
-                        <button class="btn-off"
-                                title="OFFにする"
-                                @onclick="@(() => ControlAsync(d.Alias, DeviceAction.TurnOff))"
-                                disabled="@_busy">
-                            OFF
-                        </button>
-                        <button class="ghost small"
-                                title="現在の状態を確認"
-                                @onclick="@(() => ControlAsync(d.Alias, DeviceAction.GetStatus))"
-                                disabled="@_busy">
-                            状態
-                        </button>
-                    </div>
-
-                    @if (d.SafetyClass == "Restricted")
-                    {
-                        <p class="restricted-note">危険機器：ONは拒否され、OFFのみ許可されます</p>
-                    }
-                </div>
-            }
+        <div class="summary-item">
+            <span>最後の活動</span>
+            <strong>@(_model.Today.LastActivityTime?.ToString("HH\\:mm") ?? "まだありません")</strong>
+        </div>
+        <div class="summary-item">
+            <span>家電の利用</span>
+            <strong>@_model.Today.DeviceUsageCount 回</strong>
         </div>
     </section>
 
-    <section class="two-col">
-        <article class="card">
+    <section class="primary-grid">
+        <article class="card assistant-card">
             <div class="section-head">
-                <h2>自然言語で操作・質問</h2>
+                <div>
+                    <p class="eyebrow">見守りAI</p>
+                    <h2>気になることを聞いてください</h2>
+                </div>
                 @if (_chatLog.Count > 0)
                 {
-                    <button class="ghost small" @onclick="() => _chatLog.Clear()" disabled="@_busy">クリア</button>
+                    <button class="link-button" @onclick="() => _chatLog.Clear()" disabled="@_busy">会話を消す</button>
                 }
             </div>
             <div class="chat-log">
                 @if (_chatLog.Count == 0)
                 {
-                    <p class="muted empty">下のボタンを押すか、自由に入力して話しかけてください。</p>
+                    <p class="muted empty">今日の様子や家電の状態を、いつもの言葉で聞けます。</p>
                 }
                 @foreach (var line in _chatLog)
                 {
@@ -227,126 +158,168 @@ else
             </div>
             <div class="chat-input">
                 <input @bind="_input" @bind:event="oninput" @onkeydown="OnKeyDown"
-                       placeholder="例: リビングのライトつけて / 今日のお母さんどう？" disabled="@_busy" />
-                <button @onclick="SendAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_input))">送信</button>
-            </div>
-
-            @foreach (var group in SampleGroups)
-            {
-                <div class="quick-group">
-                    <span class="quick-label">@group.Label</span>
-                    <div class="quick">
-                        @foreach (var sample in group.Samples)
-                        {
-                            var text = sample;
-                            <button class="ghost @(group.Kind)" @onclick="@(() => SendSampleAsync(text))" disabled="@_busy">@text</button>
-                        }
-                    </div>
-                </div>
-            }
-        </article>
-
-        <article class="card">
-            <h2>LINE シミュレーター</h2>
-            <p class="muted">LINEの認証情報が無くても、グループLINEでの会話を再現できます。</p>
-            <div class="line-controls">
-                <select @bind="_lineSpeaker" disabled="@_busy">
-                    @foreach (var person in _model.People)
-                    {
-                        <option value="@person.Id">@person.DisplayName</option>
-                    }
-                </select>
-                <input @bind="_lineInput" @bind:event="oninput" @onkeydown="OnLineKeyDown"
-                       placeholder="例: 今日のお母さんどう？" disabled="@_busy" />
-                <button @onclick="SendLineAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_lineInput))">LINEで送る</button>
+                       placeholder="例：今日のお母さんの様子は？" disabled="@_busy" />
+                <button @onclick="SendAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_input))">聞く</button>
             </div>
             <div class="quick">
-                @foreach (var sample in LineSamples)
-                {
-                    var text = sample;
-                    <button class="ghost" @onclick="@(() => SendLineSampleAsync(text))" disabled="@_busy">@text</button>
-                }
-            </div>
-
-            <h3>家族共有フィード</h3>
-            <div class="feed">
-                @foreach (var item in _model.Feed)
-                {
-                    <div class="feed-item @(item.IsAi ? "ai" : "")">
-                        <span class="author">@item.Author</span>
-                        <span class="time">@FormatLocal(item.OccurredAtUtc)</span>
-                        <p>@item.Content</p>
-                    </div>
-                }
+                <button class="suggestion" @onclick="@(() => SendSampleAsync("今日のお母さんどう？"))" disabled="@_busy">今日の様子は？</button>
+                <button class="suggestion" @onclick="@(() => SendSampleAsync("今日最初に活動したのは何時？"))" disabled="@_busy">最初に動いた時間は？</button>
+                <button class="suggestion" @onclick="@(() => SendSampleAsync("リビングのライトは今ついてる？"))" disabled="@_busy">ライトはついてる？</button>
             </div>
         </article>
-    </section>
 
-    <section class="two-col">
-        <article class="card">
-            <h2>生活イベント タイムライン</h2>
-            <ul class="timeline">
-                @foreach (var item in _model.Timeline)
+        <article class="card activity-card">
+            <p class="eyebrow">最近の動き</p>
+            <h2>家の中の様子</h2>
+            @if (_model.Timeline.Count == 0)
+            {
+                <p class="empty-state">まだ記録がありません</p>
+            }
+            else
+            {
+                <ul class="timeline">
+                @foreach (var item in _model.Timeline.Take(6))
                 {
                     <li>
                         <span class="time">@FormatLocal(item.OccurredAtUtc)</span>
                         <span>@item.DeviceName</span>
-                        <span class="state @item.State">@item.State.ToUpperInvariant()</span>
+                        <span class="state @item.State">@StateLabel(item.State)</span>
                     </li>
                 }
-            </ul>
-        </article>
-
-        <article class="card">
-            <h2>直近14日の活動</h2>
-            <ul class="history">
-                @foreach (var day in _model.Recent.Reverse())
-                {
-                    <li>
-                        <span class="date">@day.Date.ToString("M/d")</span>
-                        <span class="bar" style="width:@(Math.Min(day.DeviceUsageCount * 12, 120))px"></span>
-                        <span class="muted">@day.DeviceUsageCount 回 @(day.NightActivityCount > 0 ? $"／深夜{day.NightActivityCount}回" : "")</span>
-                    </li>
-                }
-            </ul>
-
-            @if (Env.IsDevelopment())
-            {
-                <h3>デモ用シミュレーション</h3>
-                <p class="muted">今日の生活イベントを差し替えて、リスク判定の変化を確認できます。</p>
-                <div class="quick">
-                    <button class="ghost act" @onclick="@(() => SimulateAsync("normal_day"))" disabled="@_busy">通常の一日</button>
-                    <button class="ghost danger" @onclick="@(() => SimulateAsync("no_activity"))" disabled="@_busy">活動なし異常</button>
-                    <button class="ghost danger" @onclick="@(() => SimulateAsync("night_activity"))" disabled="@_busy">深夜活動異常</button>
-                </div>
+                </ul>
             }
-
-            <h3>実機データの同期</h3>
-            @if (_model.Integrations.SwitchBotConfigured)
-            {
-                <p class="muted">SwitchBot実機の最新の機器一覧をデータベースに反映します。</p>
-                <div class="quick">
-                    <button class="ghost act" @onclick="SyncDevicesAsync" disabled="@_busy">実機を同期</button>
-                </div>
-            }
-            else
-            {
-                <p class="muted">現在はデモデータで動作しています。SwitchBotの接続情報（Token/Secret）を設定すると、実機を同期できます。</p>
-                <div class="quick">
-                    <button class="ghost act" disabled>実機を同期（未設定）</button>
-                </div>
-            }
-
-            <h3>Fabricへのストリーミング</h3>
-            <p class="muted">
-                直近のデバイスイベントをFabric Eventhouse（KQL）へ送信し、リアルタイム分析パスを確認します。
-                @(_model.Integrations.EventhouseConfigured ? "現在は実ストリームに接続されています。" : "現在は未設定のためデモ動作（送信をシミュレート）します。")
-            </p>
-            <div class="quick">
-                <button class="ghost act" @onclick="PublishToStreamAsync" disabled="@_busy">Fabricへ送信</button>
-            </div>
         </article>
     </section>
+
+    <details class="detail-panel">
+        <summary>
+            <span>家電の状態</span>
+            <span class="summary-meta">@_model.Devices.Count 台</span>
+        </summary>
+        <div class="detail-content device-grid">
+            @foreach (var device in _model.Devices)
+            {
+                var d = device;
+                <div class="device-card @(d.IsOn ? "on" : "off") @(d.SafetyClass == "Restricted" ? "restricted" : "")">
+                    <div class="device-head">
+                        <div>
+                            <strong>@d.Name</strong>
+                            <span class="device-room">@d.Room</span>
+                        </div>
+                        <span class="state-pill @(d.IsOn ? "on" : "")">@(d.IsOn ? "使用中" : "停止中")</span>
+                    </div>
+                    <p class="muted">最終利用 @FormatLocal(d.LastUsedUtc) ・ 今日 @d.TodayUsageCount 回</p>
+                    <div class="device-actions">
+                        <button class="secondary-button"
+                                title="@(d.SafetyClass == "Restricted" ? "危険機器のためONは拒否されます" : "ONにする")"
+                                @onclick="@(() => ControlAsync(d.Alias, DeviceAction.TurnOn))"
+                                disabled="@_busy">つける</button>
+                        <button class="secondary-button"
+                                @onclick="@(() => ControlAsync(d.Alias, DeviceAction.TurnOff))"
+                                disabled="@_busy">消す</button>
+                    </div>
+                    @if (d.SafetyClass == "Restricted")
+                    {
+                        <p class="restricted-note">安全のため、遠隔では消す操作だけできます</p>
+                    }
+                    <a class="link-button device-detail-link" href="@($"/devices/{d.Id}")">くわしく見る →</a>
+                </div>
+            }
+        </div>
+    </details>
+
+    <details class="detail-panel">
+        <summary>
+            <span>家族との共有</span>
+            <span class="summary-meta">LINE・メッセージ</span>
+        </summary>
+        <div class="detail-content secondary-grid">
+            <div>
+                <h3>見守り隊をLINEに追加</h3>
+                <div class="line-add">
+                    <img src="https://qr-official.line.me/gs/M_755ykcrx_GW.png"
+                         alt="見守り隊 LINE公式アカウントの友だち追加QRコード" />
+                    <div>
+                        <p>スマートフォンではボタンを、パソコンではQRコードを使って追加できます。</p>
+                        <a class="primary-link" href="https://line.me/R/ti/p/@@755ykcrx" target="_blank"
+                           rel="noopener noreferrer">LINEで友だち追加</a>
+                        <span class="line-basic-id">ID: @@755ykcrx</span>
+                    </div>
+                </div>
+                <h3>LINEで質問する</h3>
+                <div class="line-controls">
+                    <select @bind="_lineSpeaker" disabled="@_busy">
+                        @foreach (var person in _model.People)
+                        {
+                            <option value="@person.Id">@person.DisplayName</option>
+                        }
+                    </select>
+                    <input @bind="_lineInput" @bind:event="oninput" @onkeydown="OnLineKeyDown"
+                           placeholder="今日の様子は？" disabled="@_busy" />
+                    <button @onclick="SendLineAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_lineInput))">送る</button>
+                </div>
+            </div>
+            <div>
+                <h3>共有メッセージ</h3>
+                <div class="feed">
+                    @foreach (var item in _model.Feed)
+                    {
+                        <div class="feed-item @(item.IsAi ? "ai" : "")">
+                            <span class="author">@item.Author</span>
+                            <span class="time">@FormatLocal(item.OccurredAtUtc)</span>
+                            <p>@item.Content</p>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    </details>
+
+    <details class="detail-panel technical">
+        <summary>
+            <span>詳しい情報・デモ操作</span>
+            <span class="summary-meta">開発者向け</span>
+        </summary>
+        <div class="detail-content secondary-grid">
+            <div>
+                <h3>接続状況</h3>
+                <div class="integrations">
+                    <span class="chip @(_model.Integrations.SwitchBotConfigured ? "on" : "mock")">データ @(_model.Integrations.SwitchBotConfigured ? "実機" : "デモ")</span>
+                    <span class="chip @(_model.Integrations.OrcaRouterConfigured ? "on" : "mock")">AI @(_model.Integrations.OrcaRouterConfigured ? "接続済み" : "モック")</span>
+                    <span class="chip @(_model.Integrations.FabricConfigured ? "on" : "mock")">Fabric @(_model.Integrations.FabricConfigured ? "接続済み" : "ローカル")</span>
+                    <span class="chip @(_model.Integrations.LineConfigured ? "on" : "mock")">LINE @(_model.Integrations.LineConfigured ? "接続済み" : "モック")</span>
+                </div>
+                <p class="muted">AIモデル @(_model.LastResolvedModel ?? "未使用")</p>
+                <h3>直近14日の活動</h3>
+                <ul class="history">
+                    @foreach (var day in _model.Recent.Reverse())
+                    {
+                        <li>
+                            <span class="date">@day.Date.ToString("M/d")</span>
+                            <span class="bar" style="width:@(Math.Min(day.DeviceUsageCount * 12, 120))px"></span>
+                            <span class="muted">@day.DeviceUsageCount 回</span>
+                        </li>
+                    }
+                </ul>
+            </div>
+            <div>
+                @if (Env.IsDevelopment())
+                {
+                    <h3>リスク判定デモ</h3>
+                    <div class="quick">
+                        <button class="suggestion" @onclick="@(() => SimulateAsync("normal_day"))" disabled="@_busy">通常の一日</button>
+                        <button class="suggestion danger" @onclick="@(() => SimulateAsync("no_activity"))" disabled="@_busy">活動なし</button>
+                        <button class="suggestion danger" @onclick="@(() => SimulateAsync("night_activity"))" disabled="@_busy">深夜活動</button>
+                    </div>
+                }
+                <h3>データ連携</h3>
+                <div class="quick">
+                    <button class="suggestion" @onclick="SyncDevicesAsync" disabled="@(_busy || !_model.Integrations.SwitchBotConfigured)">実機を同期</button>
+                    <button class="suggestion" @onclick="PublishToStreamAsync" disabled="@_busy">Fabricへ送信</button>
+                </div>
+            </div>
+        </div>
+    </details>
 }
 
 @code {
@@ -841,6 +814,25 @@ else
         RiskLevel.Medium => "少し気になる",
         _ => "いつもどおり"
     };
+
+    private static string RiskIcon(RiskLevel level) => level switch
+    {
+        RiskLevel.High => "!",
+        RiskLevel.Medium => "!",
+        _ => "✓"
+    };
+
+    private static string StateLabel(string state) => state.ToLowerInvariant() switch
+    {
+        "on" => "使用",
+        "off" => "停止",
+        "active" => "動きあり",
+        "inactive" => "動きなし",
+        _ => state
+    };
+
+    private static string ResidentDisplayName(string name) =>
+        name.EndsWith("さん", StringComparison.Ordinal) ? name : $"{name}さん";
 
     private static string RoleLabel(PersonRole role) => role switch
     {

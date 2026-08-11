@@ -1,23 +1,34 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using MimamoriTai.Core.Abstractions;
+using MimamoriTai.Core.Application;
 using MimamoriTai.Core.Domain;
-using MimamoriTai.Infrastructure.Data;
 using MimamoriTai.Infrastructure.Devices;
-using MimamoriTai.Infrastructure.Fabric;
 
 namespace MimamoriTai.Web.Services;
 
 /// <summary>
-/// Periodically polls real device status through <see cref="IDeviceProvider"/> and
-/// records DeviceEvent rows for observed on/off/motion/contact transitions, so real
-/// SwitchBot activity ("the light was turned on at 07:12") becomes real observed data
-/// that the risk score and alert engine can read exactly like demo/simulated events.
+/// Periodically polls real device status for every Production household
+/// individually, via that household's own <see cref="IHouseholdSwitchBotClientFactory"/>-
+/// resolved provider, and records:
+///   - DeviceEvent rows for observed on/off/motion/contact transitions (only on
+///     change, exactly like before this household-scoping refactor), and
+///   - PlugMiniReading rows on every single cycle for Plug Mini class devices,
+///     regardless of whether the state changed, so voltage/current/energy
+///     telemetry forms a real time series (see docs/FABRIC_SETUP.md).
 ///
-/// This service is entirely inert (its ExecuteAsync returns immediately) unless
-/// SwitchBot is the configured provider: the demo path (MockDeviceProvider) and every
-/// existing test are completely unaffected by this service being registered.
-/// Every exception is caught and logged: this must never crash the app.
+/// Each household is resolved and polled inside its own short-lived DI scope: a
+/// fresh IHouseholdSwitchBotClientFactory call decrypts that household's
+/// credentials, builds a client bound only to them, and the scope (and therefore
+/// that decrypted client) is disposed before the next household's iteration
+/// begins. No decrypted credential is ever held past one household's turn, and
+/// nothing here caches a client across households.
+///
+/// This service is entirely inert (no-op) when there are no Production households,
+/// or when a given household has neither a configured SwitchBotConnection nor an
+/// explicitly allowed legacy global-option fallback: the demo path
+/// (MockDeviceProvider) and every existing test are unaffected. Every exception is
+/// caught and logged: this must never crash the app.
 /// </summary>
 public sealed class SwitchBotPollingBackgroundService(
     IServiceScopeFactory scopeFactory,
@@ -28,12 +39,6 @@ public sealed class SwitchBotPollingBackgroundService(
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!switchBotOptions.Value.IsConfigured)
-        {
-            // No-op: SwitchBot is not configured, so there is nothing real to poll.
-            return;
-        }
-
         try
         {
             await Task.Delay(InitialDelay, stoppingToken);
@@ -62,50 +67,79 @@ public sealed class SwitchBotPollingBackgroundService(
 
     private async Task RunOnceAsync(CancellationToken ct)
     {
+        List<Guid> productionHouseholdIds;
+
         try
         {
             using var scope = scopeFactory.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var providerFactory = scope.ServiceProvider.GetRequiredService<IDeviceProviderFactory>();
-            var clock = scope.ServiceProvider.GetRequiredService<TimeProvider>();
+            var db = scope.ServiceProvider.GetRequiredService<IAppDbContext>();
 
             // This service only ever polls real (Production) households; Sample/demo
             // households are simulated locally and must never be touched here.
-            var provider = providerFactory.Get(DataSourceMode.Production);
-            if (provider.Kind != DeviceProviderKind.SwitchBot || !provider.IsConfigured)
-            {
-                return;
-            }
-
-            var productionHouseholdIds = await db.Households
+            productionHouseholdIds = await db.Households
                 .Where(h => h.DataSourceMode == DataSourceMode.Production)
                 .Select(h => h.Id)
                 .ToListAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "SwitchBot polling could not list Production households; will retry next interval.");
+            return;
+        }
 
-            if (productionHouseholdIds.Count == 0)
+        if (productionHouseholdIds.Count == 0)
+        {
+            logger.LogDebug("SwitchBot polling skipped: no Production household exists yet.");
+            return;
+        }
+
+        foreach (var householdId in productionHouseholdIds)
+        {
+            if (ct.IsCancellationRequested)
             {
-                logger.LogDebug("SwitchBot polling skipped: no Production household exists yet.");
                 return;
             }
 
-            var devices = await db.Devices
-                .Where(d => productionHouseholdIds.Contains(d.HouseholdId) && d.Provider == DeviceProviderKind.SwitchBot && d.IsActive)
-                .ToListAsync(ct);
+            await PollOneHouseholdAsync(householdId, ct);
+        }
+    }
 
-            var changedEvents = new List<(DeviceEvent Event, Device Device)>();
+    /// <summary>
+    /// Resolves and polls exactly one household inside its own DI scope, so its
+    /// decrypted SwitchBot client never outlives this call or leaks into the next
+    /// household's iteration. A failure here (auth error, network error, DB error)
+    /// is isolated to this household and never aborts the rest of the cycle.
+    /// </summary>
+    private async Task PollOneHouseholdAsync(Guid householdId, CancellationToken ct)
+    {
+        try
+        {
+            using var scope = scopeFactory.CreateScope();
+            var clientFactory = scope.ServiceProvider.GetRequiredService<IHouseholdSwitchBotClientFactory>();
+            var provider = await clientFactory.GetDeviceProviderAsync(householdId, ct);
 
-            foreach (var device in devices)
+            if (!provider.IsConfigured)
             {
-                var changed = await PollDeviceAsync(db, provider, device, clock, ct);
-                if (changed is not null)
-                {
-                    changedEvents.Add((changed, device));
-                }
+                // No connected SwitchBotConnection for this household, and no
+                // legacy global-option fallback permitted -- nothing to poll.
+                return;
             }
 
-            if (changedEvents.Count > 0)
+            var pollingService = scope.ServiceProvider.GetRequiredService<SwitchBotPollingCycleService>();
+            var result = await pollingService.PollHouseholdAsync(householdId, provider, ct);
+
+            if (result.CreatedEvents.Count > 0)
             {
-                await PublishToStreamAsync(scope.ServiceProvider, changedEvents, ct);
+                await PublishEventsToStreamAsync(scope.ServiceProvider, result.CreatedEvents, ct);
+            }
+
+            if (result.CreatedReadings.Count > 0)
+            {
+                await PublishReadingsToStreamAsync(scope.ServiceProvider, result.CreatedReadings, ct);
             }
         }
         catch (OperationCanceledException)
@@ -114,61 +148,24 @@ public sealed class SwitchBotPollingBackgroundService(
         }
         catch (Exception ex)
         {
-            logger.LogWarning(ex, "SwitchBot polling run failed; will retry next interval.");
+            logger.LogWarning(ex, "SwitchBot polling failed for household {HouseholdId}; will retry next interval.", householdId);
         }
-    }
-
-    private async Task<DeviceEvent?> PollDeviceAsync(
-        AppDbContext db, IDeviceProvider provider, Device device, TimeProvider clock, CancellationToken ct)
-    {
-        var status = await provider.GetStatusAsync(device.ExternalDeviceId, ct);
-        if (status is null)
-        {
-            return null;
-        }
-
-        var lastEvent = await db.DeviceEvents
-            .Where(e => e.DeviceId == device.Id)
-            .OrderByDescending(e => e.OccurredAtUtc)
-            .FirstOrDefaultAsync(ct);
-
-        // Never create a duplicate event when the observed state has not changed.
-        if (lastEvent is not null && string.Equals(lastEvent.State, status.State, StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-
-        var deviceEvent = new DeviceEvent
-        {
-            HouseholdId = device.HouseholdId,
-            DeviceId = device.Id,
-            EventType = "PowerState",
-            State = status.State,
-            PowerWatts = status.PowerWatts,
-            Source = EventSource.SwitchBotPoll,
-            OccurredAtUtc = status.ObservedAtUtc ?? clock.GetUtcNow(),
-            ReceivedAtUtc = clock.GetUtcNow()
-        };
-
-        db.DeviceEvents.Add(deviceEvent);
-        await db.SaveChangesAsync(ct);
-
-        return deviceEvent;
     }
 
     /// <summary>
     /// Best-effort secondary write to Fabric Eventhouse for near-real-time analytics.
     /// Azure SQL is already durable at this point; a Fabric publish failure must never
-    /// interrupt or fail the polling loop.
+    /// interrupt or fail the polling loop -- EventStreamPublishBackgroundService
+    /// retries any rows left unstamped by this best-effort attempt.
     /// </summary>
-    private async Task PublishToStreamAsync(
-        IServiceProvider scopedProvider, List<(DeviceEvent Event, Device Device)> changedEvents, CancellationToken ct)
+    private async Task PublishEventsToStreamAsync(
+        IServiceProvider scopedProvider, IReadOnlyList<(DeviceEvent Event, Device Device)> createdEvents, CancellationToken ct)
     {
         try
         {
             var publisher = scopedProvider.GetRequiredService<IEventStreamPublisher>();
 
-            var records = changedEvents.Select(x => new DeviceEventRecord(
+            var records = createdEvents.Select(x => new DeviceEventRecord(
                 x.Event.Id,
                 x.Event.HouseholdId,
                 x.Event.DeviceId,
@@ -182,7 +179,18 @@ public sealed class SwitchBotPollingBackgroundService(
                 x.Event.OccurredAtUtc.UtcDateTime)).ToList();
 
             var result = await publisher.PublishAsync(records, ct);
-            if (!result.Success)
+            if (result.Success)
+            {
+                var db = scopedProvider.GetRequiredService<IAppDbContext>();
+                var clock = scopedProvider.GetRequiredService<TimeProvider>();
+                var stampedAtUtc = clock.GetUtcNow();
+                foreach (var (deviceEvent, _) in createdEvents)
+                {
+                    deviceEvent.PublishedToStreamAtUtc = stampedAtUtc;
+                }
+                await db.SaveChangesAsync(ct);
+            }
+            else
             {
                 logger.LogWarning(
                     "Eventhouse publish of {Count} device event(s) failed: {Error}",
@@ -196,6 +204,56 @@ public sealed class SwitchBotPollingBackgroundService(
         catch (Exception ex)
         {
             logger.LogWarning(ex, "Eventhouse publish failed; SwitchBot polling continues normally.");
+        }
+    }
+
+    /// <summary>Same best-effort contract as <see cref="PublishEventsToStreamAsync"/>, for Plug Mini readings.</summary>
+    private async Task PublishReadingsToStreamAsync(
+        IServiceProvider scopedProvider, IReadOnlyList<(PlugMiniReading Reading, Device Device)> createdReadings, CancellationToken ct)
+    {
+        try
+        {
+            var publisher = scopedProvider.GetRequiredService<IPlugMiniReadingStreamPublisher>();
+
+            var records = createdReadings.Select(x => new PlugMiniReadingRecord(
+                x.Reading.Id,
+                x.Reading.HouseholdId,
+                x.Reading.DeviceId,
+                x.Device.Name,
+                x.Device.Room,
+                x.Reading.VoltageV,
+                x.Reading.CurrentMa,
+                x.Reading.DailyEnergyWh,
+                x.Reading.UsageMinutesToday,
+                x.Reading.ApproxWatts,
+                x.Reading.OccurredAtUtc.UtcDateTime)).ToList();
+
+            var result = await publisher.PublishAsync(records, ct);
+            if (result.Success)
+            {
+                var db = scopedProvider.GetRequiredService<IAppDbContext>();
+                var clock = scopedProvider.GetRequiredService<TimeProvider>();
+                var stampedAtUtc = clock.GetUtcNow();
+                foreach (var (reading, _) in createdReadings)
+                {
+                    reading.PublishedToStreamAtUtc = stampedAtUtc;
+                }
+                await db.SaveChangesAsync(ct);
+            }
+            else
+            {
+                logger.LogWarning(
+                    "Eventhouse publish of {Count} Plug Mini reading(s) failed: {Error}",
+                    records.Count, result.Error);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Expected during shutdown.
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Eventhouse Plug Mini reading publish failed; SwitchBot polling continues normally.");
         }
     }
 }

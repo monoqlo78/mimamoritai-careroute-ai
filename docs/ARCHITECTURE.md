@@ -39,8 +39,12 @@ MimamoriTai.Web  ──depends on──>  MimamoriTai.Infrastructure  ──depe
 | `IAiRouterClient` | `MockAiRouterClient` | `OrcaRouterClient`（`OrcaRouterOptions.IsConfigured` が true の時のみ登録） |
 | `IFabricDataAgentClient` | `MockFabricDataAgentClient`（`FabricOptions.IsConfigured` が false の時に登録） | `FabricDataAgentMcpClient`（`FabricOptions.IsConfigured` が true の時のみ登録。MCP/JSON-RPC経由でFabric Data Agentに接続） |
 | `IEventStreamPublisher` | `MockEventStreamPublisher`（`EventhouseOptions.IsConfigured` が false の時に登録） | `EventhouseStreamPublisher`（`EventhouseOptions.IsConfigured` が true の時のみ登録） |
+| `IPlugMiniReadingStreamPublisher` | `MockPlugMiniReadingStreamPublisher`（`EventhouseOptions.IsConfigured` が false の時に登録） | `EventhousePlugMiniReadingStreamPublisher`（`EventhouseOptions.IsConfigured` が true の時のみ登録。`DeviceEvents` とは別テーブル `SwitchBotPlugReadings` へ送信、詳細は `docs/FABRIC_SETUP.md`） |
+| `ICredentialProtector` | 常に `DataProtectionCredentialProtector`（ASP.NET Core Data Protectionのラッパー。開発環境は既定のローカルキーリング、非開発環境は `DataProtection:KeyDirectory` 未設定だと起動時に例外で即座に失敗する） | — |
 | `ILineMessagingClient` | `MockLineMessagingClient` | `LineMessagingClient`（`LineOptions.IsConfigured` が true の時のみ登録） |
 | `IAppDbContext` (`AppDbContext`) | SQLite ファイル (`mimamoritai-demo.db`) | 接続文字列があれば SQL Server |
+
+**世帯ごとのSwitchBot認証情報への移行**: 上表の `IDeviceProvider`/`SwitchBotDeviceProvider` はグローバル `SwitchBotOptions`（開発用ブートストラップ）を使う経路として引き続き存在するが、本番運用では世帯オーナーが `/settings/switchbot` で入力したToken/Secretを `SwitchBotConnection`（暗号化保存）として世帯ごとに持ち、`IHouseholdSwitchBotClientFactory` が世帯ごとに独立した `ISwitchBotClient`/`IDeviceProvider` を都度生成する。詳細は本ファイル後段「世帯ごとのSwitchBot認証情報とポーリング」節、および `docs/SECURITY.md`/`docs/SWITCHBOT_SETUP.md` を参照。
 
 **実機（SwitchBot）への切り替え**: `SwitchBotDeviceProvider` はSwitchBot OpenAPI v1.1のレスポンス（`GET /v1.1/devices` の `deviceList`/`infraredRemoteList`、`GET /v1.1/devices/{id}/status` の機種別フィールド）を実装済みで、`statusCode` が100以外の場合や不正なJSONは例外を投げず失敗として扱う（詳細は `docs/SWITCHBOT_SETUP.md`）。`SwitchBot:Enabled=true`＋Token/Secretで有効化した後、`DeviceSyncService`（ダッシュボードの「実機を同期」ボタン、または `POST /api/devices/sync`）を実行して実機の機器一覧をDevicesテーブルへ反映する。反映済みの機器は `SwitchBotPollingBackgroundService` が定期的（既定5分、`SwitchBot:PollIntervalMinutes`）にステータスをポーリングし、ON/OFF・人感・開閉の変化を `DeviceEvent`（`Source=SwitchBotPoll`）として記録するため、リスク判定・アラートも実データに基づいて動作する。
 
@@ -120,7 +124,7 @@ public interface ICurrentUserAccessor { CurrentUser? Current { get; } }
 
 `DashboardService.LoadAsync` と `Endpoints/*.cs` の世帯IDを扱う全エンドポイントは、必ず `CanAccessAsync` を最初に呼び、拒否された場合は `LoadAsync` は `null`、エンドポイントは `403 Forbidden`（日本語メッセージ）を返す。これにより、あるユーザーが他ユーザーの本番データを閲覧・操作することは構造的に不可能になっている。
 
-例外: `WebhookEndpoints.cs` のLINE Webhookはサインイン済みユーザーのコンテキストを持たない匿名のシステムコールバックであるため、`CanAccessAsync` は呼ばず `ResolveDefaultAsync` のみで世帯を解決する（署名検証は既存の `LineSignature` によるHMAC検証で担保）。
+例外: `WebhookEndpoints.cs` のLINE Webhookはサインイン済みユーザーのコンテキストを持たない匿名のシステムコールバックであるため、`CanAccessAsync` は呼ばない。世帯の解決は「その送信元（userId/groupId）に対応する既存の有効な `LineRecipient` があればその世帯」を最優先し、未リンクの送信元は `Line:AllowDefaultHouseholdFallback=true`（既定false、`appsettings.Development.json` でのみtrue）の場合に限り `ResolveDefaultAsync` にフォールバックする（署名検証は既存の `LineSignature` によるHMAC検証で担保）。詳細は `docs/LINE_SETUP.md`「世帯とLINEを紐付ける（連携コード）」を参照。
 
 ### データソース切り替え: `DataSourceMode` / `IDeviceProviderFactory` / `IDataSourceContext`
 
@@ -129,6 +133,16 @@ public interface ICurrentUserAccessor { CurrentUser? Current { get; } }
 - `IDeviceProviderFactory.Get(DataSourceMode)`: `Sample` は常に `MockDeviceProvider`。`Production` は `SwitchBotOptions.IsConfigured` なら `SwitchBotDeviceProvider`、未設定なら **例外を投げず** `MockDeviceProvider` にフォールバックする（本番世帯を作っても未設定なら引き続きデモとして動く）。
 - `IDataSourceContext`（スコープド, `Mode`/`HouseholdId` を保持）: `IDeviceProvider` として実際にDIへ登録されるのは `DataSourceAwareDeviceProvider`（デコレーター）で、呼び出しの都度 `IDataSourceContext.Mode` を読んで `IDeviceProviderFactory` から実体を解決する。そのため `DeviceControlService`／`DeviceSyncService`／`AssistantOrchestrator`／`DashboardService` など既存の呼び出し側は変更不要でコンパイルが通るが、**各処理の入口（`DashboardService.LoadAsync`、`DeviceSyncEndpoints`、バックグラウンドサービス）が明示的に `IDataSourceContext.Mode`/`HouseholdId` を設定してから使う**必要がある。
 - `SwitchBotPollingBackgroundService` は本番世帯のみをポーリング対象とし（上記参照）、`SimulatorEndpoints` はサンプル世帯以外では400を返す（本番データを偽イベントで汚染しないため）。
+
+### 世帯ごとのSwitchBot認証情報とポーリング（`SwitchBotConnection` / `IHouseholdSwitchBotClientFactory`）
+
+従来は `SwitchBotOptions`（`SwitchBot:Token`/`Secret`、User Secrets/App設定のグローバル1組）のみで全世帯を一括してポーリングしていた。これを世帯ごとの暗号化済み認証情報に置き換えた（詳細は `docs/SECURITY.md`「世帯ごとのSwitchBot認証情報」/ `docs/SWITCHBOT_SETUP.md`「本番運用」参照）。
+
+- `SwitchBotConnection`（世帯ごとに最大1件）の `EncryptedToken`/`EncryptedSecret` は `ICredentialProtector`（`Infrastructure/Security/DataProtectionCredentialProtector.cs`、ASP.NET Core Data Protectionのラッパー、purpose文字列 `"MimamoriTai.SwitchBotCredentials.v1"`）で暗号化して保存する。復号は `IHouseholdSwitchBotClientFactory`（`Infrastructure/Devices/HouseholdSwitchBotClientFactory.cs`）の呼び出しごとの短命なスコープ内でのみ行い、復号済みの値をキャッシュ・共有することはない（世帯Aの認証情報が世帯Bの処理に混入しないことを `HouseholdSwitchBotClientFactoryTests` で回帰テストしている）。
+- **設定画面**: 認証済みの世帯オーナーのみが `/settings/switchbot`（`SwitchBotSettings.razor` + `Web/Endpoints/SwitchBotConnectionEndpoints.cs`）でToken/Secretを入力できる。保存前に必ず実際の `GET /v1.1/devices` 呼び出しで検証し、成功した場合のみ暗号化して保存する。UIは接続状態（未設定/接続済み/エラー）と最終検証・同期日時のみを表示し、保存済みの秘密情報を再表示することはない。エンドポイントは認証必須（`RequireAuthorization`）かつBlazor Serverの標準Antiforgery（`UseAntiforgery()`）で保護されている。
+- `SwitchBotOptions.AllowGlobalFallback`（既定false）を明示的にtrueにした場合のみ、世帯に `SwitchBotConnection` が無いときの最終手段としてグローバル `SwitchBotOptions` を使う（ローカル開発のブートストラップ専用の位置づけ）。
+- **ポーリング**: `SwitchBotPollingCycleService`（`Core/Application/`、DIやHTTPに依存しないテスト容易なコア）が1周期あたりの処理（機器一覧取得→状態変化なら`DeviceEvent`挿入→Plug Miniクラスの機器は状態変化の有無に関わらず`PlugMiniReading`を1行挿入→重複排除）を担い、`SwitchBotPollingBackgroundService`（`Web/Services/`）が対象世帯ごとに独立したDIスコープを生成してこのコアを呼び出す。1つの世帯の処理中の例外が他世帯のポーリングを止めないよう、世帯単位でtry/catchしている。
+- **Fabricへの発行**: `PlugMiniReadingPublishService`（`Core/Application/`）が `DeviceEvent`/`EventStreamPublishService` と同じ「未発行分だけをバッチ処理し、成功した行にのみ `PublishedToStreamAtUtc` を刻む」パターンで `IPlugMiniReadingStreamPublisher`（実装: `EventhousePlugMiniReadingStreamPublisher`、モック: `MockPlugMiniReadingStreamPublisher`）へ送る。`PlugMiniReadingPublishBackgroundService` が定期実行する。テーブルスキーマは `docs/FABRIC_SETUP.md` 参照。
 
 ### UI
 
@@ -144,6 +158,9 @@ public interface ICurrentUserAccessor { CurrentUser? Current { get; } }
 | `HouseholdMember` | ユーザーと世帯の関連（役割付き） | `HouseholdId`, `AppUserId`, `Role`（`HouseholdMemberRole`） |
 | `Device` | 家電機器 | `ExternalDeviceId`, `Alias`, `DeviceType`, `Provider`, `RemoteControlAllowed`, `SafetyClass`, `IsActive`（プロバイダから消えた機器を削除せず無効化するためのフラグ） |
 | `DeviceEvent` | 家電の状態変化イベント（ON/OFF等） | `State`, `PowerWatts`, `Source`（`EventSource`: `Seed`/`Mock`/`Simulator`/`AppCommand`/`SwitchBotWebhook`/`SwitchBotPoll`）, `OccurredAtUtc` |
+| `SwitchBotConnection` | 世帯ごとの暗号化済みSwitchBot認証情報（1世帯1件、詳細は `docs/SECURITY.md`） | `HouseholdId`（ユニーク）, `EncryptedToken`, `EncryptedSecret`, `Status`（`SwitchBotConnectionStatus`: `NotConfigured`/`Connected`/`Error`）, `LastValidatedAtUtc`, `LastSyncAtUtc`, `LastErrorMessage`（秘密情報は含まない） |
+| `PlugMiniReading` | Plug Miniの毎ポーリング周期の電力テレメトリ（状態変化の有無に関わらず記録、詳細は `docs/FABRIC_SETUP.md`） | `HouseholdId`, `DeviceId`, `VoltageV`, `CurrentMa`, `DailyEnergyWh`, `UsageMinutesToday`, `ApproxWatts`, `OccurredAtUtc`, `PublishedToStreamAtUtc` |
+| `LineLinkCode` | 世帯とLINE送信元を紐付けるための短命な使い捨てコード（詳細は `docs/LINE_SETUP.md`） | `HouseholdId`, `CodeHash`（平文は保存しない）, `ExpiresAtUtc`, `UsedAtUtc`, `AttemptCount` |
 | `DeviceCommand` | 自然言語／API経由の操作要求（**成功・失敗・拒否すべて記録**） | `Action`, `Status`（`CommandStatus`）, `FailureReason`, `AiResolvedModel` |
 | `FamilyMessage` | 家族間・AIとのメッセージ（チャット/LINE） | `Content`, `MessageType`, `Source` |
 | `RiskAssessment` | 見守りリスク判定の履歴 | `RiskLevel`, `Score`, `Reason` |

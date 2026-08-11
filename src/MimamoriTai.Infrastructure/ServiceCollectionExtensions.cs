@@ -1,5 +1,6 @@
 using Azure.Core;
 using Azure.Identity;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -14,6 +15,7 @@ using MimamoriTai.Infrastructure.Data;
 using MimamoriTai.Infrastructure.Devices;
 using MimamoriTai.Infrastructure.Fabric;
 using MimamoriTai.Infrastructure.Line;
+using MimamoriTai.Infrastructure.Security;
 
 namespace MimamoriTai.Infrastructure;
 
@@ -56,6 +58,8 @@ public static class ServiceCollectionExtensions
         services.Configure<EventhouseOptions>(configuration.GetSection(EventhouseOptions.SectionName));
         services.Configure<EventStreamOptions>(configuration.GetSection(EventStreamOptions.SectionName));
         services.Configure<AuthOptions>(configuration.GetSection(AuthOptions.SectionName));
+        services.Configure<AdminOptions>(configuration.GetSection(AdminOptions.SectionName));
+        services.Configure<MimamoriDataProtectionOptions>(configuration.GetSection(MimamoriDataProtectionOptions.SectionName));
 
         var connectionString = configuration.GetConnectionString("AppDb");
 
@@ -77,6 +81,24 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IAppDbContext>(sp => sp.GetRequiredService<AppDbContext>());
         services.AddSingleton(TimeProvider.System);
 
+        // --- Data Protection / per-household credential encryption -----------
+        // The key ring itself (used to encrypt/decrypt SwitchBotConnection rows)
+        // is registered here; whether a *durable* key path is required is decided
+        // and enforced (fail-fast) by the hosting Web project at startup, since
+        // only it knows the current IWebHostEnvironment. Local dev with no
+        // DataProtection:KeyDirectory configured keeps ASP.NET Core's own default
+        // local key ring, which is fine for a single-machine demo box.
+        var dataProtection = configuration.GetSection(MimamoriDataProtectionOptions.SectionName).Get<MimamoriDataProtectionOptions>()
+            ?? new MimamoriDataProtectionOptions();
+
+        var dataProtectionBuilder = services.AddDataProtection().SetApplicationName("MimamoriTai");
+        if (dataProtection.IsDurablePathConfigured)
+        {
+            dataProtectionBuilder.PersistKeysToFileSystem(new DirectoryInfo(dataProtection.KeyDirectory!));
+        }
+
+        services.AddSingleton<ICredentialProtector, DataProtectionCredentialProtector>();
+
         // --- Device provider -------------------------------------------------
         // Both providers are always registered; selection between them happens per
         // household at runtime via IDeviceProviderFactory + IDataSourceContext, not
@@ -89,6 +111,15 @@ public static class ServiceCollectionExtensions
         {
             client.Timeout = TimeSpan.FromSeconds(30);
         });
+
+        // Named client reused by the household-scoped factory below (per-household
+        // credentials, resolved at request time -- see HouseholdSwitchBotClientFactory).
+        services.AddHttpClient(HouseholdSwitchBotClientFactory.HttpClientName, client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(30);
+        });
+        services.AddScoped<IHouseholdSwitchBotClientFactory, HouseholdSwitchBotClientFactory>();
+        services.AddScoped<SwitchBotConnectionService>();
 
         services.AddSingleton<MockDeviceProvider>();
         services.AddScoped<SwitchBotDeviceProvider>();
@@ -177,6 +208,24 @@ public static class ServiceCollectionExtensions
             services.AddSingleton<IEventStreamPublisher, MockEventStreamPublisher>();
         }
 
+        // Plug Mini readings only ever go through Eventhouse (no EventHub-protocol
+        // path for this stream, unlike DeviceEvents above) since the JSON REST
+        // ingestion path is all that's needed for a low-volume per-poll-cycle
+        // table; keeps this secondary stream simple and independently failable.
+        if (eventhouse.IsConfigured)
+        {
+            services.TryAddSingleton<TokenCredential>(new DefaultAzureCredential());
+            services.AddHttpClient<IPlugMiniReadingStreamPublisher, EventhousePlugMiniReadingStreamPublisher>(client =>
+            {
+                client.BaseAddress = new Uri(eventhouse.ClusterUri.TrimEnd('/') + "/");
+                client.Timeout = TimeSpan.FromSeconds(eventhouse.TimeoutSeconds);
+            });
+        }
+        else
+        {
+            services.AddSingleton<IPlugMiniReadingStreamPublisher, MockPlugMiniReadingStreamPublisher>();
+        }
+
         // --- Application services --------------------------------------------
         services.AddScoped<ILocalDataQuestionService>(sp =>
             new LocalDataQuestionService(sp.GetRequiredService<IAppDbContext>(), sp.GetRequiredService<TimeProvider>()));
@@ -187,6 +236,10 @@ public static class ServiceCollectionExtensions
         services.AddScoped<AssistantOrchestrator>();
         services.AddScoped<DeviceSyncService>();
         services.AddScoped<EventStreamPublishService>();
+        services.AddScoped<PlugMiniReadingPublishService>();
+        services.AddScoped<SwitchBotPollingCycleService>();
+        services.AddScoped<DeviceInsightService>();
+        services.AddScoped<DeviceInsightQuestionService>();
 
         // --- Multi-user / household access -------------------------------------
         // DevCurrentUserAccessor is the zero-configuration fallback: a single fixed
@@ -196,6 +249,7 @@ public static class ServiceCollectionExtensions
         // ICurrentUserAccessor.
         services.AddScoped<ICurrentUserAccessor, DevCurrentUserAccessor>();
         services.AddScoped<HouseholdAccessService>();
+        services.AddScoped<AdminAccessService>();
 
         // --- Watch/risk alert (LINE push) -------------------------------------
         services.AddSingleton(sp =>
@@ -214,6 +268,8 @@ public static class ServiceCollectionExtensions
         });
         services.AddScoped<ILineRecipientResolver, LineRecipientResolver>();
         services.AddScoped<WatchAlertService>();
+        services.AddScoped<LinePostbackActionService>();
+        services.AddScoped<LineLinkCodeService>();
 
         services.AddScoped(sp => new IntegrationStatus(
             sp.GetRequiredService<IDeviceProvider>().Kind.ToString(),

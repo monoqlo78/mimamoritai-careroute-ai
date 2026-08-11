@@ -24,6 +24,16 @@ public sealed class SwitchBotOptions
     /// </summary>
     public double PollIntervalMinutes { get; set; } = 5;
 
+    /// <summary>
+    /// When true, a Production household with no per-household
+    /// <c>SwitchBotConnection</c> row may fall back to these global bootstrap
+    /// Token/Secret. This exists only for local/dev bring-up before the Settings UI
+    /// has been used; it defaults to false so a shared/production deployment never
+    /// silently binds every household to one operator's SwitchBot account. See
+    /// docs/SECURITY.md for the full precedence rules.
+    /// </summary>
+    public bool AllowGlobalFallback { get; set; }
+
     public bool IsConfigured =>
         Enabled && !string.IsNullOrWhiteSpace(Token) && !string.IsNullOrWhiteSpace(Secret);
 }

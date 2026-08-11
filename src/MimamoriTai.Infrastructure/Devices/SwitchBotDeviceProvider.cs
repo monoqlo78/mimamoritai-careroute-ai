@@ -19,10 +19,20 @@ namespace MimamoriTai.Infrastructure.Devices;
 /// Every envelope is `{ "statusCode": int, "message": string, "body": {...} }`.
 /// statusCode 100 means success; anything else (including missing/invalid JSON) is
 /// treated as a failure and never throws out of this provider.
+///
+/// Also implements <see cref="IDeviceStatusSnapshotProvider"/>: <see cref="GetStatusSnapshotAsync"/>
+/// fetches the status envelope exactly once per call and derives both the on/off
+/// state projection and (for Plug Mini devices) the voltage/current/energy
+/// telemetry from that single parsed response, so callers that need both (see
+/// MimamoriTai.Core.Application.SwitchBotPollingCycleService) never issue two live
+/// GET .../status requests for the same device in the same poll. <see cref="GetStatusAsync"/>
+/// and <see cref="GetPlugMiniReadingAsync"/> remain available as independent,
+/// single-purpose calls for callers that only need one half (e.g. ToggleAsync,
+/// device-detail/dashboard reads) -- each of those still does its own single fetch.
 /// </summary>
 public sealed class SwitchBotDeviceProvider(
     ISwitchBotClient client,
-    ILogger<SwitchBotDeviceProvider> logger) : IDeviceProvider
+    ILogger<SwitchBotDeviceProvider> logger) : IDeviceProvider, ISwitchBotPlugMiniReader, IDeviceStatusSnapshotProvider
 {
     private const int SuccessStatusCode = 100;
     private const string NoHubDeviceId = "000000000000";
@@ -81,18 +91,81 @@ public sealed class SwitchBotDeviceProvider(
 
     public async Task<ProviderDeviceStatus?> GetStatusAsync(string externalDeviceId, CancellationToken ct = default)
     {
-        // Virtual infrared remote devices have no status endpoint; SwitchBot returns
-        // an error for them, which FetchAsync turns into a null envelope below.
-        var envelope = await FetchAsync<StatusBody>(
-            () => client.GetDeviceStatusRawAsync(externalDeviceId, ct), "device status");
+        var body = await FetchStatusBodyAsync(externalDeviceId, "device status", ct);
+        return body is null ? null : BuildStatus(externalDeviceId, body);
+    }
 
-        if (envelope?.Body is null)
+    /// <summary>
+    /// Reads the raw voltage/current/daily-energy/usage-minutes fields from a Plug
+    /// Mini's status response. Returns null (never throws) when the device is not a
+    /// Plug Mini variant (no such fields present) or the request/parse fails --
+    /// mirrors GetStatusAsync's "never throw out of this provider" contract.
+    /// </summary>
+    public async Task<PlugMiniPowerReading?> GetPlugMiniReadingAsync(string externalDeviceId, CancellationToken ct = default)
+    {
+        var body = await FetchStatusBodyAsync(externalDeviceId, "plug mini status", ct);
+        return body is null ? null : BuildPlugMiniReading(externalDeviceId, body);
+    }
+
+    /// <summary>
+    /// Combined status+Plug Mini projection from exactly ONE status request: fetches
+    /// the raw envelope a single time and derives both <see cref="GetStatusAsync"/>'s
+    /// and <see cref="GetPlugMiniReadingAsync"/>'s results from that one parsed body,
+    /// so a caller polling every device once per cycle (see
+    /// MimamoriTai.Core.Application.SwitchBotPollingCycleService) never doubles the
+    /// live API call count. Non-Plug-Mini devices simply get a null
+    /// <see cref="DeviceStatusSnapshot.PlugMiniReading"/> back -- no extra request is
+    /// ever made to find that out, it falls out of the fields already present (or
+    /// absent) in the one response.
+    /// </summary>
+    public async Task<DeviceStatusSnapshot> GetStatusSnapshotAsync(string externalDeviceId, CancellationToken ct = default)
+    {
+        var body = await FetchStatusBodyAsync(externalDeviceId, "device status", ct);
+        if (body is null)
+        {
+            return new DeviceStatusSnapshot(null, null);
+        }
+
+        return new DeviceStatusSnapshot(BuildStatus(externalDeviceId, body), BuildPlugMiniReading(externalDeviceId, body));
+    }
+
+    /// <summary>
+    /// The one and only place this provider calls GET .../status. Virtual infrared
+    /// remote devices have no status endpoint; SwitchBot returns an error for them,
+    /// which FetchAsync turns into a null envelope/return here.
+    /// </summary>
+    private async Task<StatusBody?> FetchStatusBodyAsync(string externalDeviceId, string what, CancellationToken ct)
+    {
+        var envelope = await FetchAsync<StatusBody>(
+            () => client.GetDeviceStatusRawAsync(externalDeviceId, ct), what);
+        return envelope?.Body;
+    }
+
+    private static ProviderDeviceStatus BuildStatus(string externalDeviceId, StatusBody body)
+    {
+        var (state, powerWatts) = ResolveState(body);
+        return new ProviderDeviceStatus(externalDeviceId, state, powerWatts, DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>
+    /// Plug (non-mini) and Bot devices report "power" but never voltage/current, so
+    /// this naturally returns null for them (all telemetry fields are absent) --
+    /// i.e. no Plug-specific work or request is triggered for non-Plug-Mini devices.
+    /// </summary>
+    private static PlugMiniPowerReading? BuildPlugMiniReading(string externalDeviceId, StatusBody body)
+    {
+        if (body.Voltage is null && body.ElectricCurrent is null && body.Weight is null && body.ElectricityOfDay is null)
         {
             return null;
         }
 
-        var (state, powerWatts) = ResolveState(envelope.Body);
-        return new ProviderDeviceStatus(externalDeviceId, state, powerWatts, DateTimeOffset.UtcNow);
+        return new PlugMiniPowerReading(
+            externalDeviceId,
+            body.Voltage,
+            body.ElectricCurrent,
+            body.Weight,
+            body.ElectricityOfDay,
+            DateTimeOffset.UtcNow);
     }
 
     public Task<ProviderResult> TurnOnAsync(string externalDeviceId, CancellationToken ct = default) =>
@@ -323,7 +396,23 @@ public sealed class SwitchBotDeviceProvider(
         /// <summary>Plug Mini variants: live current draw in mA.</summary>
         public double? ElectricCurrent { get; set; }
 
-        /// <summary>Plug Mini variants: power consumed in a day, in Watts.</summary>
+        /// <summary>
+        /// Plug Mini variants: SwitchBot's official field name for this is "weight",
+        /// despite the name -- per the public SwitchBotAPI docs
+        /// (devices/plugs-switches/plug-mini-jp.md) it is the day's accumulated energy
+        /// consumption. The API reference does not state the unit unambiguously
+        /// (observed values are consistent with Wh, not kWh, for typical household
+        /// loads); this project stores it as-is in
+        /// <see cref="Domain.PlugMiniReading.DailyEnergyWh"/> assuming Wh and documents
+        /// this assumption in docs/FABRIC_SETUP.md as an open ambiguity rather than
+        /// silently guessing a scale factor.
+        /// </summary>
         public double? Weight { get; set; }
+
+        /// <summary>Plug Mini variants: live instantaneous voltage in V.</summary>
+        public double? Voltage { get; set; }
+
+        /// <summary>Plug Mini variants: minutes the outlet has been switched on so far today.</summary>
+        public int? ElectricityOfDay { get; set; }
     }
 }

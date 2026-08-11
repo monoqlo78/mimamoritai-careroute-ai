@@ -4,7 +4,12 @@ using MimamoriTai.Core.Domain;
 
 namespace MimamoriTai.Core.Application;
 
-public sealed record HouseholdSummary(Guid Id, string Name, DataSourceMode DataSourceMode, HouseholdMemberRole Role);
+public sealed record HouseholdSummary(
+    Guid Id,
+    string Name,
+    DataSourceMode DataSourceMode,
+    HouseholdMemberRole Role,
+    string AnalyticsLabel);
 
 /// <summary>
 /// Central authorization + user-provisioning point for the multi-user model.
@@ -61,12 +66,20 @@ public sealed class HouseholdAccessService(
         var sample = await db.Households
             .Where(h => h.DataSourceMode == DataSourceMode.Sample)
             .OrderBy(h => h.CreatedAtUtc)
-            .Select(h => new HouseholdSummary(h.Id, h.Name, h.DataSourceMode, HouseholdMemberRole.Viewer))
+            .Select(h => new
+            {
+                h.Id,
+                h.Name,
+                h.DataSourceMode,
+                Role = HouseholdMemberRole.Viewer
+            })
             .ToListAsync(ct);
 
         if (user is null)
         {
-            return sample;
+            return sample
+                .Select(h => new HouseholdSummary(h.Id, h.Name, h.DataSourceMode, h.Role, "デモデータ"))
+                .ToList();
         }
 
         var owned = await (
@@ -74,10 +87,41 @@ public sealed class HouseholdAccessService(
             join h in db.Households on m.HouseholdId equals h.Id
             where m.AppUserId == user.AppUserId && h.DataSourceMode == DataSourceMode.Production
             orderby h.CreatedAtUtc
-            select new HouseholdSummary(h.Id, h.Name, h.DataSourceMode, m.Role))
+            select new
+            {
+                h.Id,
+                h.Name,
+                h.DataSourceMode,
+                m.Role
+            })
             .ToListAsync(ct);
 
-        return [.. sample, .. owned];
+        var productionIds = owned.Select(h => h.Id).ToList();
+        var activeLineRecipients = await db.LineRecipients
+            .Where(r => productionIds.Contains(r.HouseholdId) && r.IsActive)
+            .OrderByDescending(r => r.LastSeenAt)
+            .Select(r => new { r.HouseholdId, r.DisplayName })
+            .ToListAsync(ct);
+
+        var lineDisplayNames = activeLineRecipients
+            .GroupBy(r => r.HouseholdId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(r => r.DisplayName)
+                    .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)));
+
+        var sampleSummaries = sample.Select(h =>
+            new HouseholdSummary(h.Id, h.Name, h.DataSourceMode, h.Role, "デモデータ"));
+        var productionSummaries = owned.Select(h =>
+        {
+            lineDisplayNames.TryGetValue(h.Id, out var lineDisplayName);
+            var label = string.IsNullOrWhiteSpace(lineDisplayName)
+                ? $"{h.Name}（LINE未連携）"
+                : $"{lineDisplayName}（LINE）";
+            return new HouseholdSummary(h.Id, h.Name, h.DataSourceMode, h.Role, label);
+        });
+
+        return [.. sampleSummaries, .. productionSummaries];
     }
 
     /// <summary>Sample households are accessible to anyone; Production households require membership.</summary>

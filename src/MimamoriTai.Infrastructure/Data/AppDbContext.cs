@@ -26,6 +26,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
     public DbSet<AppUser> AppUsers => Set<AppUser>();
     public DbSet<HouseholdMember> HouseholdMembers => Set<HouseholdMember>();
     public DbSet<LineRecipient> LineRecipients => Set<LineRecipient>();
+    public DbSet<SwitchBotConnection> SwitchBotConnections => Set<SwitchBotConnection>();
+    public DbSet<PlugMiniReading> PlugMiniReadings => Set<PlugMiniReading>();
+    public DbSet<LineLinkCode> LineLinkCodes => Set<LineLinkCode>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -171,6 +174,38 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.LineUserId).HasMaxLength(64).IsRequired();
             e.Property(x => x.DisplayName).HasMaxLength(128);
             e.HasIndex(x => new { x.HouseholdId, x.LineUserId }).IsUnique();
+            e.HasOne(x => x.Household).WithMany().HasForeignKey(x => x.HouseholdId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        b.Entity<SwitchBotConnection>(e =>
+        {
+            // Encrypted blobs can be sizeable (base64 Data Protection payloads);
+            // 4000 comfortably covers them on both SQL Server (nvarchar) and SQLite.
+            e.Property(x => x.EncryptedToken).HasMaxLength(4000).IsRequired();
+            e.Property(x => x.EncryptedSecret).HasMaxLength(4000).IsRequired();
+            e.Property(x => x.LastErrorMessage).HasMaxLength(512);
+            e.Property(x => x.Status).HasConversion<string>().HasMaxLength(32);
+            // One connection row per household.
+            e.HasIndex(x => x.HouseholdId).IsUnique();
+            e.HasOne(x => x.Household).WithMany().HasForeignKey(x => x.HouseholdId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        b.Entity<PlugMiniReading>(e =>
+        {
+            e.HasIndex(x => new { x.HouseholdId, x.DeviceId, x.OccurredAtUtc }).IsUnique();
+            // Supports the "unpublished rows, oldest first" query the Fabric stream
+            // publish path runs every cycle, mirroring DeviceEvent.
+            e.HasIndex(x => x.PublishedToStreamAtUtc);
+            e.HasOne(x => x.Device).WithMany().HasForeignKey(x => x.DeviceId).OnDelete(DeleteBehavior.Cascade);
+        });
+
+        b.Entity<LineLinkCode>(e =>
+        {
+            e.Property(x => x.CodeHash).HasMaxLength(128).IsRequired();
+            // Redemption looks up an active code by hash; expired/used codes are
+            // deliberately not unique (a household may accumulate many over time).
+            e.HasIndex(x => new { x.CodeHash, x.UsedAtUtc, x.ExpiresAtUtc });
+            e.HasIndex(x => x.HouseholdId);
             e.HasOne(x => x.Household).WithMany().HasForeignKey(x => x.HouseholdId).OnDelete(DeleteBehavior.Cascade);
         });
 

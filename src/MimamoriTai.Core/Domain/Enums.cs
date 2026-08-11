@@ -112,3 +112,20 @@ public enum HouseholdMemberRole
     Member = 1,
     Viewer = 2
 }
+
+/// <summary>
+/// Connection status of a household's per-household SwitchBot credentials
+/// (<see cref="SwitchBotConnection"/>). Drives the Settings UI badge and whether the
+/// household-scoped polling loop attempts to poll this household at all.
+/// </summary>
+public enum SwitchBotConnectionStatus
+{
+    /// <summary>No Token/Secret has been saved for this household yet.</summary>
+    NotConfigured = 0,
+
+    /// <summary>Credentials were saved and the most recent validation/sync succeeded.</summary>
+    Connected = 1,
+
+    /// <summary>Credentials were saved but the most recent validation/sync failed (e.g. revoked token).</summary>
+    Error = 2
+}

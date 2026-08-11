@@ -1,0 +1,7 @@
+reference collection      : REFERENCE_DO_NOT_RENDER
+  object MimamoReferencePlate hide_render=True  hide_viewport=False
+  packed image MimamoReferenceImage   1122x1402 packed=True
+view-layer exclude       : False
+front camera             : ORTHO ortho_scale=1.5901 loc=(0.000, -4.240, 0.749)
+camera background images : 1 (alpha 0.45)
+character                : 42002 verts, 22 materials, height 1.5000 m, soles Z=0

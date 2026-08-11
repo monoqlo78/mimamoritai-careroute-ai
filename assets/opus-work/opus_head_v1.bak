@@ -1,0 +1,372 @@
+"""Head / face construction for the Mimamo opus rebuild."""
+import math
+
+import bpy
+from mathutils import Euler, Vector
+
+from opus_lib import (
+    L,
+    X,
+    Z,
+    add_modifier,
+    bevel,
+    ellipse_outline,
+    heart_outline,
+    inflate_outline,
+    link,
+    mesh_from,
+    project_to_ellipsoid,
+    quad_sphere,
+    revolve,
+    rounded_rect_outline,
+    set_vertex_colors,
+    smile_outline,
+    subsurf,
+    surface_band,
+)
+
+# ---- reference-derived head constants ------------------------------------- #
+HEAD_C = (0.0, 0.0, 1.355)
+HEAD_R = (0.5125, 0.470, 0.450)
+
+EYE_X = 0.2040
+EYE_Z = 1.2300
+EYE_A = 0.0830      # half width
+EYE_B = 0.1215      # half height
+
+BROW_X = 0.2150
+BROW_Z = 1.4450
+MOUTH_C = (0.0, 1.0600)
+BLUSH_X = 0.2740
+BLUSH_Z = 1.1050
+FHEART_Z = 1.6410
+EAR_X = 0.5650
+EAR_Z = 1.3050
+ANT_HEART_Z = 2.0090
+
+
+def uv_grid(name, w, h, nx, ny, mat, coll, cx=0.0, cz=0.0, ellipse=False):
+    verts, faces, uvs = [], [], []
+    for j in range(ny + 1):
+        for i in range(nx + 1):
+            u = i / nx
+            v = j / ny
+            verts.append((cx + (u - 0.5) * w, 0.0, cz + (v - 0.5) * h))
+    for j in range(ny):
+        for i in range(nx):
+            a = j * (nx + 1) + i
+            faces.append([a, a + 1, a + nx + 2, a + nx + 1])
+    ob = mesh_from(name, verts, faces, mat, coll=coll)
+    me = ob.data
+    uvl = me.uv_layers.new(name="UVMap")
+    for poly in me.polygons:
+        for li in poly.loop_indices:
+            vi = me.loops[li].vertex_index
+            p = me.vertices[vi].co
+            uvl.data[li].uv = ((p.x - cx) / w + 0.5, (p.z - cz) / h + 0.5)
+    return ob
+
+
+def build_head(M, coll, tex):
+    """Returns dict of named objects (each already in `coll`)."""
+    out = {}
+    cx, cy, cz = HEAD_C
+    rx, ry, rz = HEAD_R
+
+    # ---------------- helmet shell ---------------- #
+    head = quad_sphere("HeadShell", radii=HEAD_R, loc=HEAD_C, n=20, power=2.18,
+                       mat=M["white"], coll=coll)
+    me = head.data
+    for v in me.vertices:
+        t = (v.co.z / rz)                      # -1 bottom .. +1 top
+        # narrow the jaw, keep the cranium wide (reference silhouette)
+        k = 1.0 - 0.085 * max(0.0, -t) ** 1.35 - 0.030 * max(0.0, t) ** 2.6
+        v.co.x *= k
+        v.co.y *= k * (1.0 - 0.04 * max(0.0, -t))
+        # slight forehead bulge / flat cheek plane at the front
+        if v.co.y < 0:
+            v.co.y *= 1.0 + 0.045 * max(0.0, t)
+    me.update()
+    subsurf(head, 2, 3)
+    out["HeadShell"] = head
+
+    # ---------------- face plate (very subtle raised oval) ---------------- #
+    face = inflate_outline(
+        "FacePlate",
+        ellipse_outline(0.345, 0.300, 72, cx=0.0, cz=1.235, squash_bot=1.05),
+        depth=0.014, rings=7, power=0.5, mat=M["white_face"], coll=coll, flat_back=True,
+    )
+    project_to_ellipsoid(face, HEAD_C, HEAD_R, extra=0.0016)
+    subsurf(face, 2, 2)
+    out["FacePlate"] = face
+
+    # ---------------- eyes ---------------- #
+    def eye_stack(sx, tag):
+        objs = {}
+        px = sx * EYE_X
+
+        def eye_shape(a, b, n=88, squash_top=1.0, cxx=0.0, czz=0.0):
+            pts = []
+            for i in range(n):
+                t = i / n * 2 * math.pi
+                ex = math.cos(t)
+                ez = math.sin(t)
+                # slight top-outer flick + flatter bottom (mascot eye)
+                w = 1.0 + 0.055 * max(0.0, ez) * (ex * sx)
+                pts.append((px + cxx + ex * a * w,
+                            EYE_Z + czz + ez * b * (squash_top if ez > 0 else 0.985)))
+            return pts
+
+        rim = inflate_outline(
+            f"Eye{tag}_Rim", eye_shape(EYE_A * 1.075, EYE_B * 1.055),
+            depth=0.010, rings=7, power=0.5, mat=M["eye_rim"], coll=coll, flat_back=True)
+        project_to_ellipsoid(rim, HEAD_C, HEAD_R, extra=0.0038)
+        subsurf(rim, 2, 2)
+        objs[rim.name] = rim
+
+        sclera = inflate_outline(
+            f"Eye{tag}_White", eye_shape(EYE_A, EYE_B),
+            depth=0.010, rings=7, power=0.5, mat=M["eye_white"], coll=coll, flat_back=True)
+        project_to_ellipsoid(sclera, HEAD_C, HEAD_R, extra=0.0052)
+        subsurf(sclera, 2, 2)
+        objs[sclera.name] = sclera
+
+        iris = inflate_outline(
+            f"Eye{tag}_Iris",
+            eye_shape(EYE_A * 0.862, EYE_B * 0.835, czz=0.004),
+            depth=0.013, rings=8, power=0.55, mat=M["iris"], coll=coll, flat_back=True)
+        project_to_ellipsoid(iris, HEAD_C, HEAD_R, extra=0.0068)
+        subsurf(iris, 2, 2)
+        # dark teal at the top -> luminous aqua at the bottom
+        z0 = EYE_Z - EYE_B * 0.835
+        z1 = EYE_Z + EYE_B * 0.835
+        top = Vector((0.043, 0.290, 0.330))
+        bot = Vector((0.310, 0.960, 0.900))
+        mid = Vector((0.090, 0.640, 0.660))
+
+        def grad(world, local):
+            t = min(1.0, max(0.0, (world.z - z0) / (z1 - z0)))
+            c = bot.lerp(mid, min(1.0, t * 1.55)) if t < 0.62 else mid.lerp(top, (t - 0.62) / 0.38)
+            return (c.x, c.y, c.z, 1.0)
+
+        set_vertex_colors(iris, grad)
+        objs[iris.name] = iris
+
+        pupil = inflate_outline(
+            f"Eye{tag}_Pupil",
+            eye_shape(EYE_A * 0.475, EYE_B * 0.430, czz=0.006),
+            depth=0.012, rings=7, power=0.55, mat=M["pupil"], coll=coll, flat_back=True)
+        project_to_ellipsoid(pupil, HEAD_C, HEAD_R, extra=0.0082)
+        subsurf(pupil, 2, 2)
+        objs[pupil.name] = pupil
+
+        # highlights: big upper-inner, mid lower-outer, two sparkles
+        specs = [
+            ("Hi1", -sx * 0.021, 0.042, 0.0330, 0.0330),
+            ("Hi2", sx * 0.036, -0.052, 0.0175, 0.0165),
+            ("Hi3", -sx * 0.046, -0.028, 0.0080, 0.0080),
+            ("Hi4", sx * 0.010, 0.076, 0.0095, 0.0080),
+        ]
+        for nm, ox, oz, a, b in specs:
+            h = inflate_outline(
+                f"Eye{tag}_{nm}",
+                ellipse_outline(a, b, 44, cx=px + ox, cz=EYE_Z + oz),
+                depth=0.010, rings=6, power=0.55, mat=M["hilite"], coll=coll, flat_back=True)
+            project_to_ellipsoid(h, HEAD_C, HEAD_R, extra=0.0098)
+            subsurf(h, 2, 2)
+            objs[h.name] = h
+
+        # glossy clear lens dome over the whole eye
+        lens = inflate_outline(
+            f"Eye{tag}_Lens", eye_shape(EYE_A * 1.055, EYE_B * 1.035),
+            depth=0.030, rings=9, power=0.62, mat=M["lens"], coll=coll, flat_back=True)
+        project_to_ellipsoid(lens, HEAD_C, HEAD_R, extra=0.0042)
+        subsurf(lens, 2, 2)
+        objs[lens.name] = lens
+
+        # outer lash flick
+        lash_pts = []
+        for i in range(24):
+            t = i / 23.0
+            ang = math.radians(18 + 74 * t)
+            lash_pts.append((px + sx * (EYE_A * 1.02) * math.cos(ang) * 1.10,
+                             EYE_Z + EYE_B * 1.02 * math.sin(ang)))
+        for i in range(23, -1, -1):
+            t = i / 23.0
+            ang = math.radians(18 + 74 * t)
+            k = 1.0 + 0.30 * math.sin(math.pi * t) ** 0.7
+            lash_pts.append((px + sx * (EYE_A * 1.02) * math.cos(ang) * 1.10 * k,
+                             EYE_Z + EYE_B * 1.02 * math.sin(ang) * k))
+        lash = inflate_outline(f"Eye{tag}_Lash", lash_pts, depth=0.008, rings=5,
+                               power=0.5, mat=M["eye_rim"], coll=coll, flat_back=True)
+        project_to_ellipsoid(lash, HEAD_C, HEAD_R, extra=0.0044)
+        subsurf(lash, 1, 2)
+        objs[lash.name] = lash
+        return objs
+
+    for sx, tag in ((1, "L"), (-1, "R")):
+        out.update(eye_stack(sx, tag))
+
+    # ---------------- brows ---------------- #
+    for sx, tag in ((1, "L"), (-1, "R")):
+        pts = []
+        n = 26
+        for i in range(n + 1):
+            t = -1 + 2 * i / n
+            pts.append((sx * BROW_X + t * 0.047, BROW_Z + 0.0135 * (1 - t * t) + 0.011 * t * sx))
+        for i in range(n, -1, -1):
+            t = -1 + 2 * i / n
+            pts.append((sx * BROW_X + t * 0.047,
+                        BROW_Z - 0.0125 - 0.0035 * (1 - t * t) + 0.011 * t * sx))
+        b = inflate_outline(f"Brow_{tag}", pts, depth=0.010, rings=5, power=0.5,
+                            mat=M["brow"], coll=coll, flat_back=True)
+        project_to_ellipsoid(b, HEAD_C, HEAD_R, extra=0.0040)
+        subsurf(b, 2, 2)
+        out[b.name] = b
+
+    # ---------------- nose ---------------- #
+    nose = inflate_outline("Nose", ellipse_outline(0.0215, 0.0155, 36, cz=1.1370),
+                           depth=0.019, rings=7, power=0.6, mat=M["white_face"],
+                           coll=coll, flat_back=True)
+    project_to_ellipsoid(nose, HEAD_C, HEAD_R, extra=0.0034)
+    subsurf(nose, 2, 2)
+    out["Nose"] = nose
+
+    # ---------------- mouth ---------------- #
+    mc_z = MOUTH_C[1]
+    mouth_o = smile_outline(0.0700, 0.0175, 0.0625, n=64)
+    mouth_o = [(x, mc_z + z) for (x, z) in mouth_o]
+    cavity = inflate_outline("MouthCavity", mouth_o, depth=0.030, rings=8, power=0.75,
+                             mat=M["mouth"], coll=coll, flat_back=False, shrink=0.10)
+    # push the cavity backwards into the head
+    for v in cavity.data.vertices:
+        v.co.y = abs(v.co.y) * 0.85
+    cavity.data.update()
+    project_to_ellipsoid(cavity, HEAD_C, HEAD_R, extra=-0.006)
+    subsurf(cavity, 2, 2)
+    out["MouthCavity"] = cavity
+
+    tongue_o = [(x * 0.72, mc_z - 0.0335 + (z - mc_z) * 0.40) for (x, z) in mouth_o]
+    tongue = inflate_outline("Tongue", tongue_o, depth=0.020, rings=7, power=0.62,
+                             mat=M["tongue"], coll=coll, flat_back=True)
+    project_to_ellipsoid(tongue, HEAD_C, HEAD_R, extra=-0.012)
+    subsurf(tongue, 2, 2)
+    out["Tongue"] = tongue
+
+    lip_o = []
+    for (x, z) in mouth_o:
+        lip_o.append((x * 1.075, mc_z + (z - mc_z) * 1.085))
+    lip = inflate_outline("MouthRim", lip_o + list(reversed(mouth_o)), depth=0.010,
+                          rings=5, power=0.5, mat=M["mouth_rim"], coll=coll, flat_back=True)
+    project_to_ellipsoid(lip, HEAD_C, HEAD_R, extra=0.0030)
+    subsurf(lip, 1, 2)
+    out["MouthRim"] = lip
+
+    # ---------------- blush ---------------- #
+    for sx, tag in ((1, "L"), (-1, "R")):
+        bl = uv_grid(f"Blush_{tag}", 0.1720, 0.1460, 18, 16, M["blush"], coll,
+                     cx=sx * BLUSH_X, cz=BLUSH_Z)
+        project_to_ellipsoid(bl, HEAD_C, HEAD_R, extra=0.0034)
+        out[bl.name] = bl
+
+    # ---------------- mint crest + shield + forehead heart ---------------- #
+    # crest: conforming band across the top of the head
+    crest = surface_band(
+        "HeadCrest", HEAD_C, HEAD_R,
+        theta_range=(-math.pi * 0.62, math.pi * 0.62),
+        phi0_fn=lambda t: 0.0,
+        phi_fn=lambda t: math.radians(58) + math.radians(16) * math.cos(t * 1.15),
+        nu=80, nv=12, offset=0.006, thickness=0.014, mat=M["mint"], coll=coll)
+    out["HeadCrest"] = crest
+
+    # front dip so the crest reads as a visor edge over the forehead
+    shield = inflate_outline(
+        "CrestShield",
+        rounded_rect_outline(0.300, 0.150, 0.068, 10, cz=1.6260),
+        depth=0.022, rings=7, power=0.55, mat=M["mint_dark"], coll=coll, flat_back=True)
+    project_to_ellipsoid(shield, HEAD_C, HEAD_R, extra=0.0040)
+    subsurf(shield, 2, 2)
+    out["CrestShield"] = shield
+
+    fh = inflate_outline("ForeheadHeart", heart_outline(0.1300, 0.1120, 120, cz=FHEART_Z),
+                         depth=0.020, rings=8, power=0.60, mat=M["pink"], coll=coll,
+                         flat_back=True)
+    project_to_ellipsoid(fh, HEAD_C, HEAD_R, extra=0.0110)
+    subsurf(fh, 2, 2)
+    out["ForeheadHeart"] = fh
+
+    # ---------------- side mint bands (headset arc) ---------------- #
+    for sx, tag in ((1, "L"), (-1, "R")):
+        band = surface_band(
+            f"SideBand_{tag}", HEAD_C, HEAD_R,
+            theta_range=(sx * math.radians(52), sx * math.radians(150)),
+            phi0_fn=lambda t: math.radians(38),
+            phi_fn=lambda t: math.radians(118),
+            nu=44, nv=10, offset=0.004, thickness=0.013, mat=M["mint"], coll=coll)
+        out[band.name] = band
+
+    # ---------------- ear pods (headset) ---------------- #
+    for sx, tag in ((1, "L"), (-1, "R")):
+        pod = quad_sphere(f"EarPod_{tag}", radii=(0.0850, 0.1120, 0.1240),
+                          loc=(sx * EAR_X, 0.0, EAR_Z), n=14, power=2.35,
+                          mat=M["mint"], coll=coll)
+        subsurf(pod, 2, 3)
+        out[pod.name] = pod
+
+        disc = revolve(f"EarDisc_{tag}",
+                       [(0.0, 0.0), (0.052, 0.0), (0.062, 0.008), (0.062, 0.020), (0.0, 0.024)],
+                       48, M["mint_dark"], coll=coll)
+        disc.rotation_euler = Euler((0, math.radians(90 * sx), 0), "XYZ")
+        disc.location = (sx * (EAR_X + 0.062), 0.0, EAR_Z)
+        out[disc.name] = disc
+
+        gem = quad_sphere(f"EarGem_{tag}", radii=(0.020, 0.030, 0.030),
+                          loc=(sx * (EAR_X + 0.076), 0.0, EAR_Z), n=8, power=2.0,
+                          mat=M["pink"], coll=coll)
+        subsurf(gem, 2, 2)
+        out[gem.name] = gem
+
+    # ---------------- antenna ---------------- #
+    stalk = revolve("AntennaStalk",
+                    [(0.030, 0.0), (0.0245, 0.020), (0.0175, 0.048), (0.0155, 0.078), (0.0165, 0.092)],
+                    32, M["mint"], loc=(0.0, 0.0, 1.7880), coll=coll)
+    subsurf(stalk, 2, 2)
+    out["AntennaStalk"] = stalk
+
+    ball = quad_sphere("AntennaJoint", radii=(0.026, 0.026, 0.026),
+                       loc=(0.0, 0.0, 1.8830), n=8, mat=M["mint_dark"], coll=coll)
+    subsurf(ball, 2, 2)
+    out["AntennaJoint"] = ball
+
+    ah = inflate_outline("AntennaHeart", heart_outline(0.2850, 0.2325, 128, cz=ANT_HEART_Z),
+                         depth=0.085, rings=11, power=0.62, mat=M["pink_vc"], coll=coll)
+    subsurf(ah, 2, 3)
+    z0, z1 = ANT_HEART_Z - 0.1163, ANT_HEART_Z + 0.1163
+
+    def hgrad(world, local):
+        t = min(1.0, max(0.0, (world.z - z0) / (z1 - z0)))
+        r = 1.0 - 0.06 * (1 - t)
+        g = 0.46 + 0.30 * t
+        b = 0.50 + 0.26 * t
+        return (r, g, b, 1.0)
+
+    set_vertex_colors(ah, hgrad)
+    out["AntennaHeart"] = ah
+
+    hi = inflate_outline("AntennaHeartHi",
+                         ellipse_outline(0.036, 0.028, 32, cx=-0.058, cz=ANT_HEART_Z + 0.052),
+                         depth=0.012, rings=6, power=0.5, mat=M["hilite"], coll=coll,
+                         flat_back=True)
+    for v in hi.data.vertices:
+        v.co.y -= 0.072
+    hi.data.update()
+    subsurf(hi, 2, 2)
+    out["AntennaHeartHi"] = hi
+
+    # ---------------- neck ---------------- #
+    neck = revolve("Neck",
+                   [(0.0, 0.0), (0.135, 0.0), (0.128, 0.045), (0.132, 0.090), (0.0, 0.100)],
+                   40, M["mint_dark"], loc=(0.0, 0.0, 0.8150), coll=coll)
+    subsurf(neck, 2, 2)
+    out["Neck"] = neck
+    return out

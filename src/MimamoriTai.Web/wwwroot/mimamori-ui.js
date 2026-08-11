@@ -10,5 +10,15 @@ window.mimamoriUi = {
         const maxAgeDays = days || 365;
         const expires = new Date(Date.now() + maxAgeDays * 86400000).toUTCString();
         document.cookie = name + '=' + encodeURIComponent(value) + '; expires=' + expires + '; path=/; SameSite=Lax';
+    },
+    initMascot: async function () {
+        await import('/mimamori-mascot-3d.js');
+        window.mimamoriMascot.init();
+    },
+    reactMascot: async function (name) {
+        if (!window.mimamoriMascot) {
+            await import('/mimamori-mascot-3d.js');
+        }
+        window.mimamoriMascot.react(name);
     }
 };
