@@ -44,6 +44,16 @@ def build_materials():
                                    rough=0.220, coat=0.45)
     M["mint_pale"] = make_material("MI_MintPale", (0.660, 0.912, 0.880),
                                    rough=0.260, coat=0.35)
+    # Tiara band only.  The poster's hood is translucent glass over the white
+    # helmet, so where it lies flat it reads almost neutral -- sampling the band
+    # beside the badge (x 430..460, y 415..428) gives (0.792, 0.820, 0.809)
+    # against (0.639, 0.967, 0.933) for MI_Mint.  Rendering the band in the
+    # saturated body mint is what made it read as a solid teal dome ("diving
+    # helmet") swallowing the top third of the head.  The ear pods, scarf and
+    # cape ARE saturated in the poster, so only the band changes.
+    M["mint_glass"] = make_material("MI_MintGlass", (0.620, 0.855, 0.830),
+                                    rough=0.190, coat=0.55, coat_rough=0.03,
+                                    subsurf=0.10)
     M["pink_heart"] = make_material("MI_PinkHeart", (0.968, 0.555, 0.588),
                                     rough=0.215, coat=0.48, coat_rough=0.04,
                                     subsurf=0.16, use_vcol=True)
@@ -56,8 +66,12 @@ def build_materials():
                                   ior=1.05)
     M["eye_white"] = make_material("MI_EyeWhite", (0.985, 0.988, 0.992),
                                    rough=0.190, coat=0.55, coat_rough=0.03)
+    # the sliver of face that shows between lash line and lens - reads as a
+    # faintly shaded white in the poster, NOT the grey MI_FaceRim used before
+    M["eye_socket"] = make_material("MI_EyeSocket", (0.938, 0.912, 0.900),
+                                    rough=0.330, coat=0.18, coat_rough=0.06)
     M["iris"] = make_material("MI_Iris", (1.0, 1.0, 1.0), rough=0.165,
-                              coat=0.20, coat_rough=0.06, use_vcol=True,
+                              coat=0.08, coat_rough=0.06, use_vcol=True,
                               ior=1.30)
     M["pupil"] = make_material("MI_Pupil", (0.010, 0.010, 0.016), rough=0.115,
                                coat=0.30, coat_rough=0.02, ior=1.05)

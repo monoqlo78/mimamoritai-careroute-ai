@@ -291,55 +291,86 @@ def build_boot(M, coll, sx):
 
 
 # --------------------------------------------------------------------------- #
-def build_scarf(M, coll):
-    """Mint collar tube around the neck plus a knot and two soft tails."""
-    objs = []
-    verts, faces = [], []
-    seg, tube = 64, 16
-    ra, rb = L(94.0), 0.200
-    tr = 0.050
-    cz = Z(727.0)
-    for i in range(seg):
-        th = 2.0 * math.pi * i / seg
-        ct, st = math.cos(th), math.sin(th)
-        px, py = ra * ct, rb * st
-        nx = ct
-        ny = st
-        for j in range(tube):
-            ph = 2.0 * math.pi * j / tube
-            cph, sph = math.cos(ph), math.sin(ph)
-            verts.append((px + nx * tr * cph,
-                          py + ny * tr * cph,
-                          cz + tr * sph * 1.25 - L(9.0) * st))
-    for i in range(seg):
-        i2 = (i + 1) % seg
-        for j in range(tube):
-            j2 = (j + 1) % tube
-            faces.append([i * tube + j, i2 * tube + j,
-                          i2 * tube + j2, i * tube + j2])
-    collar = mesh_from("ScarfCollar", verts, faces, M["mint"], coll=coll)
-    subsurf(collar, 1, 2)
-    shade(collar)
-    objs.append(collar)
+SCARF_HW = 118.0
 
-    knot = sphere("ScarfKnot", M["mint"], coll, 558.0, 741.0, 27.0, 0.056,
-                  23.0, cy=-0.220)
+# Shallow wrap behind the band -- gives the kerchief volume from a 3/4 view
+# without ever breaking the front silhouette (every ring is checked to sit
+# inside scarf_outline() at its own row).
+SCARF_RINGS = [
+    # yr,    cx,  cy,     hw,   hd,    n
+    (730.0, CX, -0.012,  66.0, 0.176, 2.4),
+    (744.0, CX, -0.008,  86.0, 0.192, 2.5),
+    (758.0, CX,  0.000,  98.0, 0.200, 2.5),
+]
+
+
+def scarf_outline(n=72):
+    """Silhouette of the tied kerchief, in world coords.
+
+    Measured off the poster with the saturated-mint mask (b-r, g-r > 0.09),
+    per column, as offsets dx from the band centre (x 544):
+
+        dx     0    12    24    36    48    60    72    84    96   108
+        top  727   726   726   725   724   722   720   717   714   707
+        bot  778   778   778   774   772   771   773   765   765   757
+
+    So it is a band of roughly constant 50 px depth whose whole centreline
+    sweeps UP toward the tips -- a cloth kerchief knotted at the throat.
+
+    This has to be an explicit outline rather than a loft: a stack of
+    horizontal rings can only ever produce dead-straight top and bottom
+    edges, and that flat lower edge is exactly what read as a shelf lying
+    across the chest in the previous two attempts.
+    """
+    def top(u):
+        # iter-17: the rendered plate silhouette sits ~4 px above its outline
+        # (the inflate rings push the boundary out), and measuring the poster's
+        # hard mint edge under the chin gives y 726 against y 722 here.
+        return 731.0 - 20.0 * (abs(u) ** 2.4)
+
+    def bot(u):
+        b = 778.0 - 21.0 * (u * u)
+        # square-cut tips look like cardboard; taper the outer 15 %
+        k = max(0.0, (abs(u) - 0.85) / 0.15)
+        return b + (top(u) - b) * (min(1.0, k) ** 1.4) * 0.88
+
+    up, dn = [], []
+    for i in range(n + 1):
+        u = -1.0 + 2.0 * i / n
+        x = X(CX + u * SCARF_HW)
+        up.append((x, Z(top(u))))
+        dn.append((x, Z(bot(u))))
+    return up + dn[::-1]
+
+
+def build_scarf(M, coll):
+    """Mint kerchief knotted at the throat.
+
+    Iterations 14 and 15 both built this as a loft of horizontal rings, which
+    renders with a razor-straight lower edge -- a shelf across the chest --
+    plus a knot ball floating above it and two ribbon eggs floating below it,
+    disconnected from everything.  Measuring the poster column by column shows
+    there are no hanging ribbons at all down there: the mint below the band is
+    the chest badge's own bezel.  So the band is now a single plate cut to the
+    measured outline, with the knot as the only extra lump.
+    """
+    objs = []
+    band = plate("ScarfCollar", scarf_outline(), M["mint"], coll,
+                 -0.208, 0.052, rings=9, power=0.58)
+    subsurf(band, 1, 2)
+    shade(band)
+    objs.append(band)
+
+    wrap = loft("ScarfCollarWrap", SCARF_RINGS, M["mint"], coll, seg=56)
+    subsurf(wrap, 1, 2)
+    shade(wrap)
+    objs.append(wrap)
+
+    knot = sphere("ScarfKnot", M["mint"], coll, 538.0, 738.0, 27.0, 0.050,
+                  21.0, cy=-0.252)
     subsurf(knot, 1, 2)
     shade(knot)
     objs.append(knot)
-
-    # one long tail falling to the character's right (screen-left); the second
-    # lobe is a small fold tucked behind the knot, not a bow wing
-    for tag, cxp, yr, hw, hh, tilt, cy in (
-        ("L", 524.0, 796.0, 17.0, 58.0, 0.30, -0.196),
-        ("R", 584.0, 757.0, 12.0, 17.0, -0.22, -0.176),
-    ):
-        t = sphere("ScarfTail_" + tag, M["mint"], coll, cxp, yr, hw, 0.046,
-                   hh, cy=cy)
-        t.rotation_euler = (0.0, tilt, 0.0)
-        subsurf(t, 1, 2)
-        shade(t)
-        objs.append(t)
     return objs
 
 
@@ -555,7 +586,7 @@ def build_grip(M, coll, scale=1.0):
 
 
 # --------------------------------------------------------------------------- #
-CAPE_HW0 = 96.0
+CAPE_HW0 = 132.0
 CAPE_HW1 = 210.0
 
 
@@ -567,11 +598,16 @@ def cape_surface(u, v):
     taper = 1.0 - 0.30 * (max(0.0, av - 0.52) / 0.48) ** 2.0
     fillet = 1.0 - 0.24 * (max(0.0, u - 0.66) / 0.34) ** 2.2
     # the reference cape is asymmetric: the pink-lined wing (screen-left, v<0)
-    # sweeps much wider than the mint wing on the right
+    # sweeps much wider than the mint wing on the right.  Up at the collar the
+    # poster is very nearly symmetric, so ease the asymmetry in with u.
     side = 1.45 if v < 0.0 else 0.93
-    hw = (CAPE_HW0 + 240.0 * (u ** 0.62)) * taper * fillet * side
+    side = 1.0 + (side - 1.0) * (u ** 0.65)
+    hw = (CAPE_HW0 + 214.0 * (u ** 0.62)) * taper * fillet * side
     hem = 1062.0 - 140.0 * ((1.0 - av) ** 1.50) - 30.0 * math.exp(-(((av - 0.52) / 0.24) ** 2))
-    yr = 706.0 + (hem - 706.0) * (u ** 0.92)
+    # the poster shows the wings climbing past the jaw (mint beside the head as
+    # high as y ~690) instead of starting on a flat line level with the collar
+    y0 = 706.0 - 24.0 * (av ** 1.35)
+    yr = y0 + (hem - y0) * (u ** 0.92)
     xr = CX + v * hw
     depth = 0.150 + 0.300 * (u ** 1.10)
     depth -= 0.155 * (av ** 1.9) * (u ** 0.85)
