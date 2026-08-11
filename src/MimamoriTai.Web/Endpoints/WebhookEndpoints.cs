@@ -52,7 +52,9 @@ public static partial class WebhookEndpoints
         "コードが正しくないか、有効期限が切れています。設定画面で新しいコードを発行して、もう一度お試しください。";
 
     private const string ProcessingTimeoutText =
-        "メッセージを受け取りました。処理に時間がかかっているため、少し待ってからもう一度お試しください。";
+        "うまくお答えできませんでした。もう一度、短いことばで送ってみてください。\n" +
+        "「使い方」と送っていただくと、できることをご案内します。\n" +
+        "お急ぎのときは、画面下の「助けて」ボタンを押してください。";
 
     private static readonly TimeSpan EventProcessingTimeout = TimeSpan.FromSeconds(8);
     private static readonly TimeSpan ReplyTimeout = TimeSpan.FromSeconds(5);
@@ -178,10 +180,16 @@ public static partial class WebhookEndpoints
 
                             if (!string.IsNullOrWhiteSpace(evt.ReplyToken))
                             {
-                                var replyText = redeemResult.Status == LineLinkCodeRedeemStatus.Success
-                                    ? LinkCodeSuccessText
-                                    : LinkCodeFailureText;
-                                await ReplyAsync(line, evt.ReplyToken, replyText, logger);
+                                var succeeded = redeemResult.Status == LineLinkCodeRedeemStatus.Success;
+                                await ReplyAsync(
+                                    line,
+                                    evt.ReplyToken,
+                                    succeeded ? LinkCodeSuccessText : LinkCodeFailureText,
+                                    logger,
+                                    // Right after linking is the one moment a resident is
+                                    // certain to be looking at the chat and has no idea what
+                                    // to do next.
+                                    succeeded ? LineQuickReplyMenu.Default : null);
                             }
 
                             break;
@@ -223,7 +231,11 @@ public static partial class WebhookEndpoints
 
                         if (!string.IsNullOrWhiteSpace(evt.ReplyToken))
                         {
-                            await ReplyAsync(line, evt.ReplyToken, replyText2, logger);
+                            // The answer is where the resident is actually looking, so the
+                            // choices ride along with it rather than waiting to be found
+                            // in the rich menu.
+                            await ReplyAsync(
+                                line, evt.ReplyToken, replyText2, logger, LineQuickReplyMenu.Default);
                         }
 
                         break;
@@ -261,7 +273,8 @@ public static partial class WebhookEndpoints
 
                             if (!string.IsNullOrWhiteSpace(evt.ReplyToken))
                             {
-                                await ReplyAsync(line, evt.ReplyToken, outcome.ReplyText, logger);
+                                await ReplyAsync(
+                                    line, evt.ReplyToken, outcome.ReplyText, logger, LineQuickReplyMenu.Default);
                             }
                         }
 
@@ -294,10 +307,13 @@ public static partial class WebhookEndpoints
         ILineMessagingClient line,
         string replyToken,
         string text,
-        ILogger logger)
+        ILogger logger,
+        IReadOnlyList<LineQuickReply>? quickReplies = null)
     {
         using var replyCts = new CancellationTokenSource(ReplyTimeout);
-        var result = await line.ReplyAsync(replyToken, text, replyCts.Token);
+        var result = quickReplies is { Count: > 0 }
+            ? await line.ReplyAsync(replyToken, text, quickReplies, replyCts.Token)
+            : await line.ReplyAsync(replyToken, text, replyCts.Token);
         if (result.Success)
         {
             logger.LogInformation("LINE reply API accepted the response.");

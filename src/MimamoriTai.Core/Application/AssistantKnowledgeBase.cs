@@ -1,0 +1,368 @@
+using System.Globalization;
+using System.Text;
+
+namespace MimamoriTai.Core.Application;
+
+/// <summary>How confident a knowledge-base lookup has to be before it answers.</summary>
+public enum FaqMatchMode
+{
+    /// <summary>
+    /// Used before the intent model runs. Only phrasings that cannot plausibly be a
+    /// device command or a data question are allowed to answer, so the knowledge base
+    /// can never steal "エアコンつけて" or "今日の様子は".
+    /// </summary>
+    Strict = 0,
+
+    /// <summary>
+    /// Used after the intent model has already classified the message as small talk.
+    /// Single keywords are enough here, because nothing else wants the message.
+    /// </summary>
+    Loose = 1
+}
+
+/// <summary>A canned answer produced without calling any model.</summary>
+public sealed record FaqAnswer(string Id, string Reply);
+
+/// <summary>
+/// The product knowledge an elderly resident actually asks about, held as data rather
+/// than as prompt text.
+///
+/// Two reasons it is not simply appended to a system prompt:
+///
+/// 1. Latency. The LINE webhook cancels an event after 8 seconds and intent parsing
+///    already spends ~1.7s of that. A lookup here costs no round trip at all, so the
+///    most common questions are answered long before the budget matters.
+/// 2. Truthfulness. Every answer describes a screen or a behaviour that exists in this
+///    repository ("SwitchBot設定" → "LINEでお知らせを受け取る" → "連携コードを発行する").
+///    A model asked to explain the product from scratch invents plausible menus, and a
+///    confidently wrong instruction is worse for an 85 year old than no answer.
+///
+/// The same entries are also rendered into <see cref="ProductFacts"/> and handed to the
+/// small-talk prompt, so a question phrased in a way no rule anticipated is still
+/// answered from these facts instead of from the model's imagination.
+/// </summary>
+public static class AssistantKnowledgeBase
+{
+    /// <summary>
+    /// Words that mean "something is happening to my body right now". These are checked
+    /// before every other rule: a person typing 胸が痛い must never receive small talk.
+    /// </summary>
+    private static readonly string[] UrgentKeywords =
+    [
+        "たすけて", "助けて", "たおれ", "倒れ", "動けない", "うごけない", "救急", "きゅうきゅう",
+        "119", "息苦し", "いきぐるし", "呼吸が", "血が出", "出血", "意識が", "けいれん", "痙攣",
+        "胸が痛", "むねが痛", "胸がくるし", "胸が苦し", "しびれ", "痺れ", "骨折", "転んで", "ころんで"
+    ];
+
+    /// <summary>
+    /// Sent when <see cref="IsUrgent"/> fires. Names the emergency number first, then the
+    /// existing one-touch route, so the reply works whether or not the rich menu is visible.
+    /// </summary>
+    public const string UrgentReply =
+        "つらいのですね。がまんしないでください。\n" +
+        "強い痛み・息苦しさ・出血があるときは、すぐに119番へお電話ください。\n" +
+        "画面下の「助けて」ボタンを押していただくと、ご家族にもすぐお知らせします。";
+
+    /// <summary>Shown for 使い方 / ヘルプ, and pointed at by the webhook's timeout message.</summary>
+    public const string HelpReply =
+        "見守り隊です。次のことをお手伝いできます。\n" +
+        "・「今日の様子」…暮らしの記録をお伝えします\n" +
+        "・「家族に連絡」…ご家族に連絡してほしいと伝えます\n" +
+        "・「体調が悪い」…ご家族にすぐお知らせします\n" +
+        "「家族の追加方法は」「通知が来ない」のように、聞きたいことをそのまま送っていただいても大丈夫です。";
+
+    /// <param name="PreIntent">
+    /// Whether this entry may answer before the intent model has run. True only for
+    /// wording that cannot also belong to a device command or a question about the
+    /// resident's day: "家族の追加方法は" is always product help, but "痛いって言ってた?"
+    /// could be a family member asking about the records, so that entry waits until the
+    /// model has already called the message small talk.
+    /// </param>
+    private sealed record FaqEntry(
+        string Id, string Reply, string[][] StrictGroups, string[] LooseKeywords, bool PreIntent);
+
+    /// <summary>
+    /// Ordered; the first entry that matches answers. Specific worries are listed before
+    /// general ones so 「カメラで撮られてるの?」 gets the camera answer, not the generic
+    /// privacy one.
+    /// </summary>
+    private static readonly FaqEntry[] Entries =
+    [
+        new(
+            "add-family",
+            "ご家族の追加は、この3つの手順です。\n" +
+            "1. 見守り隊の画面で「SwitchBot設定」を開く\n" +
+            "2. 「LINEでお知らせを受け取る」の「連携コードを発行する」を押す\n" +
+            "3. 出てきた6けたの数字を、このトークに「連携 123456」のように送る\n" +
+            "コードは10分で使えなくなります。過ぎたら、もう一度発行してください。",
+            [
+                ["家族", "追加"], ["家族", "登録"], ["家族", "増や"], ["家族", "ふや"],
+                ["家族", "連携"], ["家族", "招待"], ["連携", "方法"], ["連携", "やり方"],
+                ["連携", "したい"], ["連携", "どう"], ["連携コード"], ["追加", "方法"],
+                ["息子", "追加"], ["娘", "追加"], ["孫", "追加"],
+                // Elderly users often type entirely in hiragana.
+                ["かぞく", "追加"], ["かぞく", "ついか"], ["家族", "ついか"],
+                ["かぞく", "ふや"], ["ついか", "ほうほう"], ["れんけい", "ほうほう"]
+            ],
+            ["家族の追加", "連携のしかた", "連携の仕方"],
+            PreIntent: true),
+
+        new(
+            "notification-missing",
+            "お知らせが届かないときは、この3つをお確かめください。\n" +
+            "1. このトークをブロックしていないか確かめる\n" +
+            "2. LINEアプリの通知を「オン」にする\n" +
+            "3. 見守り隊の「SwitchBot設定」で、連携が終わっているか確かめる\n" +
+            "それでも届かないときは、この画面をご家族に見せてください。",
+            [
+                ["通知", "来ない"], ["通知", "こない"], ["通知", "届か"], ["通知", "とどか"],
+                ["お知らせ", "来ない"], ["お知らせ", "こない"], ["お知らせ", "届か"],
+                ["連絡", "来ない"], ["連絡", "こない"], ["メッセージ", "来ない"],
+                ["通知", "されない"], ["通知", "無い"], ["通知", "ない"]
+            ],
+            [],
+            PreIntent: true),
+
+        new(
+            "sound-missing",
+            "音が鳴らないときは、LINEの通知の音が切れていることがほとんどです。\n" +
+            "1. スマホのマナーモードを解除する\n" +
+            "2. LINEの「設定」→「通知」を「オン」にする\n" +
+            "3. 音量のボタンで、音を大きくする",
+            [
+                ["音", "鳴らない"], ["音", "ならない"], ["音", "しない"], ["音", "出ない"],
+                ["音", "でない"], ["音", "小さ"], ["着信音"], ["音", "聞こえ"]
+            ],
+            [],
+            PreIntent: true),
+
+        new(
+            "font-size",
+            "文字の大きさは、LINEアプリの設定で変えられます。\n" +
+            "1. LINEの「ホーム」から歯車のマークを押す\n" +
+            "2. 「トーク」を押す\n" +
+            "3. 「フォントサイズ」で大きいものを選ぶ\n" +
+            "見えにくいときは、遠慮なくご家族にお願いしてくださいね。",
+            [
+                ["文字", "大き"], ["字", "大き"], ["文字", "小さ"], ["字", "小さ"],
+                ["文字", "見え"], ["文字", "読め"], ["文字", "読み"], ["フォント"]
+            ],
+            [],
+            PreIntent: true),
+
+        new(
+            "add-device",
+            "機器の追加は、ご家族の操作が必要です。\n" +
+            "見守り隊の「SwitchBot設定」でSwitchBotとつなぐと、お部屋の機器が自動で読み込まれます。\n" +
+            "むずかしいときは、無理をせずご家族にお願いしてください。",
+            [
+                ["機器", "追加"], ["機械", "追加"], ["端末", "追加"], ["センサー", "追加"],
+                ["機器", "増や"], ["機器", "ふや"], ["機器", "登録"], ["センサー", "登録"],
+                ["スイッチボット", "追加"], ["switchbot", "追加"], ["機器", "つなぎ"], ["機器", "接続"]
+            ],
+            [],
+            PreIntent: true),
+
+        new(
+            "camera",
+            "カメラはありません。映像も音声も、いっさい記録していません。\n" +
+            "お伝えしているのは、ドアの開け閉めや電気の使われ方といった、機器の記録だけです。\n" +
+            "お部屋の様子が見られることはありませんので、ご安心ください。",
+            [
+                ["カメラ"], ["かめら"], ["撮ら"], ["撮影"], ["映像"], ["写ら"], ["写真"],
+                ["盗撮"], ["録画"], ["録音"], ["マイク"], ["聞かれ"], ["盗聴"]
+            ],
+            ["見られて", "みられて"],
+            PreIntent: true),
+
+        new(
+            "surveillance",
+            "見張るためのものではありません。\n" +
+            "お元気に過ごされていることが分かると、ご家族が安心できる。それだけのための仕組みです。\n" +
+            "映像はなく、ドアの開け閉めなどの記録だけをお伝えしています。おいやなときは、遠慮なくご家族にお伝えください。",
+            [
+                ["見張"], ["監視"], ["みはら"], ["管理されて"], ["のぞかれ"], ["覗かれ"],
+                ["気持ち悪"], ["きもちわる"], ["嫌だ", "見守"], ["いやだ", "見守"]
+            ],
+            [],
+            PreIntent: true),
+
+        new(
+            "privacy",
+            "お預かりしているのは、ドアの開け閉めや電気の使われ方などの記録だけです。\n" +
+            "映像や音声、通帳やお金の情報はいっさい扱いません。\n" +
+            "記録を見られるのは、連携したご家族だけです。",
+            [
+                ["個人情報"], ["プライバシー"], ["情報", "大丈夫"], ["情報", "漏れ"],
+                ["情報", "もれ"], ["データ", "大丈夫"], ["安全", "情報"], ["悪用"]
+            ],
+            [],
+            PreIntent: true),
+
+        new(
+            "wrong-button",
+            "大丈夫ですよ。まちがえて押しても、こわれたり、お金がかかったりすることはありません。\n" +
+            "気になるときは「大丈夫」と送ってください。お元気だと、ご家族にお伝えします。",
+            [
+                ["間違え", "押"], ["まちがえ", "押"], ["押し間違"], ["おしまちが"],
+                ["誤って", "押"], ["間違って", "押"], ["まちがって", "押"], ["間違え", "送"]
+            ],
+            [],
+            PreIntent: true),
+
+        new(
+            "burden",
+            "ご迷惑なんてことは、ありませんよ。\n" +
+            "お元気だと分かるだけで、ご家族はほっとされます。\n" +
+            "変わりがなければ、お知らせもほとんど届きません。",
+            [
+                ["迷惑"], ["めいわく"], ["手間", "かけ"], ["負担", "かけ"],
+                ["申し訳"], ["すまない", "家族"]
+            ],
+            [],
+            PreIntent: false),
+
+        new(
+            "contact-family",
+            "ご家族にお伝えできます。\n" +
+            "「家族に連絡」と送っていただくか、画面下の「家族に連絡」ボタンを押してください。\n" +
+            "すぐにお知らせします。",
+            [
+                ["家族", "話し"], ["家族", "はなし"], ["家族", "声"], ["電話", "したい"],
+                ["電話", "かけ"], ["家族", "会い"], ["息子", "話"], ["娘", "話"],
+                ["家族", "連絡", "したい"], ["寂しい", "家族"]
+            ],
+            [],
+            PreIntent: false),
+
+        new(
+            "lonely",
+            "そう感じる日も、ありますよね。お話ししてくださって、ありがとうございます。\n" +
+            "ご家族とお話ししたいときは「家族に連絡」と送ってください。すぐにお伝えします。",
+            [
+                ["さみしい"], ["寂しい"], ["さびしい"], ["ひとりぼっち"], ["一人ぼっち"],
+                ["心細"], ["こころぼそ"], ["つまらない"], ["泣き"]
+            ],
+            [],
+            PreIntent: false),
+
+        new(
+            "unwell",
+            "おつらいですね。無理をなさらないでください。\n" +
+            "「体調が悪い」と送っていただくと、ご家族にすぐお知らせします。\n" +
+            "強い痛みや息苦しさがあるときは、ためらわず119番へお電話ください。",
+            [
+                ["具合", "悪"], ["ぐあい", "悪"], ["体調", "悪"], ["たいちょう", "悪"],
+                ["気分", "悪"], ["しんどい"], ["だるい"], ["熱が"], ["風邪"], ["めまい"],
+                ["吐き気"], ["痛い"], ["いたい"], ["調子", "悪"]
+            ],
+            [],
+            PreIntent: false),
+
+        new(
+            "what-is-this",
+            HelpReply,
+            [
+                ["使い方"], ["つかいかた"], ["ヘルプ"], ["何ができ"], ["なにができ"],
+                ["何をしてくれ"], ["なにをしてくれ"], ["どう使"], ["どうやって使"],
+                ["このline", "何"], ["このline", "なに"], ["わからない", "使"]
+            ],
+            ["使い方", "ヘルプ", "説明", "メニュー"],
+            PreIntent: true)
+    ];
+
+    /// <summary>
+    /// The same knowledge rendered for the small-talk prompt, so a question no rule
+    /// anticipated is still grounded in what the product actually does.
+    /// </summary>
+    public static string ProductFacts { get; } = """
+        【見守り隊について、事実として正しいこと】
+        - 見守り隊は、離れて暮らすご高齢の家族が元気に過ごしているかを、ご家族が確認できるサービスです。
+        - カメラもマイクもありません。映像・音声・写真はいっさい記録しません。
+        - 記録するのは SwitchBot の機器のできごとだけです（ドアの開け閉め、人の動き、電気の使われ方など）。
+        - ご家族(LINE)の追加手順:「SwitchBot設定」画面 →「LINEでお知らせを受け取る」→「連携コードを発行する」
+          → 出た6けたの数字を、LINEのトークに「連携 123456」のように送る。コードは10分間・1回だけ有効。
+        - 機器の追加は「SwitchBot設定」画面で SwitchBot と接続すると自動で読み込まれます。
+        - LINEで使えるボタン:「助けて」「体調が悪い」「大丈夫」「今日の様子」「家族に連絡」。
+        - 文字の大きさや通知音は、見守り隊ではなく LINE アプリ側の設定で変えます。
+        - 見守り隊にお金の情報や通帳の情報はありません。ボタンを押しても料金はかかりません。
+
+        【言ってはいけないこと】
+        - この一覧に無い画面名・ボタン名・手順を作って案内しないこと。
+        - 分からないことは、分からないと正直に伝え、「使い方」と送るよう案内すること。
+        """;
+
+    /// <summary>
+    /// True when the message describes a possible medical emergency. Checked before any
+    /// other routing so these never fall through to small talk.
+    /// </summary>
+    public static bool IsUrgent(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return false;
+        }
+
+        var normalized = Normalize(message);
+        return UrgentKeywords.Any(k => normalized.Contains(Normalize(k), StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Returns a canned answer for <paramref name="message"/>, or null when nothing is
+    /// confidently known. Never throws and never calls out of process.
+    /// </summary>
+    public static FaqAnswer? TryAnswer(string? message, FaqMatchMode mode = FaqMatchMode.Strict)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+        {
+            return null;
+        }
+
+        var normalized = Normalize(message);
+        if (normalized.Length == 0)
+        {
+            return null;
+        }
+
+        foreach (var entry in Entries)
+        {
+            if (mode == FaqMatchMode.Strict && !entry.PreIntent)
+            {
+                continue;
+            }
+
+            if (entry.StrictGroups.Any(group => group.All(k => normalized.Contains(Normalize(k), StringComparison.Ordinal))))
+            {
+                return new FaqAnswer(entry.Id, entry.Reply);
+            }
+
+            if (mode == FaqMatchMode.Loose
+                && entry.LooseKeywords.Any(k => normalized.Contains(Normalize(k), StringComparison.Ordinal)))
+            {
+                return new FaqAnswer(entry.Id, entry.Reply);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Folds width, case and spacing so that "カメラ" / "ｶﾒﾗ" / "か め ら" all compare equal.
+    /// Punctuation is dropped because elderly users type 「？」「。」and trailing spaces freely.
+    /// </summary>
+    private static string Normalize(string value)
+    {
+        var folded = value.Normalize(NormalizationForm.FormKC).ToLowerInvariant();
+        var builder = new StringBuilder(folded.Length);
+
+        foreach (var ch in folded)
+        {
+            if (char.IsLetterOrDigit(ch))
+            {
+                builder.Append(ch);
+            }
+        }
+
+        return builder.ToString();
+    }
+}

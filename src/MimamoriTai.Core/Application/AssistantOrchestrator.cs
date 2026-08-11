@@ -115,6 +115,22 @@ public sealed class AssistantOrchestrator(
             return confirmation;
         }
 
+        // Someone describing chest pain must not wait ~1.7s for intent classification and
+        // must never be answered with small talk, so this is decided before any model call
+        // and before the knowledge base.
+        if (AssistantKnowledgeBase.IsUrgent(request.Message))
+        {
+            return await ReplyWithoutModelAsync(request, AssistantKnowledgeBase.UrgentReply, ct);
+        }
+
+        // Product questions ("家族の追加方法は") are answered from the knowledge base with no
+        // model call at all. Only wording that cannot also be a device command or a question
+        // about the resident's day is allowed to answer this early -- see FaqEntry.PreIntent.
+        if (AssistantKnowledgeBase.TryAnswer(request.Message, FaqMatchMode.Strict) is { } known)
+        {
+            return await ReplyWithoutModelAsync(request, known.Reply, ct);
+        }
+
         var aliasHint = await BuildAliasHintAsync(request.HouseholdId, ct);
 
         var messages = new List<AiMessage>
@@ -146,6 +162,13 @@ public sealed class AssistantOrchestrator(
 
         if (plan is null)
         {
+            // The router is unreachable or returned nonsense. Common questions still have to
+            // work, so the knowledge base gets its loose pass here rather than nothing at all.
+            if (AssistantKnowledgeBase.TryAnswer(request.Message, FaqMatchMode.Loose) is { } fallback)
+            {
+                return await ReplyWithoutModelAsync(request, fallback.Reply, ct);
+            }
+
             return new AssistantResponse(
                 "うまく聞き取れませんでした。もう一度、機器の名前やご質問を具体的に教えてください。",
                 AssistantIntent.Conversation,
@@ -522,21 +545,58 @@ public sealed class AssistantOrchestrator(
     private static readonly Regex NumberPattern =
         new(@"\d{1,2}:\d{2}|\d+(?:\.\d+)?", RegexOptions.Compiled);
 
+    /// <summary>
+    /// System prompt for messages the knowledge base did not recognise. The product facts
+    /// are supplied rather than trusted to the model's memory: asked to explain 見守り隊
+    /// unaided, a model invents menus that do not exist, and an 85 year old following a
+    /// made-up instruction is worse off than one told "分かりません".
+    /// </summary>
+    private static readonly string ConversationPrompt = $"""
+        あなたは高齢者見守りサービス「見守り隊」のやさしいアシスタントです。
+        相手はご高齢の方です。次のとおりに答えてください。
+
+        - 日本語で、2〜3文まで。短く、やさしく。
+        - むずかしい言葉・カタカナ語・英語・専門用語を使わない。
+        - 手順を伝えるときだけ、番号付きで3つまで。
+        - 不安な気持ちは否定せず、まず受け止めてから、事実で安心してもらう。
+        - 下の「事実として正しいこと」に書かれていないことは、絶対に作らないこと。
+
+        {AssistantKnowledgeBase.ProductFacts}
+        """;
+
     private async Task<AssistantResponse> HandleConversationAsync(
         AssistantRequest request, AiCompletionResult intentCompletion, CancellationToken ct)
     {
+        // Second pass: the model has already called this small talk, so single keywords
+        // ("さみしい", "痛い") can answer without risking a device command or data question.
+        // This also carries the whole path when the router is down.
+        var known = AssistantKnowledgeBase.TryAnswer(request.Message, FaqMatchMode.Loose);
+        if (known is not null)
+        {
+            return new AssistantResponse(
+                known.Reply,
+                AssistantIntent.Conversation,
+                KnowledgeBaseModel,
+                KnowledgeBaseRouter,
+                false,
+                null);
+        }
+
         var messages = new List<AiMessage>
         {
-            AiMessage.System("あなたは見守りサービスのやさしいアシスタントです。日本語で1〜2文、簡潔に返答してください。"),
+            AiMessage.System(ConversationPrompt),
             AiMessage.User(request.Message)
         };
 
-        var reply = await ai.CompleteAsync(messages, "conversation", jsonMode: false, ct);
-        await LogAiAsync(request.HouseholdId, "conversation", reply, ct);
+        var purpose = ConversationPurpose(request.Source);
+        var reply = await ai.CompleteAsync(messages, purpose, jsonMode: false, ct);
+        await LogAiAsync(request.HouseholdId, purpose, reply, ct);
 
+        // When the model gives nothing back, say so honestly and offer the one command that
+        // always works, rather than the old "承知しました" -- which answered no question at all.
         var text = reply.Success && !string.IsNullOrWhiteSpace(reply.Content)
             ? reply.Content.Trim()
-            : "承知しました。家族にも共有しておきますね。";
+            : NoAnswerText;
 
         return new AssistantResponse(
             text,
@@ -546,6 +606,46 @@ public sealed class AssistantOrchestrator(
             false,
             null);
     }
+
+    /// <summary>
+    /// Marks small talk as deadline-bound when it came from LINE, exactly as
+    /// <see cref="SummaryPurpose"/> does for summaries.
+    ///
+    /// Measured on the live router, "orcarouter/auto" sends this path to reasoning models
+    /// (qwen3.7-plus 6.2s, deepseek-v4-pro 5.1s, glm-5.2 12.6s). Added to the ~1.7s intent
+    /// call, that exceeds the webhook's 8s budget, which is what turned every question into
+    /// the generic "しばらくたってからお試しください" message. The web UI keeps the auto
+    /// router: it has no deadline, and showing which provider answered is the point.
+    /// </summary>
+    private static string ConversationPurpose(CommandSource source) =>
+        source == CommandSource.Line ? "conversation-fast" : "conversation";
+
+    /// <summary>
+    /// Records and returns an answer that required no model at all. Kept on the same
+    /// bookkeeping path as a model answer so the conversation history stays complete.
+    /// </summary>
+    private async Task<AssistantResponse> ReplyWithoutModelAsync(
+        AssistantRequest request, string reply, CancellationToken ct)
+    {
+        await RecordMessageAsync(request, MessageType.Text, request.Message, ct);
+        await RecordMessageAsync(request, MessageType.AiReply, reply, ct, isAi: true);
+
+        return new AssistantResponse(
+            reply,
+            AssistantIntent.Conversation,
+            KnowledgeBaseModel,
+            KnowledgeBaseRouter,
+            false,
+            null);
+    }
+
+    /// <summary>Reported instead of a model name when the answer came from the knowledge base.</summary>
+    internal const string KnowledgeBaseRouter = "KnowledgeBase";
+
+    internal const string KnowledgeBaseModel = "knowledge-base";
+
+    private const string NoAnswerText =
+        "うまくお答えできませんでした。「使い方」と送っていただくと、できることをご案内します。";
 
     /// <summary>
     /// The alias vocabulary handed to the planning model. The family's own name for a
