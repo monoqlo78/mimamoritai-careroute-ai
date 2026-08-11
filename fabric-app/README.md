@@ -74,15 +74,21 @@ pwsh ./scripts/sync-to-fabric.ps1
 │   └── data/
 │       ├── HouseholdSnapshot.ts    # 世帯スナップショット（非個人情報）
 │       ├── AlertRecord.ts          # 通知履歴（本文は持たない）
+│       ├── ActivityBucket.ts       # 機器イベントの時間別ロールアップ
 │       └── schema.ts               # 型付きクライアントが参照するスキーマ
 ├── src/
 │   ├── main.tsx                    # エントリポイント + Rayfin クライアント初期化
 │   ├── App.tsx                     # ルーティングと認証ゲート
 │   ├── hooks/AuthContext.tsx       # 認証ヘルパーの React コンテキスト
-│   ├── components/AuthPage.tsx     # サインイン UI
+│   ├── components/
+│   │   ├── AuthPage.tsx            # サインイン UI
+│   │   ├── charts.tsx              # 依存ゼロの SVG グラフ群
+│   │   └── DataFlowCanvas.tsx      # WebGL2 のデータフロー図
 │   ├── pages/HomePage.tsx          # 運用コンソール UI
 │   └── services/
 │       ├── monitoring.ts           # 世帯・通知の取得と集計（純関数 summarize / sortHouseholds）
+│       ├── analytics.ts            # グラフ・図の数値を導出（表と同じ行から計算）
+│       ├── snapshotFallback.ts     # 自動生成。バックエンド不達時の退避データ
 │       ├── rayfinClient.ts         # 型付き Rayfin クライアント
 │       ├── MockAuthService.ts      # ローカル開発用（email/password）
 │       └── RayfinAuthService.ts    # 本番用（Fabric ブローカー認証）
@@ -105,6 +111,81 @@ npx rayfin up status
 デプロイ情報を `rayfin/.deployments.json`（gitignore 済み）に記録します。
 
 デプロイ後は `scripts/sync-to-fabric.ps1` でデータを投入してください。
+
+### 開くときの注意
+
+静的ホスティング URL を直接開くとポップアップのサインインが
+「Loading…」のまま完了しないことがあります。確実なのは Fabric ポータルの
+ディープリンク経由です（ポータルの iframe 内で埋め込み認証が走ります）。
+
+```text
+https://app.fabric.microsoft.com/groups/<workspace-id>/appbackends/<item-id>?ctid=<tenant-id>
+```
+
+## トラブルシューティング
+
+### Fabric SQL がログイン中に切断される → まず容量の state を疑う
+
+**症状。** TCP は繋がるのに、ログインの途中でサーバーから接続を切られます。
+クライアントには理由が出ません。
+
+```text
+System.ComponentModel.Win32Exception (10054):
+既存の接続はリモート ホストに強制的に切断されました。
+```
+
+**原因の第一候補は Fabric 容量の一時停止です。** トークン、接続文字列、
+暗号化設定、クライアントライブラリはいずれも正常でもこの症状になります。
+容量が Inactive だと、SQL エンドポイントは読めるエラーを返さず TDS レベルで
+接続をリセットするためです。実際にここで半日溶けました。
+
+**確認の順番。** 上から順に、安いものから試してください。
+
+1. **容量の state を見る**（これを最初にやる）
+
+   ```bash
+   az rest --method get \
+     --url "https://api.fabric.microsoft.com/v1/capacities" \
+     --resource "https://api.fabric.microsoft.com"
+   # 該当容量が "state": "Inactive" なら、これが原因です
+   ```
+
+   `rayfin up db apply` を流すと、CLI 経由では読める形の
+   `This SQL database has been disabled. Please reach out to your Fabric
+   Capacity administrator.` が出ることがあります。これも同じ意味です。
+
+2. **`master` に繋いでみる。** 通常の SQL エラーが返るならトークンは正常です。
+   トークンを疑う前にこれで切り分けてください。
+
+3. トークン・接続文字列・暗号化設定を疑うのは、上の 2 つを潰してからです。
+
+**復旧。** 容量を resume します。DB は 30〜60 秒ほどで応答を再開します。
+
+```bash
+az resource invoke-action --action resume \
+  --ids "/subscriptions/<sub-id>/resourceGroups/fabric/providers/Microsoft.Fabric/capacities/fa3"
+```
+
+> **resume は課金が再開します。実行前に必ず確認を取ってください。**
+> 容量を止めていることには理由がある場合があります。無人で勝手に叩かないこと。
+
+**止まっていても画面は白くなりません。** バックエンドに到達できないとき、
+コンソールはバンドル済みのスナップショット（`src/services/snapshotFallback.ts`）に
+自動で切り替わり、「Fabric SQL に接続できていません」「これは現在の状況ではありません」と
+抽出時刻つきで明示します。構成図の該当ノードも
+`停止中` / `接続不可` / `スナップショット` に変わります。
+**古いデータをライブのふりで見せることはしません。**
+
+スナップショットを更新するには、`scripts/extract-snapshot.ps1` を流したあとに
+`node scripts/generate-fallback.cjs` を実行します（`snapshotFallback.ts` は自動生成物なので手で編集しない）。
+
+### 本番 Azure SQL に繋がらない（Error 47073）
+
+見守り隊本体が使う `sqldb-mngenv` は、Azure Policy
+`AzureSQL_PublicNetwork_Modify` により公衆ネットワークアクセスが自動で
+無効化されることがあります。**ポリシーの再評価のたびに再発します。**
+復旧はリポジトリ直下の `pwsh ./scripts/fix-sql-public-access.ps1` です。
+このサーバーは複数案件が同居しているため、**サーバー単位の設定変更は必ず事前に確認を取ってください。**
 
 ## 未決事項
 
