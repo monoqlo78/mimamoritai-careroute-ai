@@ -70,6 +70,7 @@ class MascotController {
                 this.resize();
                 this.renderer.setAnimationLoop(() => this.render());
                 this.host.dispatchEvent(new CustomEvent("mascotready"));
+                this.greet();
             },
             undefined,
             (error) => {
@@ -98,6 +99,17 @@ class MascotController {
         this.mixer.addEventListener("finished", (event) => {
             if (event.action === this.bodyAction) this.playIdle();
         });
+    }
+
+    // 画面を開いた瞬間に、今日の様子に合った出迎え方をする。
+    // 落ち着いている日は万歳、気になる日は控えめに、急ぎのときは速く手を振る。
+    greet() {
+        const mood = this.host.dataset.mascotGreeting;
+        if (!mood || this.reducedMotion) return;
+
+        // 読み込み直後に動かすと、文字が出るより先に動いて目が散る。
+        // 利用者が状態の文言を読み終えるころに動き出す。
+        window.setTimeout(() => this.react(mood), 900);
     }
 
     playIdle() {
@@ -148,7 +160,9 @@ class MascotController {
             this.pointerX = 0;
             this.pointerY = 0;
         });
-        this.host.addEventListener("click", () => this.react("okay"));
+        // 触ったら応える。ただし気がかりな日に万歳させると、画面の文言と
+        // 態度が食い違う。その日の様子に合わせた返し方をする。
+        this.host.addEventListener("click", () => this.react(this.host.dataset.mascotGreeting ?? "okay"));
     }
 
     react(name) {

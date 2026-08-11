@@ -111,6 +111,7 @@ else
         <div class="status-stage" aria-hidden="true">
             <div class="hero-mascot mascot-viewer"
                  data-mascot-frame="face"
+                 data-mascot-greeting="@MascotGreeting(_model.Risk.Level)"
                  data-mascot-model="/models/mimamo-robot-opus-rigged.glb">
                 <canvas></canvas>
                 <img class="mascot-poster" src="/images/mimamo-avatar.png" alt="" />
@@ -1077,6 +1078,15 @@ else
         RiskLevel.High => "要確認",
         RiskLevel.Medium => "少し気になる",
         _ => "いつもどおり"
+    };
+
+    // ミマモの出迎え方。画面の文言と態度がちぐはぐにならないよう、
+    // 「要確認」の日に万歳させない。急ぎのときは速く手を振って気づかせる。
+    private static string MascotGreeting(RiskLevel level) => level switch
+    {
+        RiskLevel.High => "emergency",
+        RiskLevel.Medium => "concern",
+        _ => "okay"
     };
 
     // ---- Trend charts -------------------------------------------------------
