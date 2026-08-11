@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
@@ -10,7 +10,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.Sql("""
+            migrationBuilder.SqlAsOwnBatch("""
                 CREATE OR ALTER VIEW mimamori.vw_AnalyticsProfiles AS
                 SELECT
                     h.Id AS HouseholdId,
@@ -32,7 +32,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                 ) lineProfile;
                 """);
 
-            migrationBuilder.Sql("""
+            migrationBuilder.SqlAsOwnBatch("""
                 CREATE OR ALTER VIEW mimamori.vw_CurrentDeviceStatus AS
                 SELECT
                     d.Id AS DeviceId,
@@ -59,7 +59,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                 WHERE d.IsEnabled = 1 AND d.IsActive = 1;
                 """);
 
-            migrationBuilder.Sql("""
+            migrationBuilder.SqlAsOwnBatch("""
                 CREATE OR ALTER VIEW mimamori.vw_DailyActivity AS
                 SELECT
                     s.HouseholdId AS HouseholdId,
@@ -81,7 +81,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                 LEFT JOIN mimamori.People p ON p.Id = s.PersonId;
                 """);
 
-            migrationBuilder.Sql("""
+            migrationBuilder.SqlAsOwnBatch("""
                 CREATE OR ALTER VIEW mimamori.vw_RecentDeviceActivity AS
                 SELECT
                     e.Id AS EventId,
@@ -104,7 +104,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                 WHERE e.OccurredAtUtc >= DATEADD(day, -30, SYSUTCDATETIME());
                 """);
 
-            migrationBuilder.Sql("""
+            migrationBuilder.SqlAsOwnBatch("""
                 CREATE OR ALTER VIEW mimamori.vw_PlugMiniReadings AS
                 SELECT
                     r.Id AS ReadingId,
@@ -132,7 +132,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
         {
             migrationBuilder.Sql("DROP VIEW IF EXISTS mimamori.vw_PlugMiniReadings;");
 
-            migrationBuilder.Sql("""
+            migrationBuilder.SqlAsOwnBatch("""
                 CREATE OR ALTER VIEW mimamori.vw_CurrentDeviceStatus AS
                 SELECT
                     d.Id AS DeviceId,
@@ -155,7 +155,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                 WHERE d.IsEnabled = 1;
                 """);
 
-            migrationBuilder.Sql("""
+            migrationBuilder.SqlAsOwnBatch("""
                 CREATE OR ALTER VIEW mimamori.vw_DailyActivity AS
                 SELECT
                     s.HouseholdId AS HouseholdId,
@@ -173,7 +173,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                 LEFT JOIN mimamori.People p ON p.Id = s.PersonId;
                 """);
 
-            migrationBuilder.Sql("""
+            migrationBuilder.SqlAsOwnBatch("""
                 CREATE OR ALTER VIEW mimamori.vw_RecentDeviceActivity AS
                 SELECT
                     e.Id AS EventId,

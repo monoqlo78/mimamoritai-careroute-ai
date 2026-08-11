@@ -14,7 +14,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.Sql("""
+            migrationBuilder.SqlAsOwnBatch("""
                 CREATE OR ALTER VIEW mimamori.vw_CurrentDeviceStatus AS
                 SELECT
                     d.Id                  AS DeviceId,
@@ -37,7 +37,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                 WHERE d.IsEnabled = 1;
                 """);
 
-            migrationBuilder.Sql("""
+            migrationBuilder.SqlAsOwnBatch("""
                 CREATE OR ALTER VIEW mimamori.vw_DailyActivity AS
                 SELECT
                     s.HouseholdId         AS HouseholdId,
@@ -55,7 +55,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                 LEFT JOIN mimamori.People p ON p.Id = s.PersonId;
                 """);
 
-            migrationBuilder.Sql("""
+            migrationBuilder.SqlAsOwnBatch("""
                 CREATE OR ALTER VIEW mimamori.vw_RecentDeviceActivity AS
                 SELECT
                     e.Id                  AS EventId,

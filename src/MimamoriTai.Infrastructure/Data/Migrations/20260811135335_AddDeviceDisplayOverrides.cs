@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
@@ -27,7 +27,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                 nullable: true);
 
             // 分析ビューも利用者が直した呼び名・部屋を返すようにする（Fabric 側の回答が古い名前にならないように）。
-            migrationBuilder.Sql("""
+            migrationBuilder.SqlAsOwnBatch("""
                 CREATE OR ALTER VIEW mimamori.vw_CurrentDeviceStatus AS
                 SELECT
                     d.Id AS DeviceId,
@@ -55,7 +55,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                 WHERE d.IsEnabled = 1 AND d.IsActive = 1;
                 """);
 
-            migrationBuilder.Sql("""
+            migrationBuilder.SqlAsOwnBatch("""
                 CREATE OR ALTER VIEW mimamori.vw_RecentDeviceActivity AS
                 SELECT
                     e.Id AS EventId,
@@ -79,7 +79,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                 WHERE e.OccurredAtUtc >= DATEADD(day, -30, SYSUTCDATETIME());
                 """);
 
-            migrationBuilder.Sql("""
+            migrationBuilder.SqlAsOwnBatch("""
                 CREATE OR ALTER VIEW mimamori.vw_PlugMiniReadings AS
                 SELECT
                     r.Id AS ReadingId,
@@ -106,7 +106,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
-            migrationBuilder.Sql("""
+            migrationBuilder.SqlAsOwnBatch("""
                 CREATE OR ALTER VIEW mimamori.vw_CurrentDeviceStatus AS
                 SELECT
                     d.Id AS DeviceId,
@@ -133,7 +133,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                 WHERE d.IsEnabled = 1 AND d.IsActive = 1;
                 """);
 
-            migrationBuilder.Sql("""
+            migrationBuilder.SqlAsOwnBatch("""
                 CREATE OR ALTER VIEW mimamori.vw_RecentDeviceActivity AS
                 SELECT
                     e.Id AS EventId,
@@ -156,7 +156,7 @@ namespace MimamoriTai.Infrastructure.Data.Migrations
                 WHERE e.OccurredAtUtc >= DATEADD(day, -30, SYSUTCDATETIME());
                 """);
 
-            migrationBuilder.Sql("""
+            migrationBuilder.SqlAsOwnBatch("""
                 CREATE OR ALTER VIEW mimamori.vw_PlugMiniReadings AS
                 SELECT
                     r.Id AS ReadingId,
