@@ -10,6 +10,7 @@
 @inject ICurrentUserAccessor CurrentUserAccessor
 @inject IAppDbContext Db
 @inject TimeProvider Clock
+@inject ILogger<SwitchBotSettings> Logger
 
 <PageTitle>SwitchBot 設定 / 見守り隊</PageTitle>
 
@@ -69,6 +70,13 @@ else
 
         @if (_status?.Status == SwitchBotConnectionStatus.Connected)
         {
+            <p class="notice-ok">
+                トークン・シークレットは保存済みです（安全のため再表示はしません）。
+                @if (_status?.LastSyncAtUtc is null)
+                {
+                    <text>続けて「今すぐ同期する」を押すと、ご家庭の機器が一覧に取り込まれます。</text>
+                }
+            </p>
             <div class="device-actions">
                 <button class="secondary-button" @onclick="SyncNowAsync" disabled="@_busy">今すぐ同期する</button>
                 <button class="secondary-button" @onclick="DisconnectAsync" disabled="@_busy">接続を解除する</button>
@@ -197,9 +205,18 @@ else
 
             await ReloadStatusAsync();
         }
+        catch (Exception ex)
+        {
+            _token = string.Empty;
+            _secret = string.Empty;
+            Logger.LogError(ex, "SwitchBot credential save failed for household {HouseholdId}.", _householdId);
+            _notice = $"保存中にエラーが発生しました（{ex.GetType().Name}）。";
+            _noticeKind = "warn";
+        }
         finally
         {
             _busy = false;
+            StateHasChanged();
         }
     }
 
@@ -220,9 +237,16 @@ else
             _noticeKind = "ok";
             await ReloadStatusAsync();
         }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "SwitchBot disconnect failed for household {HouseholdId}.", _householdId);
+            _notice = $"解除中にエラーが発生しました（{ex.GetType().Name}）。";
+            _noticeKind = "warn";
+        }
         finally
         {
             _busy = false;
+            StateHasChanged();
         }
     }
 
@@ -257,9 +281,16 @@ else
             _noticeKind = "ok";
             await ReloadStatusAsync();
         }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "SwitchBot sync failed for household {HouseholdId}.", _householdId);
+            _notice = $"同期中にエラーが発生しました（{ex.GetType().Name}）。";
+            _noticeKind = "warn";
+        }
         finally
         {
             _busy = false;
+            StateHasChanged();
         }
     }
 
@@ -297,9 +328,21 @@ else
             _lineNotice = "コードを発行しました。LINEのトーク画面で送信してください。";
             _lineNoticeKind = "ok";
         }
+        catch (Exception ex)
+        {
+            // Without this the exception tears down the Blazor circuit and the button
+            // simply appears dead -- the user gets no feedback at all. Surface the
+            // failure in place and keep the page usable.
+            Logger.LogError(ex, "LINE link code generation failed for household {HouseholdId}.", _householdId);
+            _lineCode = null;
+            _lineCodeExpiresAtUtc = null;
+            _lineNotice = $"コードを発行できませんでした（{ex.GetType().Name}）。時間をおいて再度お試しください。";
+            _lineNoticeKind = "warn";
+        }
         finally
         {
             _lineBusy = false;
+            StateHasChanged();
         }
     }
 }

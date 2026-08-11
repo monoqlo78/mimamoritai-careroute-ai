@@ -325,6 +325,25 @@ a.ghost.small { min-height: 32px; padding: 4px 10px; font-size: 12px; }
 .notice-close { min-height: auto; margin-left: auto; padding: 2px 6px; border: 0; background: transparent; color: inherit; }
 .busy-bar { color: var(--cp-accent); font-size: 13px; }
 
+.line-code-display {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: center;
+    margin: 12px 0;
+    padding: 16px;
+    border: 2px solid var(--cp-accent);
+    border-radius: 0.75rem;
+    background: var(--cp-surface);
+}
+
+.line-code-value {
+    font-size: 32px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    color: var(--cp-accent);
+}
+
 #blazor-error-ui {
     display: none;
     position: fixed;
