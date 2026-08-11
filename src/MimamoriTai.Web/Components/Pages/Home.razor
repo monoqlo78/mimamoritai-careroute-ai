@@ -142,21 +142,34 @@ else
             <span class="summary-meta">直近@(_model.Recent.Count)日間</span>
         </div>
 
-        <div class="trend-grid">
-            <div class="trend-item">
-                <BarChart Points="UsageTrend()" Caption="家電の利用回数" Unit="回"
-                          AriaLabel="@TrendAriaLabel("家電の利用回数", d => d.DeviceUsageCount, "回")" />
+        @if (!HasTrendData())
+        {
+            @* A brand-new household has a fortnight of empty days. Fourteen flat bars would
+               read as "nothing has ever happened", which is exactly the alarming message
+               this screen must not send by accident. *@
+            <p class="trend-empty">記録がたまると、ここに数日分の移り変わりが出ます。<br />今日の様子は上のカードでご覧ください。</p>
+        }
+        else
+        {
+            <div class="trend-grid">
+                <div class="trend-item">
+                    <BarChart Points="UsageTrend()" Caption="家電の利用回数" Unit="回"
+                              Badge="@UsageVerdict().Text" BadgeClass="@UsageVerdict().Class"
+                              AriaLabel="@TrendAriaLabel("家電の利用回数", d => d.DeviceUsageCount, "回")" />
+                </div>
+                <div class="trend-item">
+                    <BarChart Points="WakeUpTrend()" Caption="起きた時間"
+                              Badge="@WakeUpVerdict().Text" BadgeClass="@WakeUpVerdict().Class"
+                              AriaLabel="@WakeUpAriaLabel()" />
+                </div>
+                <div class="trend-item">
+                    <BarChart Points="NightTrend()" Caption="夜間の動き" Unit="回"
+                              Badge="@NightVerdict().Text" BadgeClass="@NightVerdict().Class"
+                              AriaLabel="@TrendAriaLabel("夜間の動き", d => d.NightActivityCount, "回")" />
+                </div>
             </div>
-            <div class="trend-item">
-                <BarChart Points="WakeUpTrend()" Caption="起きた時間"
-                          AriaLabel="@WakeUpAriaLabel()" />
-            </div>
-            <div class="trend-item">
-                <BarChart Points="NightTrend()" Caption="夜間の動き" Unit="回"
-                          AriaLabel="@TrendAriaLabel("夜間の動き", d => d.NightActivityCount, "回")" />
-            </div>
-        </div>
-        <p class="trend-note">濃い色が今日です。棒にふれると日付と回数が出ます。</p>
+            <p class="trend-note">濃い色が今日です。棒にふれると日付と回数が出ます。</p>
+        }
     </section>
 
     <section class="primary-grid">
@@ -1067,6 +1080,82 @@ else
 
     private IReadOnlyList<BarChartPoint> NightTrend() =>
         TrendPoints(d => d.NightActivityCount);
+
+    /// <summary>
+    /// A day counts as recorded once anything at all happened on it. Below a couple of these
+    /// there is nothing to compare, so the charts are replaced by a short explanation rather
+    /// than a fortnight of empty bars that reads as "nothing has ever happened here".
+    /// </summary>
+    private bool HasTrendData() =>
+        _model is not null && _model.Recent.Count(d => d.FirstActivityTime is not null) >= 2;
+
+    private TrendVerdict UsageVerdict() =>
+        TrendVerdicts.ForUsage(
+            TodayValue(d => d.DeviceUsageCount), Baseline(d => d.DeviceUsageCount), HoursIntoToday())
+        ?? EmptyVerdict;
+
+    private TrendVerdict NightVerdict() =>
+        TrendVerdicts.ForNight(
+            TodayValue(d => d.NightActivityCount), Baseline(d => d.NightActivityCount), HoursIntoToday())
+        ?? EmptyVerdict;
+
+    private TrendVerdict WakeUpVerdict() =>
+        TrendVerdicts.ForWakeUp(TodayWakeUpHours(), WakeUpBaseline()) ?? EmptyVerdict;
+
+    /// <summary>How much of today has happened, so a quiet morning is not called a quiet day.</summary>
+    private static double HoursIntoToday() =>
+        HouseholdTime.LocalTime(DateTimeOffset.UtcNow).ToTimeSpan().TotalHours;
+
+    /// <summary>No badge at all, rather than a hedge like "判定できません" on every card.</summary>
+    private static readonly TrendVerdict EmptyVerdict = new(string.Empty, string.Empty);
+
+    private double? TodayValue(Func<DailyActivity, double> value)
+    {
+        var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
+        var match = _model?.Recent.LastOrDefault(d => d.Date == today);
+
+        return match is null ? null : value(match);
+    }
+
+    /// <summary>
+    /// The days before today, and only those with something recorded: a device that was
+    /// offline for a week would otherwise drag the "usual" down to nothing.
+    /// </summary>
+    private IReadOnlyList<double> Baseline(Func<DailyActivity, double> value)
+    {
+        if (_model is null)
+        {
+            return [];
+        }
+
+        var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
+
+        return [.. _model.Recent
+            .Where(d => d.Date < today && d.FirstActivityTime is not null)
+            .Select(value)];
+    }
+
+    private double? TodayWakeUpHours()
+    {
+        var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
+        var match = _model?.Recent.LastOrDefault(d => d.Date == today);
+
+        return match?.FirstActivityTime is { } t ? t.ToTimeSpan().TotalHours : null;
+    }
+
+    private IReadOnlyList<double> WakeUpBaseline()
+    {
+        if (_model is null)
+        {
+            return [];
+        }
+
+        var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
+
+        return [.. _model.Recent
+            .Where(d => d.Date < today && d.FirstActivityTime is not null)
+            .Select(d => d.FirstActivityTime!.Value.ToTimeSpan().TotalHours)];
+    }
 
     /// <summary>
     /// Getting-up time as hours past midnight, so a later start makes a taller bar.

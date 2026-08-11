@@ -3,12 +3,20 @@
 
 @* Inline SVG so a chart needs no charting library, no JS interop and no extra
    download: it renders server-side with the rest of the page and prints correctly.
+   The motion is CSS-only and limited to transform/opacity so it is composited on the
+   GPU - a phone left on the kitchen table all day must not pay for it.
    All the maths lives in BarChartGeometry so it can be tested on its own. *@
 
 <figure class="bar-chart @Class">
     @if (!string.IsNullOrWhiteSpace(Caption))
     {
-        <figcaption>@Caption</figcaption>
+        <figcaption>
+            <span>@Caption</span>
+            @if (!string.IsNullOrWhiteSpace(Badge))
+            {
+                <span class="bar-chart-badge @BadgeClass">@Badge</span>
+            }
+        </figcaption>
     }
 
     @if (Points.Count == 0)
@@ -19,10 +27,33 @@
     {
         var max = G.Max(Points);
         var width = G.BarWidth(Points.Count);
+        var dash = G.F(G.LineDashLength(Points.Count));
 
         <svg viewBox="0 0 @G.F(G.ViewWidth) @G.F(G.ViewHeight)" role="img" aria-label="@AriaLabel" preserveAspectRatio="none">
+            <defs>
+                @* Ids must be unique per chart: three charts share one page and a repeated
+                   id would make every one of them use the first chart's gradient. *@
+                <linearGradient id="@($"{_id}-bar")" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" class="bar-chart-stop-top" />
+                    <stop offset="100%" class="bar-chart-stop-bottom" />
+                </linearGradient>
+                <linearGradient id="@($"{_id}-area")" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" class="bar-chart-area-top" />
+                    <stop offset="100%" class="bar-chart-area-bottom" />
+                </linearGradient>
+            </defs>
+
+            @* Guides, not a full grid: enough to judge height, quiet enough to ignore. *@
+            @foreach (var fraction in _guides)
+            {
+                var y = G.F(G.PlotBottom - ((G.PlotBottom - 2) * fraction));
+                <line x1="0" y1="@y" x2="@G.F(G.ViewWidth)" y2="@y" class="bar-chart-guide" />
+            }
+
             @* Baseline: without it a run of empty days reads as "no chart" rather than "nothing happened". *@
             <line x1="0" y1="@G.F(G.PlotBottom)" x2="@G.F(G.ViewWidth)" y2="@G.F(G.PlotBottom)" class="bar-chart-axis" />
+
+            <path d="@G.AreaPath(Points, max)" class="bar-chart-area" fill="url(#@($"{_id}-area"))" />
 
             @for (var i = 0; i < Points.Count; i++)
             {
@@ -30,9 +61,29 @@
 
                 <rect x="@G.F(G.BarX(i, Points.Count))" y="@G.F(G.BarTop(point.Value, max))"
                       width="@G.F(width)" height="@G.F(G.BarHeight(point.Value, max))"
-                      rx="1" class="@G.BarClass(point)">
+                      rx="1" class="@G.BarClass(point)" fill="url(#@($"{_id}-bar"))"
+                      style="--bar-index: @i">
                     <title>@point.Label：@G.Describe(point, Unit)</title>
                 </rect>
+            }
+
+            <polyline points="@G.LinePoints(Points, max)" class="bar-chart-line"
+                      style="--dash: @dash" stroke-dasharray="@dash" stroke-dashoffset="@dash" />
+
+            @for (var i = 0; i < Points.Count; i++)
+            {
+                var point = Points[i];
+                if (!point.IsHighlighted)
+                {
+                    continue;
+                }
+
+                @* A vertical marker rather than a dot: the chart is stretched to the card
+                   width, which squashes any circle into an ellipse. A line survives it,
+                   and it also tells the family where today sits when its bar is tiny. *@
+                <line x1="@G.F(G.CenterX(i, Points.Count))" y1="0"
+                      x2="@G.F(G.CenterX(i, Points.Count))" y2="@G.F(G.PlotBottom)"
+                      class="bar-chart-today-marker" />
             }
         </svg>
 
@@ -53,8 +104,19 @@
 
     [Parameter] public string? Caption { get; set; }
 
+    /// <summary>Short verdict shown beside the caption, e.g. "いつもどおり".</summary>
+    [Parameter] public string? Badge { get; set; }
+
+    /// <summary>Extra class for the badge, so an unusual day can be coloured differently.</summary>
+    [Parameter] public string? BadgeClass { get; set; }
+
     /// <summary>Appended to the value in each bar's tooltip, e.g. "回".</summary>
     [Parameter] public string Unit { get; set; } = string.Empty;
 
     [Parameter] public string? Class { get; set; }
+
+    private static readonly double[] _guides = [0.5, 1.0];
+
+    private readonly string _id = $"chart-{Guid.NewGuid():N}";
 }
+
