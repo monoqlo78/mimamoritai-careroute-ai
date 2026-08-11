@@ -63,6 +63,62 @@ public class AuthTests
         Assert.True(options.IsLineAuthority);
     }
 
+    [Fact]
+    public void SupportsRemoteSignOut_False_ForLine()
+    {
+        // LINE's discovery document publishes no end_session_endpoint, so signing out
+        // through the OIDC handler throws. Verified against
+        // https://access.line.me/.well-known/openid-configuration.
+        var options = ValidOptions();
+        options.Authority = "https://access.line.me";
+        Assert.False(options.SupportsRemoteSignOut);
+    }
+
+    [Fact]
+    public void SupportsRemoteSignOut_True_ForEntraExternalId()
+    {
+        Assert.True(ValidOptions().SupportsRemoteSignOut);
+    }
+
+    [Fact]
+    public void ResolveIdentityProvider_Line_WhenAuthorityIsLine_AndNoIdpClaim()
+    {
+        var options = ValidOptions();
+        options.Authority = "https://access.line.me";
+        Assert.Equal("line", options.ResolveIdentityProvider(null));
+    }
+
+    [Fact]
+    public void ResolveIdentityProvider_Line_WhenIdpClaimContainsLine()
+    {
+        Assert.Equal("line", ValidOptions().ResolveIdentityProvider("LineFederation"));
+    }
+
+    [Fact]
+    public void ResolveIdentityProvider_FallsBackToProviderName()
+    {
+        Assert.Equal("entra-external", ValidOptions().ResolveIdentityProvider(null));
+    }
+
+    [Fact]
+    public void Current_ReportsLineProvider_ForDirectLineAuthority_WithoutIdpClaim()
+    {
+        // Direct LINE Login mints no "idp" claim, so the accessor must fall back to the
+        // authority to stay consistent with how the AppUser row is provisioned.
+        var appUserId = Guid.NewGuid();
+        var identity = new ClaimsIdentity(authenticationType: "oidc");
+        identity.AddClaim(new Claim("sub", "line-sub"));
+        identity.AddClaim(new Claim(ClaimsCurrentUserAccessor.AppUserIdClaimType, appUserId.ToString()));
+
+        var options = ValidOptions();
+        options.Authority = "https://access.line.me";
+
+        var httpContext = new DefaultHttpContext { User = new ClaimsPrincipal(identity) };
+        var accessor = Accessor(httpContext, options);
+
+        Assert.Equal("line", accessor.Current!.IdentityProvider);
+    }
+
     private static ClaimsCurrentUserAccessor Accessor(HttpContext? httpContext, AuthOptions options) =>
         new(new FakeHttpContextAccessor(httpContext), Microsoft.Extensions.Options.Options.Create(options));
 

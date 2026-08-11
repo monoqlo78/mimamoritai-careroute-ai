@@ -1,5 +1,17 @@
 # LINE Messaging API セットアップ
 
+> **⚠️ このドキュメントは「LINE でメッセージを送る（Messaging API）」の手順です。**
+> **「LINE アカウントでアプリにログインする（LINE Login）」の手順ではありません。**
+>
+> この2つは LINE Developers Console 上で**別のチャネル**として作成し、**Channel ID / Channel secret も別物**です。混同すると必ず認証に失敗します。
+>
+> | やりたいこと | 使うチャネル種別 | 設定キー | 手順書 |
+> | --- | --- | --- | --- |
+> | 家族グループへ通知を送る | **Messaging API** チャネル | `Line:ChannelAccessToken` / `Line:ChannelSecret` | **本ドキュメント** |
+> | LINE アカウントでログインする | **LINE Login** チャネル | `Auth:ClientId` / `Auth:ClientSecret` | **[`line-entra-setup.md`](line-entra-setup.md)** |
+>
+> ログインが目的の場合は [`docs/line-entra-setup.md`](line-entra-setup.md) を参照してください。Entra External ID 側と LINE Developers 側の**相互設定（どの値をどちらへ貼り付けるか）の対応表**もそちらにあります。
+
 見守り隊は LINE を家族連絡チャネルとして使います。実際のLINEチャネルが無くても、ダッシュボードの「LINE シミュレーター」でグループLINEでの会話を再現できるので、ハッカソンのデモには必須ではありません。実連携をしたい場合は以下の手順に従ってください。
 
 ## 0. 世帯とLINE送信先の紐付け（連携コード）について

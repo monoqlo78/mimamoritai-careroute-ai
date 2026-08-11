@@ -57,7 +57,13 @@ param(
 
     [string]$AppId = 'dcc221af-ceb0-47fe-baac-837e8853423c',
 
-    [string]$UserFlowId = 'd06ea237-ed42-4f1c-8526-9d766b66d8f4'
+    [string]$UserFlowId = 'd06ea237-ed42-4f1c-8526-9d766b66d8f4',
+
+    # Optional pre-acquired Microsoft Graph access token. Supply this when the Azure CLI
+    # cannot mint a token that carries IdentityProvider.ReadWrite.All (the CLI's first-party
+    # client does not request that scope, so /identity/identityProviders returns HTTP 403).
+    # Acquire one with the device code flow against a client that has the scope consented.
+    [string]$AccessToken
 )
 
 $ErrorActionPreference = 'Stop'
@@ -98,7 +104,15 @@ function ConvertTo-Utf8String {
 }
 
 function Get-GraphToken {
-    param([string]$TenantId)
+    param(
+        [string]$TenantId,
+        [string]$PreAcquiredToken
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($PreAcquiredToken)) {
+        Write-Step "Using pre-acquired Microsoft Graph access token"
+        return $PreAcquiredToken.Trim()
+    }
 
     Write-Step "Acquiring Microsoft Graph access token for tenant $TenantId"
 
@@ -385,7 +399,7 @@ Write-Host "  User flow id:  $UserFlowId"
 Write-Host "  LINE channel:  $LineChannelId"
 Write-Host ""
 
-$token = Get-GraphToken -TenantId $TenantId
+$token = Get-GraphToken -TenantId $TenantId -PreAcquiredToken $AccessToken
 
 $existingIdp = Find-LineIdentityProvider -Token $token
 

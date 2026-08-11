@@ -55,9 +55,7 @@ public sealed class ClaimsCurrentUserAccessor(
                 ?? "ご家族";
 
             var idpClaim = principal.FindFirst("idp")?.Value;
-            var identityProvider = idpClaim is not null && idpClaim.Contains("line", StringComparison.OrdinalIgnoreCase)
-                ? "line"
-                : options.ProviderName;
+            var identityProvider = options.ResolveIdentityProvider(idpClaim);
 
             return new CurrentUser(
                 AppUserId: appUserId,

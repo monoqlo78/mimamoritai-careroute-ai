@@ -35,9 +35,14 @@ public static class AuthEndpoints
                 return Results.Content("ログイン機能は現在設定されていません（デモモードで動作中です）。", "text/plain; charset=utf-8");
             }
 
-            return Results.SignOut(
-                new AuthenticationProperties { RedirectUri = "/" },
-                [CookieAuthenticationDefaults.AuthenticationScheme, OpenIdConnectDefaults.AuthenticationScheme]);
+            // LINE Login publishes no end_session_endpoint, so including the OpenID
+            // Connect scheme there fails with "Cannot redirect to the end session
+            // endpoint". Clearing the local cookie is the correct sign-out for it.
+            string[] schemes = options.Value.SupportsRemoteSignOut
+                ? [CookieAuthenticationDefaults.AuthenticationScheme, OpenIdConnectDefaults.AuthenticationScheme]
+                : [CookieAuthenticationDefaults.AuthenticationScheme];
+
+            return Results.SignOut(new AuthenticationProperties { RedirectUri = "/" }, schemes);
         }).WithName("AuthLogout");
 
         app.MapGet("/auth/me", (IOptions<AuthOptions> options, ICurrentUserAccessor currentUserAccessor) =>

@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using Microsoft.IdentityModel.Tokens;
 using MimamoriTai.Core.Abstractions;
 using MimamoriTai.Core.Application;
@@ -44,7 +45,11 @@ public static class AuthenticationExtensions
         {
             options.DefaultScheme = CookieAuthenticationDefaults.AuthenticationScheme;
             options.DefaultChallengeScheme = OpenIdConnectDefaults.AuthenticationScheme;
-            options.DefaultSignOutScheme = OpenIdConnectDefaults.AuthenticationScheme;
+            // Signing out through a provider with no end_session_endpoint (LINE) throws,
+            // so fall back to clearing only the local cookie for those providers.
+            options.DefaultSignOutScheme = authOptions.SupportsRemoteSignOut
+                ? OpenIdConnectDefaults.AuthenticationScheme
+                : CookieAuthenticationDefaults.AuthenticationScheme;
         })
             .AddCookie()
             .AddOpenIdConnect(options =>
@@ -71,6 +76,13 @@ public static class AuthenticationExtensions
                     // External ID). This keeps one code path working for both.
                     options.Scope.Add("offline_access");
                 }
+                else
+                {
+                    // LINE's authorization endpoint documents only the query response
+                    // mode. ASP.NET Core defaults to form_post, which sends a parameter
+                    // LINE never specified, so pin it to the mode LINE actually supports.
+                    options.ResponseMode = OpenIdConnectResponseMode.Query;
+                }
 
                 options.TokenValidationParameters = new TokenValidationParameters
                 {
@@ -78,6 +90,22 @@ public static class AuthenticationExtensions
                     ValidateIssuer = true,
                     ValidIssuers = BuildValidIssuers(authOptions.Authority, tenantId)
                 };
+
+                if (authOptions.IsLineAuthority)
+                {
+                    // LINE signs id_token with HS256 using the channel secret as the key, and
+                    // emits no "kid" header. The JWKS at /oauth2/v2.1/certs only advertises
+                    // ES256 keys, so the default resolver finds no match and throws IDX10517.
+                    // Resolve the symmetric key ourselves whenever the token carries no kid,
+                    // while still honouring the JWKS keys for tokens that do.
+                    var channelSecretKey = new SymmetricSecurityKey(
+                        System.Text.Encoding.UTF8.GetBytes(authOptions.ClientSecret));
+
+                    options.TokenValidationParameters.IssuerSigningKeyResolver =
+                        (_, _, kid, parameters) => string.IsNullOrEmpty(kid)
+                            ? new SecurityKey[] { channelSecretKey }
+                            : parameters.IssuerSigningKeys;
+                }
 
                 options.Events = new OpenIdConnectEvents
                 {
@@ -177,10 +205,7 @@ internal sealed class CurrentUserAccessorFactory(
             ?? "ご家族";
 
         var idpClaim = principal.FindFirst("idp")?.Value;
-        var identityProvider = (idpClaim is not null && idpClaim.Contains("line", StringComparison.OrdinalIgnoreCase))
-                || options.IsLineAuthority
-            ? "line"
-            : options.ProviderName;
+        var identityProvider = options.ResolveIdentityProvider(idpClaim);
 
         var email = principal.FindFirst("email")?.Value ?? principal.FindFirst(ClaimTypes.Email)?.Value;
 

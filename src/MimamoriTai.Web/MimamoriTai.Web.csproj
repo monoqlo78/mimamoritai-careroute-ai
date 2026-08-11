@@ -24,6 +24,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+    <!-- Enables `dotnet user-secrets` so Auth:ClientSecret never lands in appsettings.json. -->
     <UserSecretsId>6712a655-51b4-4e8e-a661-0aca1a64081e</UserSecretsId>
   </PropertyGroup>
 
