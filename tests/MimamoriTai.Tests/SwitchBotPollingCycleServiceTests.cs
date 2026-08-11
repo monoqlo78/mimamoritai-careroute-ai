@@ -561,6 +561,55 @@ public class SwitchBotPollingCycleServiceTests
         Assert.Equal(1, created);
     }
 
+    /// <summary>
+    /// Production sockets that were already on before power-change detection shipped
+    /// have an event history with no watts recorded on any row, so there is no
+    /// baseline to compare against in DeviceEvents. The measurement table is written
+    /// on every cycle, so it has to supply the baseline instead -- otherwise the very
+    /// first real change after deployment is silently dropped.
+    /// </summary>
+    [Fact]
+    public async Task PollHouseholdAsync_Falls_Back_To_Measurements_When_No_Event_Carries_Watts()
+    {
+        var device = SwitchBotDevice("dev-1");
+        using var db = await new TestDb().SeedAsync(device);
+        var clock = new FakeTimeProvider(new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        var service = new SwitchBotPollingCycleService(db.Context, clock);
+        var provider = new FakePollingDeviceProvider();
+
+        // The socket is already on and its only event predates the feature: no watts.
+        db.Context.DeviceEvents.Add(new DeviceEvent
+        {
+            HouseholdId = db.HouseholdId,
+            DeviceId = device.Id,
+            EventType = "PowerState",
+            State = "on",
+            PowerWatts = null,
+            Source = EventSource.SwitchBotPoll,
+            OccurredAtUtc = clock.GetUtcNow().AddHours(-1),
+            ReceivedAtUtc = clock.GetUtcNow().AddHours(-1)
+        });
+        await db.Context.SaveChangesAsync();
+
+        // One cycle at the lamp's level, which only lands in PlugMiniReadings.
+        provider.Statuses[device.ExternalDeviceId] = new ProviderDeviceStatus(device.ExternalDeviceId, "on", null, clock.GetUtcNow());
+        provider.PlugMiniReadings[device.ExternalDeviceId] =
+            new PlugMiniPowerReading(device.ExternalDeviceId, 104.1, 314.0, 0, 0, clock.GetUtcNow());
+        var lamp = await service.PollHouseholdAsync(db.HouseholdId, provider);
+        Assert.Empty(lamp.CreatedEvents);
+
+        // The kettle now has to be detected off the measurement baseline alone.
+        clock.Advance(TimeSpan.FromMinutes(5));
+        provider.Statuses[device.ExternalDeviceId] = new ProviderDeviceStatus(device.ExternalDeviceId, "on", null, clock.GetUtcNow());
+        provider.PlugMiniReadings[device.ExternalDeviceId] =
+            new PlugMiniPowerReading(device.ExternalDeviceId, 104.1, 8000.0, 10, 5, clock.GetUtcNow());
+        var kettle = await service.PollHouseholdAsync(db.HouseholdId, provider);
+
+        var surge = Assert.Single(kettle.CreatedEvents).Event;
+        Assert.Equal("PowerChange", surge.EventType);
+        Assert.Equal("increased", surge.State);
+    }
+
     [Theory]
     [InlineData(33.0, 33.5, false)]   // jitter
     [InlineData(33.0, 40.0, false)]   // absolute swing too small

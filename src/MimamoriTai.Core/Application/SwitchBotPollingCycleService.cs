@@ -255,6 +255,17 @@ public sealed class SwitchBotPollingCycleService(IAppDbContext db, TimeProvider 
             .Select(e => e.PowerWatts)
             .FirstOrDefaultAsync(ct);
 
+        // A socket that was already on before this feature shipped has an event
+        // history with no watts on it at all, so the query above never yields a
+        // baseline and no change would ever be reported. The measurement table is
+        // written every cycle, so fall back to the last level recorded there.
+        reference ??= await db.PlugMiniReadings
+            .Where(r => r.DeviceId == device.Id && r.ApproxWatts != null
+                && r.OccurredAtUtc < (status.ObservedAtUtc ?? now))
+            .OrderByDescending(r => r.OccurredAtUtc)
+            .Select(r => r.ApproxWatts)
+            .FirstOrDefaultAsync(ct);
+
         // No measured level on record yet: nothing to compare against, and inventing a
         // change here would report the first telemetry-bearing poll as an event.
         if (reference is not { } previous || !IsSignificantPowerChange(previous, watts))
