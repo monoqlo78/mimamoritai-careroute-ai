@@ -21,6 +21,10 @@ public sealed class EventStreamPublishBackgroundService(
     private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
 
+    // Fabric rejects the whole capacity once it is overloaded, so a publisher that
+    // keeps failing must not keep asking every minute. See PeriodicBackoff.
+    private static readonly TimeSpan MaxInterval = TimeSpan.FromMinutes(30);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         try
@@ -32,13 +36,16 @@ public sealed class EventStreamPublishBackgroundService(
             return;
         }
 
+        var backoff = new PeriodicBackoff(Interval, MaxInterval);
+
         while (!stoppingToken.IsCancellationRequested)
         {
-            await RunOnceAsync(stoppingToken);
+            var succeeded = await RunOnceAsync(stoppingToken);
+            var wait = backoff.Next(succeeded);
 
             try
             {
-                await Task.Delay(Interval, stoppingToken);
+                await Task.Delay(wait, stoppingToken);
             }
             catch (OperationCanceledException)
             {
@@ -47,7 +54,8 @@ public sealed class EventStreamPublishBackgroundService(
         }
     }
 
-    private async Task RunOnceAsync(CancellationToken ct)
+    /// <returns>False only when a cycle actually failed, so the caller can slow down.</returns>
+    private async Task<bool> RunOnceAsync(CancellationToken ct)
     {
         try
         {
@@ -56,7 +64,7 @@ public sealed class EventStreamPublishBackgroundService(
 
             if (!publisher.IsConfigured)
             {
-                return;
+                return true;
             }
 
             var publishService = scope.ServiceProvider.GetRequiredService<EventStreamPublishService>();
@@ -64,7 +72,7 @@ public sealed class EventStreamPublishBackgroundService(
 
             if (result.Attempted == 0)
             {
-                return;
+                return true;
             }
 
             if (result.Success)
@@ -72,22 +80,24 @@ public sealed class EventStreamPublishBackgroundService(
                 logger.LogInformation(
                     "Published {Published}/{Attempted} device event(s) to the Fabric Eventhouse.",
                     result.Published, result.Attempted);
+                return true;
             }
-            else
-            {
-                logger.LogWarning(
-                    "Fabric Eventhouse publish failed for {Attempted} pending device event(s) ({Error}); will retry next cycle.",
-                    result.Attempted, result.Error);
-            }
+
+            logger.LogWarning(
+                "Fabric Eventhouse publish failed for {Attempted} pending device event(s) ({Error}); will retry, backing off while it keeps failing.",
+                result.Attempted, result.Error);
+            return false;
         }
         catch (OperationCanceledException)
         {
             // Expected during shutdown.
+            return true;
         }
         catch (Exception ex)
         {
             // The background publisher must never take the app down.
             logger.LogWarning(ex, "Event stream publish cycle failed; will retry next interval.");
+            return false;
         }
     }
 }
