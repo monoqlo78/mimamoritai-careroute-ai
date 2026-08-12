@@ -214,7 +214,7 @@ else { <div data-mascot-model="..."><canvas></canvas></div> }
 
 ## 6. リンク
 
-- リポジトリ: https://github.com/msogabe_microsoft/mimamoritai-careroute-ai
+- リポジトリ: https://github.com/monoqlo78/mimamoritai-careroute-ai
 - デモ: https://app-mimamoritai-hack.azurewebsites.net/
 
 なお、高齢の利用者本人が使う画面は文字とボタンを大きくした別画面（`/one-touch`）にしてあります。見守る側と見守られる側で、必要な情報がまったく違うためです。
