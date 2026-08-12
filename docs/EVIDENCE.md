@@ -85,7 +85,64 @@
 
 ---
 
-## 3. 検証方法
+## 3. Microsoft Fabric 側の証跡
+
+見守り隊は、リアルタイムの見守り（Azure SQL）と、
+分析・運用の基盤（Microsoft Fabric）を分けています。
+ここでは Fabric 側が実際にデータを受け取り、動いていることを示します。
+
+### 3-1. ワークスペースの構成
+
+![Fabric ワークスペース](images/evidence/fabric-03-workspace.png)
+
+ワークスペース `CareRoute-AI-Mimamori` に、
+Eventstream・Eventhouse（KQLデータベース）・Lakehouse・
+Fabric SQL Database・データエージェントが並んでいます。
+運用コンソール（`mimamoritai-admin`）も Fabric のアプリとして
+このワークスペースに載っています。
+
+### 3-2. Eventhouse への取り込み
+
+![Eventhouse](images/evidence/fabric-04-eventhouse.png)
+
+`MimamoriEventhouse` には `DeviceEvents` と `SwitchBotPlugReadings` の
+2テーブルがあります。撮影時点で直近の取り込みは 568 行、
+`SwitchBotPlugReadings` の最終インジェストは「3分前」です。
+デモ用に流し込んだ静的データではなく、現在も動いている経路です。
+
+### 3-3. KQL で実データを確認
+
+![KQL クエリ結果](images/evidence/fabric-05-kql.png)
+
+```kusto
+SwitchBotPlugReadings
+| summarize Readings=count(), LastIngested=max(ingestion_time()) by DeviceName
+| order by Readings desc
+```
+
+実機の SwitchBot プラグ「リビングの電気」から 383 件が取り込まれ、
+最終取り込みは実行の約2分前でした。
+
+### 3-4. 運用コンソール（Fabric App / Rayfin）
+
+![運用コンソール](images/evidence/fabric-02-console-full.png)
+
+Fabric 上でホストしている運用コンソールです。
+サインインは Fabric のブローカー認証（SSO）を通ります。
+上部の帯にある「データはこう流れています」は、
+センサーから家族への通知、そして Fabric への取り込みまでを
+1枚で追える図で、数字はすべて下の表と同じ実データです。
+
+「OrcaRouter が使ったモデル」の節では、記録した87回の呼び出しのうち
+86回が4種類のモデルで応答し、残り1回はモデルが応答する前に失敗した
+呼び出しであることを、末尾の「未応答（失敗）」の棒として明示しています。
+**うまくいった分だけを描いて合計を合わせる、ということをしていません。**
+
+なお画面上部のアカウント表記は、公開用に伏せています。
+
+---
+
+## 4. 検証方法
 
 ### VMからの到達性確認
 
@@ -99,11 +156,12 @@ Azure VM 上で PowerShell を実行し、以下を取得しました。
 ### 画面キャプチャ
 
 公開URLに対して Playwright（Chromium / 1400×1050）でアクセスし取得しました。
-認証を伴わない状態での表示です。
+本番アプリの3枚（2章）は認証を伴わない状態での表示です。
+Fabric 側（3章）は、運用者としてサインインした状態で取得しています。
 
 ---
 
-## 4. 補足
+## 5. 補足
 
 - `/admin` `/liff` は認証前提の画面のため、上記のステータス200は
   「拒否画面が正しく返っている」ことを意味します。
