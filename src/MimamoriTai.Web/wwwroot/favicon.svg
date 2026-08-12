@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="見守り隊">
+  <!-- The header logo, at tab size: a #B11F4B rounded square with a white "み".
+       Kept as one glyph rather than the mascot render because at 16px the
+       mascot is an unreadable smudge, while a single kana still reads. -->
+  <rect width="64" height="64" rx="14" fill="#B11F4B"/>
+  <text x="32" y="33" fill="#ffffff" font-size="40" font-weight="700"
+        text-anchor="middle" dominant-baseline="central"
+        font-family="'Hiragino Sans','Yu Gothic','Noto Sans JP','Segoe UI',sans-serif">み</text>
+</svg>
