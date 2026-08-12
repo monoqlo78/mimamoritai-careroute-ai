@@ -77,6 +77,11 @@ flowchart LR
 
 この「AIは会話には使うが、危険判断には使わない」という線引きが、このプロジェクトで一番考えたところです。
 
+**(4) 権限がないときは、枠ごと出さない。**
+同じ考え方を管理画面にも通しました。全世帯の状況を見る `/admin` は、サインインが構成されている環境では、許可リストに識別子が載っている利用者だけが中身を見られます。リストが空なら誰も一致しません。未許可のときは、画面の枠だけ出してデータを空にするのではなく、**そもそも読み込み処理を走らせずに `null` を返して拒否**します。同じ画面を出すAPIも、存在自体を答えないよう 404 を返します。
+
+![運用コンソールの拒否画面](./images/evidence/prod-03-admin-denied.png)
+
 ---
 
 ## 3. 構成
@@ -216,6 +221,7 @@ else { <div data-mascot-model="..."><canvas></canvas></div> }
 
 - リポジトリ: https://github.com/monoqlo78/mimamoritai-careroute-ai
 - デモ: https://app-mimamoritai-hack.azurewebsites.net/
+- 稼働証跡（開発機以外からの到達性・TLS・画面）: [docs/EVIDENCE.md](https://github.com/monoqlo78/mimamoritai-careroute-ai/blob/main/docs/EVIDENCE.md)
 
 なお、高齢の利用者本人が使う画面は文字とボタンを大きくした別画面（`/one-touch`）にしてあります。見守る側と見守られる側で、必要な情報がまったく違うためです。
 
