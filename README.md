@@ -3,6 +3,8 @@
 > 離れて暮らす家族のための、安全第一の高齢者見守りサービス
 > *An elderly-watch ("見守り") assistant for families who live apart — hackathon project.*
 
+📝 開発記録（Qiita）: [AIに家電を任せない見守りサービスを作った ― Azure + Microsoft Fabric で「疑ってかかる」設計](https://qiita.com/monoqlo78/items/27ea5bfa760bd8e3c3b7) — 同じ内容はリポジトリ内の [docs/ARTICLE.md](docs/ARTICLE.md) にもあります。
+
 ## これは何か・解決したい課題
 
 一人暮らしの高齢の家族を持つ人にとって、「今日は元気にしているだろうか」を毎日確認するのは負担です。一方で、カメラなどによる常時監視はプライバシーの観点で受け入れ難いことが多くあります。
