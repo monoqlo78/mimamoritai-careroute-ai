@@ -61,6 +61,7 @@ public static class ServiceCollectionExtensions
         services.Configure<AdminOptions>(configuration.GetSection(AdminOptions.SectionName));
         services.Configure<MimamoriDataProtectionOptions>(configuration.GetSection(MimamoriDataProtectionOptions.SectionName));
         services.Configure<FabricConsoleSyncOptions>(configuration.GetSection(FabricConsoleSyncOptions.SectionName));
+        services.Configure<FabricPublishOptions>(configuration.GetSection(FabricPublishOptions.SectionName));
 
         var connectionString = configuration.GetConnectionString("AppDb");
 

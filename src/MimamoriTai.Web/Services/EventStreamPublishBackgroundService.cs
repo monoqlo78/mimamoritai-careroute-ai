@@ -1,5 +1,7 @@
+using Microsoft.Extensions.Options;
 using MimamoriTai.Core.Abstractions;
 using MimamoriTai.Core.Application;
+using MimamoriTai.Infrastructure.Fabric;
 
 namespace MimamoriTai.Web.Services;
 
@@ -16,14 +18,12 @@ namespace MimamoriTai.Web.Services;
 /// </summary>
 public sealed class EventStreamPublishBackgroundService(
     IServiceScopeFactory scopeFactory,
+    IOptions<FabricPublishOptions> options,
     ILogger<EventStreamPublishBackgroundService> logger) : BackgroundService
 {
     private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(20);
-    private static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
 
-    // Fabric rejects the whole capacity once it is overloaded, so a publisher that
-    // keeps failing must not keep asking every minute. See PeriodicBackoff.
-    private static readonly TimeSpan MaxInterval = TimeSpan.FromMinutes(30);
+    private readonly FabricPublishOptions _options = options.Value;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -36,7 +36,10 @@ public sealed class EventStreamPublishBackgroundService(
             return;
         }
 
-        var backoff = new PeriodicBackoff(Interval, MaxInterval);
+        // Fabric rejects the whole capacity once it is overloaded, so a publisher
+        // that keeps failing must not keep asking at full rate. See PeriodicBackoff
+        // and FabricPublishOptions.
+        var backoff = new PeriodicBackoff(_options.Interval, _options.MaxBackoff);
 
         while (!stoppingToken.IsCancellationRequested)
         {

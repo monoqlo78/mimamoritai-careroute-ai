@@ -1,5 +1,7 @@
+using Microsoft.Extensions.Options;
 using MimamoriTai.Core.Abstractions;
 using MimamoriTai.Core.Application;
+using MimamoriTai.Infrastructure.Fabric;
 
 namespace MimamoriTai.Web.Services;
 
@@ -15,15 +17,12 @@ namespace MimamoriTai.Web.Services;
 /// </summary>
 public sealed class PlugMiniReadingPublishBackgroundService(
     IServiceScopeFactory scopeFactory,
+    IOptions<FabricPublishOptions> options,
     ILogger<PlugMiniReadingPublishBackgroundService> logger) : BackgroundService
 {
     private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(25);
-    private static readonly TimeSpan Interval = TimeSpan.FromMinutes(1);
 
-    // This is the cycle that spent a day and a half taking 400 from the Eventhouse
-    // once a minute. Backing off is what keeps a broken integration from eating an
-    // F2 capacity the operator console also lives on. See PeriodicBackoff.
-    private static readonly TimeSpan MaxInterval = TimeSpan.FromMinutes(30);
+    private readonly FabricPublishOptions _options = options.Value;
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -36,7 +35,10 @@ public sealed class PlugMiniReadingPublishBackgroundService(
             return;
         }
 
-        var backoff = new PeriodicBackoff(Interval, MaxInterval);
+        // This is the cycle that spent a day and a half taking 400 from the
+        // Eventhouse once a minute and helped push an F2 capacity into
+        // CapacityLimitExceeded. See PeriodicBackoff and FabricPublishOptions.
+        var backoff = new PeriodicBackoff(_options.Interval, _options.MaxBackoff);
 
         while (!stoppingToken.IsCancellationRequested)
         {
