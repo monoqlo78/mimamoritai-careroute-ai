@@ -20,7 +20,7 @@
 
 - **データベース**: `MimamoriEventhouse`（`DeviceEvents` と同じKQLデータベース、`Eventhouse:DatabaseName`）
 - **テーブル名**: `SwitchBotPlugReadings`（`Eventhouse:PlugMiniTableName`、既定値）
-- **マッピング名**: `SwitchBotPlugReadingsMapping`（`Eventhouse:PlugMiniMappingName`、既定値。JSON取り込み用マッピングオブジェクトはEventhouse側で別途作成が必要 — 本ドキュメントはコード内の設定キーのみを記載し、実際のマッピング/テーブル作成は行っていません）
+- **マッピング名**: `SwitchBotPlugReadingsMapping`（`Eventhouse:PlugMiniMappingName`、既定値）
 - **列一覧**（`PlugMiniReadingRecord`、`Core/Abstractions/IPlugMiniReadingStreamPublisher.cs` 参照）:
 
   | 列名 | 型 | 説明 |
@@ -39,7 +39,37 @@
 
 - **重複排除キー**: Azure SQL側では `(HouseholdId, DeviceId, OccurredAtUtc)` の組をアプリケーションレベルの重複排除キーとして使用しています（同じポーリング周期内で同じ機器の読み取りを二重挿入しない。詳細は `SwitchBotPollingCycleService` とそのテスト参照）。Eventhouse側にはこの一意性を強制するインデックス/ポリシーは構築していません（KQLの性質上、重複投入されても分析クエリ側で `summarize arg_max(...)` 等で最新値のみを扱うか、`OccurredAtUtc` での重複排除を行うことを推奨します）。
 - **公開タイミング**: `PlugMiniReading.PublishedToStreamAtUtc` が null の行のみを対象に、`PlugMiniReadingPublishService`（`Core/Application/PlugMiniReadingPublishService.cs`）が `DeviceEvent`/`EventStreamPublishService` と全く同じ「バッチ公開 → 成功した行だけタイムスタンプを刻む」パターンでバックグラウンド公開します（`PlugMiniReadingPublishBackgroundService`）。Fabricへの送信が失敗しても例外は投げず、次回のバックグラウンド実行で再送されます。
-- **未実施の作業（人間が行う必要あり）**: 上記テーブル・マッピングオブジェクトの実際のEventhouse側での作成、および `Eventhouse:PlugMiniTableName`/`PlugMiniMappingName` に対応する取り込みロールの権限確認は、本セッションでは一切行っていません（Fabric側リソース作成はスコープ外のため）。
+- **Eventhouse側の作成（実施済み）**: テーブル・マッピング・ストリーミング取り込みポリシーは作成済みです。**作らないまま publisher を動かすと、存在しないテーブルへの取り込みが永久に HTTP 400 を返し続けます。**実際にそれが1日半続き、1分ごとの再送がF2容量を飽和させて運用コンソール全体が429で落ちました。同じ手順で再作成できるよう、使用したKQLを残します（Fabricポータルの KQL クエリセット、または後述のRESTで実行）。
+
+  ```kusto
+  .create table SwitchBotPlugReadings (
+      ReadingId: guid, HouseholdId: guid, DeviceId: guid,
+      DeviceName: string, Room: string,
+      VoltageV: real, CurrentMa: real, DailyEnergyWh: real,
+      UsageMinutesToday: int, ApproxWatts: real, OccurredAtUtc: datetime)
+
+  // path は publisher が送るJSONに合わせて camelCase。列名と綴りが違う点に注意。
+  .create-or-alter table SwitchBotPlugReadings ingestion json mapping "SwitchBotPlugReadingsMapping"
+  '[{"column":"ReadingId","path":"$.readingId"},{"column":"HouseholdId","path":"$.householdId"},'
+  '{"column":"DeviceId","path":"$.deviceId"},{"column":"DeviceName","path":"$.deviceName"},'
+  '{"column":"Room","path":"$.room"},{"column":"VoltageV","path":"$.voltageV"},'
+  '{"column":"CurrentMa","path":"$.currentMa"},{"column":"DailyEnergyWh","path":"$.dailyEnergyWh"},'
+  '{"column":"UsageMinutesToday","path":"$.usageMinutesToday"},{"column":"ApproxWatts","path":"$.approxWatts"},'
+  '{"column":"OccurredAtUtc","path":"$.occurredAtUtc"}]'
+
+  .alter table SwitchBotPlugReadings policy streamingingestion enable
+  ```
+
+  管理コマンドは Eventhouse のクラスタURIに対して REST でも実行できます（`csl` に上記コマンド、`db` に `MimamoriEventhouse`）:
+
+  ```powershell
+  $cl = '<Eventhouse の Query URI>'
+  $t  = az account get-access-token --resource $cl --query accessToken -o tsv
+  $b  = @{ db = 'MimamoriEventhouse'; csl = '.show tables' } | ConvertTo-Json
+  Invoke-RestMethod "$cl/v1/rest/mgmt" -Method Post -Headers @{ Authorization = "Bearer $t" } -ContentType 'application/json' -Body $b
+  ```
+
+  取り込みロール（`Eventhouse:PlugMiniTableName`/`PlugMiniMappingName` に書き込むプリンシパル）の権限確認は未実施です。取り込みが動いていることは `SwitchBotPlugReadings | summarize count()` で確認できます。
 
 ## 1. ワークスペースの作成
 2. 左下の「ワークスペース」→「新しいワークスペースの作成」から、見守り隊専用のワークスペースを作成します（Fabric容量が必要）。
