@@ -55,6 +55,7 @@ public sealed class AssistantOrchestrator(
 
         {
           "intent": "control_device | device_status | query_data | conversation",
+          "topic": "faq | general | expert | emergency",
           "deviceAlias": "文字列 または null",
           "action": "turn_on | turn_off | toggle | get_status | null",
           "scope": "recent | analysis",
@@ -69,6 +70,17 @@ public sealed class AssistantOrchestrator(
         - それ以外の会話 -> conversation
         - 機器が特定できない場合 deviceAlias は null にし、推測しないこと。
         - confidence は 0.0〜1.0 の確信度。
+
+        topic の判定 (intent が conversation のときだけ意味を持つ。それ以外は "general" でよい):
+        - "faq" = 見守り隊というサービス自体の使い方・仕組み・不安について尋ねている。
+          例:「家族の追加方法は」「通知が来ない」「カメラで見られてる?」「これは何のアプリ?」
+        - "expert" = 専門家の判断が要る。健康・症状・薬・医療・介護認定・お金・年金・相続・法律。
+          例:「この薬と一緒に飲んでいい?」「要介護の申請はどうすれば」「年金はいくらもらえる?」
+          少しでも当てはまるなら "expert" にすること。断定して答えてよい話ではない。
+        - "emergency" = 今この人の体に起きていることを訴えている。
+          例:「胸が痛い」「息ができない」「転んで動けない」
+        - "general" = 上のどれでもない、ふつうの会話や一般常識の質問。
+          例:「おはよう」「今日は寒いね」「ありがとう」「桜はいつ咲く?」
 
         scope の判定 (query_data のときのみ意味を持つ):
         - "recent" = 今・今日・直近の状態を尋ねている。
@@ -126,9 +138,20 @@ public sealed class AssistantOrchestrator(
         // Product questions ("家族の追加方法は") are answered from the knowledge base with no
         // model call at all. Only wording that cannot also be a device command or a question
         // about the resident's day is allowed to answer this early -- see FaqEntry.PreIntent.
+        //
+        // The deterministic layers run *below* the language-model router, not instead of it:
+        // whatever is answered here costs zero round trips and keeps working while the router
+        // is down, and only what is left over is classified by the model.
         if (AssistantKnowledgeBase.TryAnswer(request.Message, FaqMatchMode.Strict) is { } known)
         {
             return await ReplyWithoutModelAsync(request, known.Reply, ct);
+        }
+
+        // "この薬と一緒に飲んでいい?" must not reach a model that would answer it. Decided
+        // by keyword before the router so the refusal survives an outage too.
+        if (AssistantExpertGuidance.TryRefer(request.Message) is { } referral)
+        {
+            return await ReplyWithoutModelAsync(request, referral.Reply, ct);
         }
 
         var aliasHint = await BuildAliasHintAsync(request.HouseholdId, ct);
@@ -185,7 +208,7 @@ public sealed class AssistantOrchestrator(
             AssistantIntent.ControlDevice or AssistantIntent.DeviceStatus =>
                 await HandleDeviceAsync(request, plan, completion, ct),
             AssistantIntent.QueryData => await HandleQueryAsync(request, plan, completion, ct),
-            _ => await HandleConversationAsync(request, completion, ct)
+            _ => await HandleConversationAsync(request, plan, ct)
         };
 
         await RecordMessageAsync(request, MessageType.AiReply, response.Reply, ct, isAi: true);
@@ -564,27 +587,70 @@ public sealed class AssistantOrchestrator(
         {AssistantKnowledgeBase.ProductFacts}
         """;
 
+    /// <summary>
+    /// Used when the router called the message ordinary conversation rather than a question
+    /// about the product. General knowledge is allowed here — refusing to say that cherry
+    /// blossoms bloom in spring is not caution, it is a broken assistant — but the product
+    /// facts are still supplied so a stray question about 見守り隊 cannot be improvised, and
+    /// anything a professional owns is handed back for the referral path to answer.
+    /// </summary>
+    private static readonly string GeneralPrompt = $"""
+        あなたは高齢者見守りサービス「見守り隊」のやさしい話し相手です。
+        相手はご高齢の方です。次のとおりに答えてください。
+
+        - 日本語で、2〜3文まで。短く、やさしく。
+        - むずかしい言葉・カタカナ語・英語・専門用語を使わない。
+        - ふつうの世間話や一般常識の質問には、ふつうに答えてよい。
+        - ただし、健康・症状・薬・介護の手続き・お金・法律の判断は、絶対に自分で答えないこと。
+          その場合は「わたしからはお答えできません」と伝え、お医者さんやご家族に相談するよう案内する。
+        - 見守り隊のことは、下の「事実として正しいこと」に書かれていることだけを使う。
+          書かれていない画面名・ボタン名・手順は、絶対に作らないこと。
+
+        {AssistantKnowledgeBase.ProductFacts}
+        """;
+
+    /// <summary>
+    /// Second stage of the router: the specialist that answers, chosen from the topic the
+    /// first stage returned on the same JSON.
+    ///
+    /// The order is deliberate. Everything that can be answered without a model is tried
+    /// first, so the common cases stay at one round trip in total (the classification that
+    /// already happened) and the 8s LINE budget is never spent twice.
+    /// </summary>
     private async Task<AssistantResponse> HandleConversationAsync(
-        AssistantRequest request, AiCompletionResult intentCompletion, CancellationToken ct)
+        AssistantRequest request, AssistantPlan plan, CancellationToken ct)
     {
+        // The keyword check before the router did not fire, but the model recognised the
+        // question as one a professional owns. Answered from the fixed text, not by a model.
+        if (plan.Topic == AssistantTopic.Expert)
+        {
+            var referral = AssistantExpertGuidance.TryRefer(request.Message) ?? AssistantExpertGuidance.General;
+            return KnowledgeBaseResponse(referral.Reply);
+        }
+
+        // Urgency is normally decided by keyword before any model runs. This catches the
+        // phrasings that list did not anticipate, and costs nothing extra.
+        if (plan.Topic == AssistantTopic.Emergency)
+        {
+            return KnowledgeBaseResponse(AssistantKnowledgeBase.UrgentReply);
+        }
+
         // Second pass: the model has already called this small talk, so single keywords
         // ("さみしい", "痛い") can answer without risking a device command or data question.
         // This also carries the whole path when the router is down.
         var known = AssistantKnowledgeBase.TryAnswer(request.Message, FaqMatchMode.Loose);
         if (known is not null)
         {
-            return new AssistantResponse(
-                known.Reply,
-                AssistantIntent.Conversation,
-                KnowledgeBaseModel,
-                KnowledgeBaseRouter,
-                false,
-                null);
+            return KnowledgeBaseResponse(known.Reply);
         }
+
+        // A product question no rule anticipated stays pinned to the product facts;
+        // ordinary conversation is allowed to use general knowledge.
+        var prompt = plan.Topic == AssistantTopic.Faq ? ConversationPrompt : GeneralPrompt;
 
         var messages = new List<AiMessage>
         {
-            AiMessage.System(ConversationPrompt),
+            AiMessage.System(prompt),
             AiMessage.User(request.Message)
         };
 
@@ -606,6 +672,10 @@ public sealed class AssistantOrchestrator(
             false,
             null);
     }
+
+    /// <summary>An answer that came from fixed text rather than from a model.</summary>
+    private static AssistantResponse KnowledgeBaseResponse(string reply) =>
+        new(reply, AssistantIntent.Conversation, KnowledgeBaseModel, KnowledgeBaseRouter, false, null);
 
     /// <summary>
     /// Marks small talk as deadline-bound when it came from LINE, exactly as

@@ -145,6 +145,8 @@ main { max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; position: rel
 .brand h1 { margin: 0; font-size: 24px; line-height: 1.2; }
 .brand p { margin: 3px 0 0; color: var(--cp-text-muted); font-size: 13px; }
 .topbar-actions, .household-picker { display: flex; align-items: center; gap: 8px; }
+.topbar-actions { flex-wrap: wrap; }
+.topbar-actions > a, .topbar-actions > button { white-space: nowrap; }
 .household-picker { grid-column: 1 / -1; }
 .picker-label { color: var(--cp-text-muted); font-size: 13px; font-weight: 600; }
 .user-name { color: var(--cp-text-muted); font-size: 13px; }

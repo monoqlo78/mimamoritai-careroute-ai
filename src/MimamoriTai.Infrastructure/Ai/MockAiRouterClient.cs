@@ -94,7 +94,25 @@ public sealed class MockAiRouterClient : IAiRouterClient
             return Json("control_device", alias, "toggle", 0.4, null);
         }
 
-        return Json("conversation", null, null, 0.8, null);
+        return Json("conversation", null, null, 0.8, null, topic: ResolveTopic(message));
+    }
+
+    /// <summary>
+    /// The first-stage routing decision the real model is asked for. Only meaningful for
+    /// conversation: a device or data intent derives its own topic.
+    ///
+    /// Emergency and the professional fields are decided deterministically before anything
+    /// reaches a model, so what is left for the mock to distinguish is "asking about this
+    /// service" from "talking".
+    /// </summary>
+    private static string ResolveTopic(string message)
+    {
+        if (ContainsAny(message, "見守り", "このline", "アプリ", "使い方", "通知", "連携", "設定", "登録", "カメラ", "個人情報"))
+        {
+            return "faq";
+        }
+
+        return "general";
     }
 
     private static string? ResolveAlias(string message)
@@ -142,10 +160,11 @@ public sealed class MockAiRouterClient : IAiRouterClient
         return "承知しました。何かあればいつでも教えてください。";
     }
 
-    private static string Json(string intent, string? alias, string? action, double confidence, string? question, string scope = "recent") =>
+    private static string Json(string intent, string? alias, string? action, double confidence, string? question, string scope = "recent", string topic = "general") =>
         JsonSerializer.Serialize(new
         {
             intent,
+            topic,
             deviceAlias = alias,
             action,
             scope,
