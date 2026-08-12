@@ -203,6 +203,20 @@ public class AiRequestLog
     public string ResolvedModel { get; set; } = string.Empty;
     public long DurationMs { get; set; }
     public bool Success { get; set; }
+
+    /// <summary>
+    /// Why the call failed, null when it succeeded.
+    /// </summary>
+    /// <remarks>
+    /// Recording only <see cref="Success"/> made failures unexplainable after the
+    /// fact: a call logged as failed with <see cref="ResolvedModel"/> still "auto"
+    /// says a model never answered but not why, and the app log that did say why
+    /// had already rotated away by the time anyone asked. This is the router's
+    /// short reason ("OrcaRouter returned 401.", an exception type name), never a
+    /// response body, which can echo the prompt.
+    /// </remarks>
+    public string? Error { get; set; }
+
     public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 }
 

@@ -40,7 +40,9 @@ public sealed record AdminAiUsageRow(
     string ResolvedModel,
     int Requests,
     int Failures,
-    double AverageDurationMs);
+    double AverageDurationMs,
+    /// <summary>Most recent failure reason in the window, null when nothing failed.</summary>
+    string? LastError);
 
 public sealed record AdminConsoleModel(
     int WindowDays,
@@ -235,13 +237,23 @@ public sealed class AdminConsoleService(
                 g.Key.ResolvedModel,
                 Requests = g.Count(),
                 Failures = g.Count(l => !l.Success),
-                AverageDurationMs = g.Average(l => (double)l.DurationMs)
+                AverageDurationMs = g.Average(l => (double)l.DurationMs),
+                // A failure count alone leaves the operator with nowhere to go.
+                // The newest reason is the one worth showing: if the cause is
+                // still live it is this one, and if it is stale the timestamp
+                // column already says so.
+                LastError = g
+                    .Where(l => !l.Success && l.Error != null)
+                    .OrderByDescending(l => l.CreatedAtUtc)
+                    .Select(l => l.Error)
+                    .FirstOrDefault()
             })
             .ToListAsync(ct);
 
         var aiUsage = aiUsageRaw
             .OrderByDescending(r => r.Requests)
-            .Select(r => new AdminAiUsageRow(r.Router, r.ResolvedModel, r.Requests, r.Failures, r.AverageDurationMs))
+            .Select(r => new AdminAiUsageRow(
+                r.Router, r.ResolvedModel, r.Requests, r.Failures, r.AverageDurationMs, r.LastError))
             .ToList();
 
         var userCount = await db.AppUsers.CountAsync(ct);

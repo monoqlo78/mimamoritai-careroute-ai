@@ -366,7 +366,15 @@ public class DeviceConfirmationTests(Xunit.Abstractions.ITestOutputHelper output
 /// </summary>
 public class AssistantSummaryTests(Xunit.Abstractions.ITestOutputHelper output)
 {
-    /// <summary>Answers intent JSON like the mock, but returns a scripted summary for purpose "summary".</summary>
+    /// <summary>
+    /// Answers intent JSON like the mock, but returns a scripted summary for the
+    /// summarisation call.
+    /// </summary>
+    /// <remarks>
+    /// Matches every summary purpose, not just "summary": LINE requests use
+    /// "summary-fast", so an exact match quietly delegated them to the working
+    /// mock and a test named for a router failure exercised no failure at all.
+    /// </remarks>
     private sealed class ScriptedSummaryRouter(
         string? summary, bool success = true, string model = "openai/gpt-4.1-mini") : IAiRouterClient
     {
@@ -381,7 +389,7 @@ public class AssistantSummaryTests(Xunit.Abstractions.ITestOutputHelper output)
         public Task<AiCompletionResult> CompleteAsync(
             IReadOnlyList<AiMessage> messages, string purpose, bool jsonMode = false, CancellationToken ct = default)
         {
-            if (purpose != "summary")
+            if (!purpose.StartsWith("summary", StringComparison.Ordinal))
             {
                 return _intent.CompleteAsync(messages, purpose, jsonMode, ct);
             }
@@ -445,6 +453,16 @@ public class AssistantSummaryTests(Xunit.Abstractions.ITestOutputHelper output)
         Assert.False(string.IsNullOrWhiteSpace(response.Reply));
         Assert.DoesNotContain("429", response.Reply, StringComparison.Ordinal);
         Assert.DoesNotContain("error", response.Reply, StringComparison.OrdinalIgnoreCase);
+
+        // The reason must not reach the family, but it must reach the log --
+        // otherwise a failure is only ever a count with no way to act on it.
+        var logs = db.Context.AiRequestLogs.ToList();
+        output.WriteLine("logs: " + string.Join(
+            " | ", logs.Select(l => $"{l.Purpose}/{l.Success}/{l.Error ?? "-"}")));
+
+        var failed = Assert.Single(logs, l => !l.Success);
+        Assert.Equal("OrcaRouter returned 429.", failed.Error);
+        Assert.All(logs.Where(l => l.Success), l => Assert.Null(l.Error));
 
         output.WriteLine("router-down reply: " + response.Reply);
     }

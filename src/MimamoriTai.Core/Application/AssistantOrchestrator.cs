@@ -762,9 +762,18 @@ public sealed class AssistantOrchestrator(
             ResolvedModel = result.ResolvedModel,
             DurationMs = result.DurationMs,
             Success = result.Success,
+            // Only on failure: a reason next to a success reads as a warning that
+            // is not one. Truncated to the column width so an unusually long
+            // reason can never fail the write and lose the whole log row.
+            Error = result.Success ? null : Truncate(result.Error, 256),
             CreatedAtUtc = clock.GetUtcNow()
         });
 
         await db.SaveChangesAsync(ct);
     }
+
+    private static string? Truncate(string? value, int max) =>
+        string.IsNullOrWhiteSpace(value) ? null
+        : value.Length <= max ? value
+        : value[..max];
 }

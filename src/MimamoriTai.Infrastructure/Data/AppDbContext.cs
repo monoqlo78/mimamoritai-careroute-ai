@@ -139,6 +139,7 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
             e.Property(x => x.Purpose).HasMaxLength(64);
             e.Property(x => x.Router).HasMaxLength(64);
             e.Property(x => x.ResolvedModel).HasMaxLength(128);
+            e.Property(x => x.Error).HasMaxLength(256);
             e.HasIndex(x => x.CreatedAtUtc);
         });
 

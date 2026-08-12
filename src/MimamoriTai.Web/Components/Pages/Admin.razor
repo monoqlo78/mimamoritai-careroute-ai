@@ -196,6 +196,7 @@ else
                             <th>件数</th>
                             <th>失敗</th>
                             <th>平均応答</th>
+                            <th>直近の失敗理由</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -207,6 +208,7 @@ else
                                 <td>@usage.Requests</td>
                                 <td class="@(usage.Failures > 0 ? "danger" : "")">@usage.Failures</td>
                                 <td>@usage.AverageDurationMs.ToString("F0") ms</td>
+                                <td class="small">@(usage.LastError ?? "—")</td>
                             </tr>
                         }
                     </tbody>

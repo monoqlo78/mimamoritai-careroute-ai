@@ -243,4 +243,79 @@ public class AdminConsoleTests
         Assert.Equal(1, usage.Failures);
         Assert.Equal(200d, usage.AverageDurationMs, 3);
     }
+
+    // A failure count with no reason next to it leaves the operator guessing,
+    // which is exactly what happened when a single failed call sat in the
+    // console for days with nothing to explain it.
+    [Fact]
+    public async Task LoadAsync_ShowsTheNewestFailureReason()
+    {
+        using var testDb = new TestDb();
+        await testDb.SeedAsync();
+
+        var now = DateTimeOffset.UtcNow;
+        testDb.Context.AiRequestLogs.AddRange(
+            new AiRequestLog
+            {
+                HouseholdId = testDb.HouseholdId,
+                Purpose = "intent",
+                Router = "orcarouter",
+                ResolvedModel = "auto",
+                DurationMs = 365,
+                Success = false,
+                Error = "OrcaRouter returned 401.",
+                CreatedAtUtc = now.AddHours(-1)
+            },
+            new AiRequestLog
+            {
+                HouseholdId = testDb.HouseholdId,
+                Purpose = "intent",
+                Router = "orcarouter",
+                ResolvedModel = "auto",
+                DurationMs = 400,
+                Success = false,
+                Error = "HttpRequestException",
+                CreatedAtUtc = now.AddHours(-5)
+            });
+        await testDb.Context.SaveChangesAsync();
+
+        var admin = FakeCurrentUserAccessor.User(Guid.NewGuid(), "運用者");
+        var console = Console(testDb, Access(admin, new AdminOptions(), new AuthOptions()));
+
+        var model = await console.LoadAsync();
+        Assert.NotNull(model);
+
+        var usage = Assert.Single(model.AiUsage);
+        Assert.Equal(2, usage.Failures);
+        Assert.Equal("OrcaRouter returned 401.", usage.LastError);
+    }
+
+    [Fact]
+    public async Task LoadAsync_LeavesTheFailureReasonEmptyWhenNothingFailed()
+    {
+        using var testDb = new TestDb();
+        await testDb.SeedAsync();
+
+        testDb.Context.AiRequestLogs.Add(new AiRequestLog
+        {
+            HouseholdId = testDb.HouseholdId,
+            Purpose = "summary",
+            Router = "orcarouter",
+            ResolvedModel = "gpt-x",
+            DurationMs = 100,
+            Success = true,
+            CreatedAtUtc = DateTimeOffset.UtcNow.AddHours(-1)
+        });
+        await testDb.Context.SaveChangesAsync();
+
+        var admin = FakeCurrentUserAccessor.User(Guid.NewGuid(), "運用者");
+        var console = Console(testDb, Access(admin, new AdminOptions(), new AuthOptions()));
+
+        var model = await console.LoadAsync();
+        Assert.NotNull(model);
+
+        var usage = Assert.Single(model.AiUsage);
+        Assert.Equal(0, usage.Failures);
+        Assert.Null(usage.LastError);
+    }
 }
