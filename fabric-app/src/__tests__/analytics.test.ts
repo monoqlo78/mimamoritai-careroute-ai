@@ -12,6 +12,7 @@ import {
   riskDistribution,
   routerModels,
   routerSummary,
+  UNRESOLVED_BAR,
 } from '@/services/analytics';
 import type {
   ActivityRow,
@@ -344,13 +345,26 @@ describe('routerModels', () => {
     ]);
   });
 
-  it('excludes the offline stub and calls whose model never resolved', () => {
+  it('excludes the offline stub but keeps failures as their own bar', () => {
     const bars = routerModels([
       aiCall({ router: 'MockAiRouter', resolvedModel: 'mock/local-rules', callCount: '2' }),
       aiCall({ router: 'OrcaRouter', resolvedModel: 'auto', callCount: '1', successCount: '0' }),
     ]);
 
-    expect(bars).toEqual([]);
+    // The stub never reached OrcaRouter, so it gets no bar at all. The failure
+    // did reach it and gets one, flagged so it is not drawn as a model.
+    expect(bars).toHaveLength(1);
+    expect(bars[0].unresolved).toBe(true);
+    expect(bars[0].model).toBe(UNRESOLVED_BAR);
+    expect(bars[0].calls).toBe(1);
+  });
+
+  it('gives no failure bar when every call resolved', () => {
+    const bars = routerModels([
+      aiCall({ router: 'OrcaRouter', resolvedModel: 'gpt-4.1-mini', callCount: '5' }),
+    ]);
+
+    expect(bars.some((bar) => bar.unresolved)).toBe(false);
   });
 });
 
@@ -383,9 +397,9 @@ describe('routerSummary', () => {
   });
 
   // The console used to print "記録した 77 回" above bars that added up to 76 and
-  // said nothing about the gap, which reads as a miscount. Whatever routerModels
-  // cannot place has to be accounted for by unresolvedCalls.
-  it('accounts for every OrcaRouter call the model bars cannot show', () => {
+  // said nothing about the gap, which reads as a miscount. The failed call now
+  // gets its own bar, so the bars total every OrcaRouter call.
+  it('draws a bar for every OrcaRouter call, including the ones with no model', () => {
     const rows = [
       aiCall({ router: 'OrcaRouter', resolvedModel: 'gpt-4.1-mini', callCount: '52' }),
       aiCall({ router: 'auto', resolvedModel: 'deepseek-v4-pro', callCount: '10' }),
@@ -396,17 +410,30 @@ describe('routerSummary', () => {
     ];
 
     const summary = routerSummary(rows);
-    const barTotal = routerModels(rows).reduce((sum, bar) => sum + bar.calls, 0);
+    const bars = routerModels(rows);
+    const barTotal = bars.reduce((sum, bar) => sum + bar.calls, 0);
 
     expect(summary.calls).toBe(77);
-    expect(barTotal).toBe(76);
-    expect(summary.calls - summary.unresolvedCalls).toBe(barTotal);
+    expect(barTotal).toBe(77);
 
-    // The diagram card reads off pipelineStats, so it has to land on the same
-    // 76 the bars draw. This is the pair the user caught disagreeing on screen.
+    // The failure is one bar, flagged, and last -- it is a leftover, not a model
+    // competing with the others for rank.
+    const failures = bars.filter((bar) => bar.unresolved);
+    expect(failures).toHaveLength(1);
+    expect(failures[0].calls).toBe(1);
+    expect(failures[0].success).toBe(0);
+    expect(bars[bars.length - 1].unresolved).toBe(true);
+
+    // The failure bar is not a model, so it must not inflate the model count.
+    expect(summary.models).toBe(4);
+    expect(bars.filter((bar) => !bar.unresolved)).toHaveLength(4);
+
+    // The diagram card reads off pipelineStats and leads with aiCalls, which is
+    // exactly what the bars now add up to. This is the pair the user caught
+    // disagreeing on screen.
     const stats = pipelineStats([household()], [alert()], [], 'fabric', rows);
-    expect(stats.aiCalls).toBe(77);
-    expect(stats.aiResolvedCalls).toBe(barTotal);
+    expect(stats.aiCalls).toBe(barTotal);
+    expect(stats.aiResolvedCalls).toBe(barTotal - 1);
   });
 });
 

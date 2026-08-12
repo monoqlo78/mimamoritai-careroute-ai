@@ -386,13 +386,27 @@ export function RouterModels({ models }: { models: ModelBar[] }) {
       {models.map((model) => (
         <div key={model.model} className="space-y-1.5">
           <div className="flex flex-wrap items-baseline justify-between gap-x-2">
-            <span className="font-mono text-sm font-medium text-gray-800">{model.model}</span>
+            <span
+              className={
+                model.unresolved
+                  ? 'text-sm font-medium text-amber-700'
+                  : 'font-mono text-sm font-medium text-gray-800'
+              }
+            >
+              {model.model}
+            </span>
           </div>
 
           <div className="flex items-center gap-2">
             <div className="h-2 flex-1 overflow-hidden rounded-full bg-gray-100">
               <div
-                className="h-full rounded-full bg-gradient-to-r from-rose-500 to-fuchsia-400 transition-[width] duration-700"
+                className={
+                  // Amber, not the model gradient: this bar is a failure, and
+                  // giving it the same colour would read as another model.
+                  model.unresolved
+                    ? 'h-full rounded-full bg-amber-400 transition-[width] duration-700'
+                    : 'h-full rounded-full bg-gradient-to-r from-rose-500 to-fuchsia-400 transition-[width] duration-700'
+                }
                 style={{ width: `${(model.calls / maxCalls) * 100}%` }}
               />
             </div>
@@ -413,8 +427,16 @@ export function RouterModels({ models }: { models: ModelBar[] }) {
             </span>
           </div>
 
-          {model.purposes.length > 0 && (
-            <p className="text-[11px] text-gray-400">用途: {model.purposes.join('、')}</p>
+          {model.unresolved ? (
+            <p className="text-[11px] text-amber-700">
+              モデルが応答する前に失敗した呼び出しです（用途:{' '}
+              {model.purposes.join('、')}）。応答したモデル名が記録に残らないため、
+              どのモデルの棒にも載せられません。
+            </p>
+          ) : (
+            model.purposes.length > 0 && (
+              <p className="text-[11px] text-gray-400">用途: {model.purposes.join('、')}</p>
+            )
           )}
         </div>
       ))}

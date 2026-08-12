@@ -231,11 +231,10 @@ export function HomePage() {
             </p>
             {aiSummary.unresolvedCalls > 0 && (
               <p className="mt-1 text-[11px] text-gray-400">
-                残り {aiSummary.unresolvedCalls} 回は応答したモデル名が記録に残って
-                いません（応答前に失敗した呼び出しです）。割り当てる棒がないため、
-                下の棒の合計は{' '}
-                {(aiSummary.calls - aiSummary.unresolvedCalls).toLocaleString()} 回に
-                なります。
+                残り {aiSummary.unresolvedCalls} 回はモデルが応答する前に失敗した
+                呼び出しです。応答したモデル名が記録に残らないため、モデルごとの棒
+                には載せられず、末尾の「未応答（失敗）」の棒にまとめています。棒の
+                合計は {aiSummary.calls.toLocaleString()} 回になります。
               </p>
             )}
             {aiSummary.mockCalls > 0 && (

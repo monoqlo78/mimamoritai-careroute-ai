@@ -319,24 +319,47 @@ export interface ModelBar {
   avgMs: number;
   autoRouted: boolean;
   purposes: string[];
+  /**
+   * True for the single synthetic bar holding calls that never resolved to a
+   * model. It is not a model and must not be drawn or counted as one.
+   */
+  unresolved?: boolean;
 }
 
+/** Label for the synthetic bar. Not a model name; see {@link ModelBar.unresolved}. */
+export const UNRESOLVED_BAR = '未応答（失敗）';
+
 /**
- * Collapses the (purpose, router, model) grain down to one bar per model.
+ * Collapses the (purpose, router, model) grain down to one bar per model, plus
+ * one trailing bar for the calls that never resolved to a model.
  *
- * Rows whose model never resolved (a failed call still logs `resolvedModel =
- * "auto"`) are left out: there is no model to attribute them to. They are still
- * counted by `routerSummary`, so the success rate stays honest.
+ * A call that fails before a model answers still logs `resolvedModel = "auto"`,
+ * so there is no model to attribute it to. Dropping it made the bars add up to
+ * less than the call count printed above them, which reads as a miscount rather
+ * than as a failure. Giving the failures their own bar means the bars total the
+ * call count exactly, and the failure is visible instead of inferred.
  */
 export function routerModels(rows: AiRouterCallRow[]): ModelBar[] {
   const byModel = new Map<string, ModelBar & { weighted: number }>();
+  let unresolvedCalls = 0;
+  let unresolvedSuccess = 0;
+  let unresolvedWeighted = 0;
+  const unresolvedPurposes: string[] = [];
 
   for (const row of rows) {
     if (!viaOrcaRouter(row)) continue;
-    const model = row.resolvedModel;
-    if (!model || model === 'auto') continue;
 
     const calls = toInt(row.callCount);
+    const model = row.resolvedModel;
+
+    if (!model || model === 'auto') {
+      unresolvedCalls += calls;
+      unresolvedSuccess += toInt(row.successCount);
+      unresolvedWeighted += toInt(row.avgDurationMs) * calls;
+      if (!unresolvedPurposes.includes(row.purpose)) unresolvedPurposes.push(row.purpose);
+      continue;
+    }
+
     const entry = byModel.get(model) ?? {
       model,
       calls: 0,
@@ -355,13 +378,29 @@ export function routerModels(rows: AiRouterCallRow[]): ModelBar[] {
     byModel.set(model, entry);
   }
 
-  return [...byModel.values()]
+  const bars = [...byModel.values()]
     .map(({ weighted, ...bar }) => ({
       ...bar,
       avgMs: bar.calls > 0 ? Math.round(weighted / bar.calls) : 0,
       purposes: bar.purposes.sort(),
     }))
     .sort((a, b) => b.calls - a.calls);
+
+  if (unresolvedCalls > 0) {
+    // Always last: it is the leftover, and sorting it among the models by call
+    // count would imply it competes with them.
+    bars.push({
+      model: UNRESOLVED_BAR,
+      calls: unresolvedCalls,
+      success: unresolvedSuccess,
+      avgMs: Math.round(unresolvedWeighted / unresolvedCalls),
+      autoRouted: false,
+      purposes: unresolvedPurposes.sort(),
+      unresolved: true,
+    });
+  }
+
+  return bars;
 }
 
 export interface RouterSummary {
