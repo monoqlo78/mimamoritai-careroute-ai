@@ -35,6 +35,17 @@ const jawCloseRad = 0.30;
 // しゃべっているとき眉をどれだけ持ち上げるか（モデル座標）。
 const browLift = 0.018;
 
+// 1フレームで進める時間の上限。タブを裏にしていた間の時間をまとめて
+// 進めてしまわないための保険。
+//
+// ここは以前 0.05 だった。しかしそれだと 20fps を下回った瞬間から
+// 「実時間より遅い時計」になる。実測では、1ページに2つある canvas を
+// ソフトウェア描画で回すと 6.7fps まで落ち、顔の時計が実時間の約1/3で
+// しか進まなかった。その結果 2〜6 秒のはずの瞬きの間隔が 30 秒以上に
+// 伸び、「しばらくすると瞬きが止まる」ように見えていた。
+// 裏に回っていた間を飛ばす役目は 0.25 でも十分果たせる。
+const maxFrameDelta = 0.25;
+
 // 人のまばたきは 2〜6 秒に1回くらい。たまに2回続けて閉じる。
 const blinkGapMin = 2.2;
 const blinkGapMax = 6.4;
@@ -85,7 +96,31 @@ class MascotController {
         this.resizeObserver = new ResizeObserver(() => this.resize());
         this.resizeObserver.observe(host);
         this.bindPointerReaction();
+        this.bindContextRecovery();
         this.load();
+    }
+
+    // GPUの再起動やドライバの復帰、タブの切り替えで WebGL の文脈は失われる。
+    // three.js 自身は復帰処理を持っているが、失っている間 canvas は最後の
+    // コマのまま固まる。3Dが「動かなくなった」と見えるのはたいていこれで、
+    // 固まった3Dを見せ続けるより静止画に戻したほうが壊れて見えない。
+    bindContextRecovery() {
+        this.canvas.addEventListener("webglcontextlost", (event) => {
+            // 既定のままだとブラウザは文脈を復帰させない。止めておく。
+            event.preventDefault();
+            this.contextLost = true;
+            this.host.classList.remove("is-ready");
+            this.host.classList.add("is-fallback");
+            console.warn("Mascot: WebGL context lost - falling back to the still image.");
+        });
+
+        this.canvas.addEventListener("webglcontextrestored", () => {
+            this.contextLost = false;
+            this.host.classList.remove("is-fallback");
+            if (this.model) this.host.classList.add("is-ready");
+            this.resize();
+            console.info("Mascot: WebGL context restored.");
+        });
     }
 
     load() {
@@ -157,8 +192,11 @@ class MascotController {
     }
 
     nextBlinkDelay() {
-        // ゆっくり見せたい設定のときは、動きが目立たないよう間隔を広げる。
-        const scale = this.reducedMotion ? 1.8 : 1;
+        // ゆっくり見せたい設定のときは、間隔をすこしだけ広げる。
+        // ここは以前 1.8 倍だった。まばたきが唯一の動きになる設定では、
+        // それだと 4〜11.5 秒に1回・1回 0.28 秒しか動かないことになり、
+        // ほぼ確実に見逃されて「完全に静止している」と受け取られる。
+        const scale = this.reducedMotion ? 1.25 : 1;
         return (blinkGapMin + Math.random() * (blinkGapMax - blinkGapMin)) * scale;
     }
 
@@ -204,9 +242,14 @@ class MascotController {
 
         // 口。話している間だけ動かす。ずっとぱくぱくさせると落ち着かない。
         // open = 1 が元の笑顔、0 が閉じた口。
+        //
+        // 「動きを控えめに」の設定でも口は動かす。まばたきと同じ理由で、
+        // 目も口も止めてしまうと画面が流れる類の負担は減らないのに、
+        // 話しかけた返事だけが無表情の静止画から返ってくることになる。
+        // 体のアイドル・出迎え・視線追従といった大きく動くものは止めたまま。
         let open = 1;
         let speaking = 0;
-        if (this.faceTime < this.speakUntil && !this.reducedMotion) {
+        if (this.faceTime < this.speakUntil) {
             // 一定の周期だと機械的なので、速さの違う波を重ねて音節のようにする。
             const t = this.faceTime * 2 * Math.PI;
             const wave = 0.5 + 0.32 * Math.sin(t * 7.3) + 0.18 * Math.sin(t * 3.1 + 1.7);
@@ -329,15 +372,26 @@ class MascotController {
     }
 
     render() {
-        if (!this.model) return;
+        if (!this.model || this.contextLost) return;
 
-        const delta = Math.min(this.clock.getDelta(), 0.05);
-        if (!this.reducedMotion && this.mixer) this.mixer.update(delta);
-        this.updateFace(delta);
+        // setAnimationLoop は「描き終えてから」次のフレームを予約する。
+        // つまりここで一度でも例外が出るとループは二度と回らず、顔が
+        // 固まったまま戻らない。3Dは装飾なので、握って回し続ける。
+        try {
+            const delta = Math.min(this.clock.getDelta(), maxFrameDelta);
+            if (!this.reducedMotion && this.mixer) this.mixer.update(delta);
+            this.updateFace(delta);
 
-        this.stage.rotation.y += ((this.pointerX ?? 0) - this.stage.rotation.y) * 0.055;
-        this.stage.rotation.x += ((this.pointerY ?? 0) - this.stage.rotation.x) * 0.055;
-        this.renderer.render(this.scene, this.camera);
+            this.stage.rotation.y += ((this.pointerX ?? 0) - this.stage.rotation.y) * 0.055;
+            this.stage.rotation.x += ((this.pointerY ?? 0) - this.stage.rotation.x) * 0.055;
+            this.renderer.render(this.scene, this.camera);
+        } catch (error) {
+            // 毎フレーム出すとコンソールが埋まって他の原因が読めなくなる。
+            if (!this.renderErrorLogged) {
+                this.renderErrorLogged = true;
+                console.error("Mascot render failed; keeping the animation loop alive.", error);
+            }
+        }
     }
 }
 
