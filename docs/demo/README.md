@@ -1,8 +1,10 @@
 # デモ動画
 
-**[mimamoritai-demo.mp4](mimamoritai-demo.mp4)** — 3分11秒 / 1920x1080 / 24fps / 3.7MB / 日本語字幕入り / 音声なし
+**[mimamoritai-demo.mp4](mimamoritai-demo.mp4)** — 3分11秒 / 1920x1080 / 24fps / 5.7MB / 日本語字幕 + 日本語ナレーション入り
 
 本番環境（Azure App Service）を実際に操作して画面録画したものです。うまくいくところだけを繋いだのではなく、**AI の指示が拒否される瞬間もそのまま**入れてあります。
+
+ナレーションは **Azure AI Speech の Text to Speech**（`ja-JP-NanamiNeural`）で合成し、読み上げた内容が原稿どおりかを **同じ Azure AI Speech の Speech to Text で聞き直して検証**しています。音を出せない環境でも困らないよう、字幕だけで内容が追えるようにしてあります。
 
 ## 収録内容
 
@@ -26,3 +28,21 @@
 - 撮影・編集の方針は [../DEMO_SCENARIO.md](../DEMO_SCENARIO.md) にまとめてあります。
 - デモ環境の URL はあえて公開していません。ハッカソン用に立てた Azure リソースなので、審査後は停止する予定です。この動画と [../EVIDENCE.md](../EVIDENCE.md) が、稼働していた証拠になります。
 - 手元で動かす場合は `dotnet run` だけで済みます。API キーは要りません（すべてモックに切り替わります）。
+
+## ナレーションの作り方（再現手順）
+
+読み上げは手作業ではなく、原稿ファイルから機械的に生成しています。
+
+| ファイル | 役割 |
+| --- | --- |
+| [narration.txt](narration.txt) | 原稿。`通し番号｜その場面の秒数｜読み上げる文` の形式 |
+| [tts_gen.py](tts_gen.py) | Azure AI Speech で音声を合成。**場面の尺に収まらなければ自動的に話速を落として作り直す** |
+| [stt_verify.py](stt_verify.py) | できあがった動画から音声を切り出し、Speech to Text で聞き直して原稿と突き合わせる |
+
+```powershell
+$env:SPEECH_KEY = "<Azure AI Speech のキー>"
+python tts_gen.py     # 原稿 -> tts/*.wav（尺に収まるまで話速を自動調整）
+python stt_verify.py  # 動画 -> 文字起こし -> 原稿と比較
+```
+
+`stt_verify.py` は 15 場面すべてを照合します。`AI` や `Microsoft Fabric` は原稿にひらがなで書いてある（そう読ませたいため）ので、文字列としては一致しませんが、**音としては正しく読めている**ことの確認になります。
