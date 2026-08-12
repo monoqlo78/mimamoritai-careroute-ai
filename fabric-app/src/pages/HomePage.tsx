@@ -26,6 +26,7 @@ import {
   routerSummary,
 } from '@/services/analytics';
 import {
+  beginRefresh,
   getActivity,
   getAiRouterCalls,
   getAlerts,
@@ -48,12 +49,14 @@ export function HomePage() {
   const [activity, setActivity] = useState<ActivityRow[]>([]);
   const [aiCalls, setAiCalls] = useState<AiRouterCallRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [hasLoaded, setHasLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [origin, setOrigin] = useState<DataOrigin>('fabric');
 
   const refresh = useCallback(async () => {
     setLoading(true);
     setError(null);
+    beginRefresh();
     try {
       const [householdRows, alertRows, activityRows, aiRows] = await Promise.all([
         getHouseholds(),
@@ -68,6 +71,7 @@ export function HomePage() {
       setActivity(activityRows);
       setAiCalls(aiRows);
       setOrigin(getDataOrigin());
+      setHasLoaded(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -78,6 +82,13 @@ export function HomePage() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  // The first load has no numbers yet, and every counter on this page renders 0
+  // until it does. A dashboard reading "世帯 0 / 呼び出し 0 回" is not an empty
+  // state -- it looks exactly like a working console reporting that nothing is
+  // there, which is the one thing an operator must never be told by mistake.
+  // Refreshes keep the previous numbers on screen instead of blanking them.
+  const firstLoad = loading && !hasLoaded;
 
   const totals = summarize(households);
   const flow = pipelineStats(households, alerts, activity, origin, aiCalls);
@@ -150,6 +161,19 @@ export function HomePage() {
           </div>
         )}
 
+        {firstLoad ? (
+          <section className="rounded-xl border border-gray-200 bg-white p-10 text-center">
+            <div className="mx-auto h-6 w-6 animate-spin rounded-full border-2 border-gray-300 border-t-gray-700" />
+            <p className="mt-3 text-sm font-medium text-gray-800">
+              Fabric から読み込んでいます…
+            </p>
+            <p className="mt-1 text-xs text-gray-500">
+              数字が出るまで少しかかります。0 と表示されないよう、
+              読み終わるまで伏せています。
+            </p>
+          </section>
+        ) : (
+          <>
         <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           <Kpi label="世帯" value={totals.households} sub={`本番 ${totals.production}`} />
           <Kpi label="デバイス" value={totals.devices} sub="全世帯合計" />
@@ -193,17 +217,27 @@ export function HomePage() {
             </h2>
             <p className="mt-1 text-xs text-gray-500">
               見守り隊の AI 呼び出しは OpenAI 互換の OrcaRouter を通ります。
-              記録した {aiSummary.calls.toLocaleString()} 回に対し、実際に{' '}
+              記録した {aiSummary.calls.toLocaleString()} 回のうち{' '}
               <span className="font-medium text-rose-700">
-                {aiSummary.models} 種類
+                {(aiSummary.calls - aiSummary.unresolvedCalls).toLocaleString()} 回
               </span>{' '}
-              のモデルが応答しました（成功 {aiSummary.success.toLocaleString()} 回）。
+              が {aiSummary.models} 種類のモデルで応答しました（成功{' '}
+              {aiSummary.success.toLocaleString()} 回）。
               用途ごとに別ベンダのモデルへ振り分けられています。
             </p>
             <p className="mt-1 text-xs text-gray-500">
               下段の細い棒は平均応答時間です。LINE の webhook は 8 秒でイベントを
               打ち切るため、締切のある経路には速いモデルを使っています。
             </p>
+            {aiSummary.unresolvedCalls > 0 && (
+              <p className="mt-1 text-[11px] text-gray-400">
+                残り {aiSummary.unresolvedCalls} 回は応答したモデル名が記録に残って
+                いません（応答前に失敗した呼び出しです）。割り当てる棒がないため、
+                下の棒の合計は{' '}
+                {(aiSummary.calls - aiSummary.unresolvedCalls).toLocaleString()} 回に
+                なります。
+              </p>
+            )}
             {aiSummary.mockCalls > 0 && (
               <p className="mt-1 text-[11px] text-gray-400">
                 API キー未設定時のローカルスタブ {aiSummary.mockCalls} 回は
@@ -413,6 +447,8 @@ export function HomePage() {
             </div>
           )}
         </section>
+          </>
+        )}
       </main>
     </div>
   );

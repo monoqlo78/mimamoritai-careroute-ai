@@ -378,6 +378,13 @@ export interface RouterSummary {
   pinnedAvgMs: number;
   /** Calls served by the offline stub, i.e. never sent to OrcaRouter. */
   mockCalls: number;
+  /**
+   * Calls that reached OrcaRouter but never resolved to a model name (a failed
+   * call still logs `resolvedModel = "auto"`). {@link routerModels} has no bar to
+   * put these on, so without showing this number the bars silently fail to add
+   * up to {@link calls} and the page looks like it is miscounting.
+   */
+  unresolvedCalls: number;
   lastCalledAt: Date | null;
 }
 
@@ -390,6 +397,7 @@ export function routerSummary(rows: AiRouterCallRow[]): RouterSummary {
   let autoWeighted = 0;
   let pinnedWeighted = 0;
   let mockCalls = 0;
+  let unresolvedCalls = 0;
   let lastCalledAt: Date | null = null;
   const models = new Set<string>();
 
@@ -403,7 +411,11 @@ export function routerSummary(rows: AiRouterCallRow[]): RouterSummary {
 
     calls += count;
     success += toInt(row.successCount);
-    if (row.resolvedModel && row.resolvedModel !== 'auto') models.add(row.resolvedModel);
+    if (row.resolvedModel && row.resolvedModel !== 'auto') {
+      models.add(row.resolvedModel);
+    } else {
+      unresolvedCalls += count;
+    }
 
     const weighted = toInt(row.avgDurationMs) * count;
     if (row.router === 'auto') {
@@ -429,6 +441,7 @@ export function routerSummary(rows: AiRouterCallRow[]): RouterSummary {
     autoAvgMs: autoCalls > 0 ? Math.round(autoWeighted / autoCalls) : 0,
     pinnedAvgMs: pinnedCalls > 0 ? Math.round(pinnedWeighted / pinnedCalls) : 0,
     mockCalls,
+    unresolvedCalls,
     lastCalledAt,
   };
 }
@@ -451,6 +464,15 @@ export interface PipelineStats {
   /** Calls routed through OrcaRouter, and how many distinct models it resolved to. */
   aiCalls: number;
   aiModels: number;
+  /**
+   * The subset of `aiCalls` that resolved to a named model, i.e. exactly what the
+   * model bars below the diagram add up to. The diagram used to read
+   * "79 回 / 4 モデル", which says those four models account for all 79 calls --
+   * but a call that fails before a model answers is still logged, with no model
+   * name to file it under, so the bars only totalled 78. Carrying the resolved
+   * count here lets the diagram state both numbers instead of implying one.
+   */
+  aiResolvedCalls: number;
   /** Of `aiCalls`, the subset OrcaRouter itself picked a model for. */
   aiAutoCalls: number;
   aiAutoAvgMs: number;
@@ -500,6 +522,7 @@ export function pipelineStats(
     lastSync,
     aiCalls: ai.calls,
     aiModels: ai.models,
+    aiResolvedCalls: ai.calls - ai.unresolvedCalls,
     aiAutoCalls: ai.autoCalls,
     aiAutoAvgMs: ai.autoAvgMs,
     aiPinnedAvgMs: ai.pinnedAvgMs,

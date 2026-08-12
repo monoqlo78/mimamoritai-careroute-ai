@@ -379,6 +379,34 @@ describe('routerSummary', () => {
     expect(summary.calls).toBe(1);
     expect(summary.success).toBe(0);
     expect(summary.models).toBe(0);
+    expect(summary.unresolvedCalls).toBe(1);
+  });
+
+  // The console used to print "記録した 77 回" above bars that added up to 76 and
+  // said nothing about the gap, which reads as a miscount. Whatever routerModels
+  // cannot place has to be accounted for by unresolvedCalls.
+  it('accounts for every OrcaRouter call the model bars cannot show', () => {
+    const rows = [
+      aiCall({ router: 'OrcaRouter', resolvedModel: 'gpt-4.1-mini', callCount: '52' }),
+      aiCall({ router: 'auto', resolvedModel: 'deepseek-v4-pro', callCount: '10' }),
+      aiCall({ router: 'auto', resolvedModel: 'qwen3.7-plus', callCount: '9' }),
+      aiCall({ router: 'auto', resolvedModel: 'glm-5.2', callCount: '5' }),
+      aiCall({ router: 'OrcaRouter', resolvedModel: 'auto', callCount: '1', successCount: '0' }),
+      aiCall({ router: 'MockAiRouter', resolvedModel: 'mock/local-rules', callCount: '2' }),
+    ];
+
+    const summary = routerSummary(rows);
+    const barTotal = routerModels(rows).reduce((sum, bar) => sum + bar.calls, 0);
+
+    expect(summary.calls).toBe(77);
+    expect(barTotal).toBe(76);
+    expect(summary.calls - summary.unresolvedCalls).toBe(barTotal);
+
+    // The diagram card reads off pipelineStats, so it has to land on the same
+    // 76 the bars draw. This is the pair the user caught disagreeing on screen.
+    const stats = pipelineStats([household()], [alert()], [], 'fabric', rows);
+    expect(stats.aiCalls).toBe(77);
+    expect(stats.aiResolvedCalls).toBe(barTotal);
   });
 });
 

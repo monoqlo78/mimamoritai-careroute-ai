@@ -30,6 +30,26 @@ public class AssistantKnowledgeTests
             new LocalDataQuestionService(db.Context, TimeProvider.System),
             TimeProvider.System);
 
+    /// <summary>
+    /// The same question in kanji and in kana must reach the same layer. 「何が出来るの？」
+    /// used to miss every keyword and fall through to the model while 「何ができるの？」
+    /// was answered from the knowledge base, so two people asking the identical thing
+    /// got differently worded answers.
+    /// </summary>
+    [Theory]
+    [InlineData("何ができるの？")]
+    [InlineData("何が出来るの？")]
+    [InlineData("なにが出来ますか")]
+    [InlineData("使い方を教えて")]
+    [InlineData("使いかたを教えて")]
+    public void Spelling_Variants_Reach_The_Same_Answer(string question)
+    {
+        var answer = AssistantKnowledgeBase.TryAnswer(question);
+
+        Assert.NotNull(answer);
+        Assert.Equal("what-is-this", answer!.Id);
+    }
+
     [Theory]
     [InlineData("家族の追加方法は")]
     [InlineData("家族を追加したいのですが")]

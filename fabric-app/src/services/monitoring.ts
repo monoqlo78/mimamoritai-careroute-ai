@@ -263,6 +263,24 @@ export function getDataOrigin(): DataOrigin {
   return dataOrigin;
 }
 
+/**
+ * Call once before a refresh loads the tables.
+ *
+ * The origin is a module-level value shared by four reads that run concurrently,
+ * so "did anything degrade?" can only be answered per refresh. Clearing it here
+ * and letting the reads below downgrade it -- never upgrade it -- keeps both
+ * halves honest: the banner disappears once Fabric comes back, and it still
+ * appears when only one of the four tables fell back.
+ *
+ * This is the part that was wrong twice. Guarding the downgrade made the banner
+ * stick for the rest of the session; writing 'fabric' on every success instead
+ * let whichever read happened to finish last erase a real fallback, which is
+ * worse -- the console then draws bundled numbers while claiming they are live.
+ */
+export function beginRefresh(): void {
+  dataOrigin = 'fabric';
+}
+
 export const SNAPSHOT_TAKEN_AT = SNAPSHOT_CAPTURED_AT;
 
 /**
@@ -278,11 +296,9 @@ async function withSnapshotFallback<T>(
   try {
     const rows = await read();
     if (rows.length > 0) {
-      // Unconditional on purpose. Guarding this on the previous value made the
-      // banner sticky: one degraded read pinned the console to 'snapshot' for the
-      // rest of the session, so it kept claiming the data was stale long after
-      // Fabric had come back.
-      dataOrigin = 'fabric';
+      // Deliberately does not write 'fabric' back. These four reads race, and a
+      // success arriving after a fallback must not cancel it out. beginRefresh()
+      // is what clears the value at the top of each refresh.
       return rows;
     }
   } catch (error) {

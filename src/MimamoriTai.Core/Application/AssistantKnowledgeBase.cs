@@ -348,8 +348,11 @@ public static class AssistantKnowledgeBase
     public static string ProductFacts { get; } = """
         【見守り隊について、事実として正しいこと】
         - 見守り隊は、離れて暮らすご高齢の家族が元気に過ごしているかを、ご家族が確認できるサービスです。
+        - お伝えするのは「いつもどおり過ごされているか」です。朝起きて動き出したか、日中の様子に
+          変わりがないか、といった暮らしの様子をご家族にお知らせします。
         - カメラもマイクもありません。映像・音声・写真はいっさい記録しません。
-        - 記録するのは SwitchBot の機器のできごとだけです（ドアの開け閉め、人の動き、電気の使われ方など）。
+        - その様子は SwitchBot の機器のできごと（ドアの開け閉め、人の動き、電気の使われ方など）から
+          読み取っています。機器の記録はあくまで手段で、お伝えしたいのは暮らしの様子のほうです。
         - ご家族(LINE)の追加手順: 画面いちばん上の「家族の追加」→「連携コードを発行する」
           → 出た6けたの数字を、LINEのトークに「連携 123456」のように送る。コードは10分間・1回だけ有効。
           （「家族の追加」は「SwitchBot設定」画面の先頭にある「ご家族の追加」欄へ移動します）
@@ -361,6 +364,9 @@ public static class AssistantKnowledgeBase
         - 記録を見られるのは、連携が済んだご家族だけです。
 
         【言ってはいけないこと】
+        - 「ドアの開け閉めや電気の使い方をお知らせするサービス」という言い方をしないこと。
+          それは手段であって目的ではありません。何ができるかを聞かれたら、まず
+          「離れて暮らすご家族が元気に過ごされているかを確認できます」と答えること。
         - この一覧に無い画面名・ボタン名・手順を作って案内しないこと。
         - 健康・症状・薬・医療・介護認定・お金・年金・相続・法律について、自分で判断して答えないこと。
           お医者さん・薬剤師さん・地域包括支援センター・ご家族に相談するよう案内すること。
@@ -428,6 +434,15 @@ public static class AssistantKnowledgeBase
     private static string Normalize(string value)
     {
         var folded = value.Normalize(NormalizationForm.FormKC).ToLowerInvariant();
+
+        // Kanji/kana spellings of the same everyday word. Without this, 「何ができるの」
+        // matched and 「何が出来るの」 did not, so two people asking the identical question
+        // got answers from two different layers -- one canned, one from the model.
+        foreach (var (written, kana) in SpellingVariants)
+        {
+            folded = folded.Replace(written, kana, StringComparison.Ordinal);
+        }
+
         var builder = new StringBuilder(folded.Length);
 
         foreach (var ch in folded)
@@ -440,4 +455,19 @@ public static class AssistantKnowledgeBase
 
         return builder.ToString();
     }
+
+    /// <summary>
+    /// Applied to both the message and the keywords, so entries stay written in whichever
+    /// spelling reads best while still matching the other one.
+    /// </summary>
+    private static readonly (string Written, string Kana)[] SpellingVariants =
+    [
+        ("出来", "でき"),
+        ("分から", "わから"),
+        ("判ら", "わから"),
+        ("解ら", "わから"),
+        ("仕方", "しかた"),
+        ("使いかた", "使い方"),
+        ("行なえ", "行え"),
+    ];
 }

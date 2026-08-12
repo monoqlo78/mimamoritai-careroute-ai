@@ -115,7 +115,17 @@ const NODES: FlowNode[] = [
     subtitle: 'OpenAI 互換 / 自動選択',
     // Counts only the calls that actually reached OrcaRouter, so the offline
     // stub used before an API key exists can never inflate this.
-    metric: (s) => (s.aiCalls > 0 ? `${s.aiCalls} 回 / ${s.aiModels} モデル` : '呼び出しなし'),
+    //
+    // When some calls never resolved to a model, saying "N 回 / M モデル" claims
+    // those M models cover all N calls -- and then the model bars below add up to
+    // less, so the console looks like it cannot count. Name the resolved subset
+    // instead; the two numbers on screen then agree by construction.
+    metric: (s) =>
+      s.aiCalls === 0
+        ? '呼び出しなし'
+        : s.aiResolvedCalls === s.aiCalls
+          ? `${s.aiCalls} 回 / ${s.aiModels} モデル`
+          : `${s.aiCalls} 回 / 応答 ${s.aiResolvedCalls} 回`,
     accent: 'ai',
   },
   {
