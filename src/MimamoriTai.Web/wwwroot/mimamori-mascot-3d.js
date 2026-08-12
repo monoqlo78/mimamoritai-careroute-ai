@@ -169,6 +169,18 @@ class MascotController {
         });
     }
 
+    // ホストがDOMから外れたあとも動き続けると、見えない canvas を GPU が
+    // 回し続けたうえ、次に現れたホストと合わせて二重に描くことになる。
+    // 世帯を切り替えるたびに @if の分岐が作り直されるので、ここを持たないと
+    // 切り替えた回数だけコントローラが積み上がる。
+    dispose() {
+        this.disposed = true;
+        this.renderer.setAnimationLoop(null);
+        this.resizeObserver?.disconnect();
+        this.visibilityObserver?.disconnect();
+        this.renderer.dispose();
+    }
+
     load() {
         new GLTFLoader().load(
             this.host.dataset.mascotModel,
@@ -454,7 +466,7 @@ class MascotController {
     }
 
     render() {
-        if (!this.model || this.contextLost) return;
+        if (this.disposed || !this.model || this.contextLost) return;
         if (this.onScreen === false) return;
 
         // setAnimationLoop は「描き終えてから」次のフレームを予約する。
@@ -478,12 +490,55 @@ class MascotController {
     }
 }
 
+// ホストを拾って動かす。DOMに現れたぶんだけ起こし、消えたぶんは片付ける。
+//
+// ページ側は「最初の描画のあと」に一度 init を呼ぶだけだが、マスコットは
+// `@if (_model is null) { 読み込み中 } else { ... }` の中にある。つまり
+// その一度の呼び出しの時点ではホストはまだ存在せず、走査は何にも当たらない。
+// 本番で実際にそうなっていた（three.js は読み込み済み、GLBの取得は0回、
+// 静止画のまま）。呼ぶ側に正しい瞬間を探させるのをやめ、現れたら気づく。
+//
+// コールバックは属性セレクタ1回ぶんの走査で、1フレームにまとめる。Blazor の
+// ように DOM がよく動くページでも実質的な負担にならない。
+let scanQueued = false;
+let hostObserver = null;
+
+function scanForHosts() {
+    scanQueued = false;
+
+    controllers.forEach((controller) => {
+        if (controller.host.isConnected) return;
+        controller.dispose();
+        controllers.delete(controller);
+    });
+
+    document.querySelectorAll("[data-mascot-model]:not([data-mascot-ready])").forEach((host) => {
+        // 監視は DOM が組み上がる途中でも動く。中身が揃う前に掴むと、
+        // canvas を持たないまま画面外のバッファを回すことになる。印を
+        // 付けずに見送れば、揃ったときの変化で次の走査が拾う。
+        if (!host.dataset.mascotModel || !host.querySelector("canvas")) return;
+
+        host.dataset.mascotReady = "true";
+        controllers.add(new MascotController(host));
+    });
+}
+
+function watchForHosts() {
+    if (hostObserver || !document.body) return;
+
+    hostObserver = new MutationObserver(() => {
+        if (scanQueued) return;
+        scanQueued = true;
+        requestAnimationFrame(scanForHosts);
+    });
+
+    hostObserver.observe(document.body, { childList: true, subtree: true });
+}
+
 window.mimamoriMascot = {
     init() {
-        document.querySelectorAll("[data-mascot-model]:not([data-mascot-ready])").forEach((host) => {
-            host.dataset.mascotReady = "true";
-            controllers.add(new MascotController(host));
-        });
+        scanForHosts();
+        watchForHosts();
     },
     react(name) {
         controllers.forEach((controller) => controller.react(name));

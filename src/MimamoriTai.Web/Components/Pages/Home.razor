@@ -534,6 +534,10 @@ else
         // mimamoriUi.initMascot logs the real reason to the browser console first
         // (including in production), so "the mascot is a still image" reports can be
         // told apart from "the animation is broken" without guesswork.
+        //
+        // The mascot lives inside the `_model is null` else-branch, so on the first
+        // render it does not exist yet and this call finds nothing. That is fine:
+        // init() also starts watching for hosts, and picks them up when they arrive.
         try
         {
             await JS.InvokeVoidAsync("mimamoriUi.initMascot");
