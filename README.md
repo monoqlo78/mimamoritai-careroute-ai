@@ -3,7 +3,9 @@
 > 離れて暮らす家族のための、安全第一の高齢者見守りサービス
 > *An elderly-watch ("見守り") assistant for families who live apart — hackathon project.*
 
-📝 開発記録（Qiita）: [AIに家電を任せない見守りサービスを作った ― Azure + Microsoft Fabric で「疑ってかかる」設計](https://qiita.com/monoqlo78/items/27ea5bfa760bd8e3c3b7) — 同じ内容はリポジトリ内の [docs/ARTICLE.md](docs/ARTICLE.md) にもあります。
+📝 開発記録（Qiita）: [離れて暮らす高齢の家族を見守るサービスを作った ― 本人は「エアコンつけて」、家族は LINE で様子がわかる](https://qiita.com/monoqlo78/items/27ea5bfa760bd8e3c3b7) — 同じ内容はリポジトリ内の [docs/ARTICLE.md](docs/ARTICLE.md) にもあります。
+
+🎬 デモ動画（3分11秒・字幕入り・本番環境の画面録画）: [docs/demo/mimamoritai-demo.mp4](docs/demo/mimamoritai-demo.mp4)
 
 ## これは何か・解決したい課題
 

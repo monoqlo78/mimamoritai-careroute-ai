@@ -369,7 +369,10 @@ Draco をかければ 2.1MB まで落ちますが、読み込む側に専用の�
 ## 7. リンク
 
 - リポジトリ: https://github.com/monoqlo78/mimamoritai-careroute-ai
+- **デモ動画（3分11秒・字幕入り）**: [docs/demo/mimamoritai-demo.mp4](https://github.com/monoqlo78/mimamoritai-careroute-ai/blob/main/docs/demo/mimamoritai-demo.mp4)
 - 稼働証跡（開発機以外からの到達性・TLS・画面）: [docs/EVIDENCE.md](https://github.com/monoqlo78/mimamoritai-careroute-ai/blob/main/docs/EVIDENCE.md)
+
+> デモ動画は、本番環境（Azure App Service）を実際に操作して画面録画したものです。扇風機をONにするところ、ストーブのONが**確認すら出さずに拒否される**ところ、そのOFFは通るところ、家族がLINEから様子を聞くところ、Fabricへ実データを送るところまでを、編集で切らずにそのまま入れています。
 
 > デモ環境の URL はあえて載せていません。ハッカソン用に立てた Azure リソースなので、審査後は停止する予定です。数か月後に踏んだ人が 404 を見るくらいなら、**動いていた証拠を記事とリポジトリに残すほう**が誠実だと考えました。この記事に貼った画面はすべて、その稼働中の環境で撮ったものです。
 >
