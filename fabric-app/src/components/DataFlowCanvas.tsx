@@ -116,16 +116,18 @@ const NODES: FlowNode[] = [
     // Counts only the calls that actually reached OrcaRouter, so the offline
     // stub used before an API key exists can never inflate this.
     //
-    // When some calls never resolved to a model, saying "N 回 / M モデル" claims
-    // those M models cover all N calls -- and then the model bars below add up to
-    // less, so the console looks like it cannot count. Name the resolved subset
-    // instead; the two numbers on screen then agree by construction.
+    // When some calls never resolved to a model, the model bars below cannot
+    // account for them, so leading with the raw call count puts a number on the
+    // canvas that nothing else on the page adds up to -- and a reader comparing
+    // the two just sees a console that cannot count. Lead with the resolved
+    // count, which is exactly the bar total, and carry the remainder as a named
+    // leftover rather than hiding it.
     metric: (s) =>
       s.aiCalls === 0
         ? '呼び出しなし'
         : s.aiResolvedCalls === s.aiCalls
           ? `${s.aiCalls} 回 / ${s.aiModels} モデル`
-          : `${s.aiCalls} 回 / 応答 ${s.aiResolvedCalls} 回`,
+          : `${s.aiResolvedCalls} 回 / 未応答 ${s.aiCalls - s.aiResolvedCalls} 回`,
     accent: 'ai',
   },
   {
