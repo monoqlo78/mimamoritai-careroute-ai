@@ -16,6 +16,8 @@ const C = {
   ink: '2B1F24',
   white: 'FFFFFF',
   mute: '8A7A80',
+  // クリーム地の上ではmuteが薄すぎて読めない。補足文はこちらを使う。
+  note: '6B5C62',
   alert: 'B23A48',
   ok: '4F7A5B',
 };
@@ -35,7 +37,9 @@ function spine(slide, color = C.berry) {
   slide.addShape(pptx.ShapeType.rect, { x: 0, y: 0, w: 0.18, h: H, fill: { color } });
 }
 
-function footer(slide, page) {
+// ページ番号は追加・並べ替えのたびに手で振り直すとずれるので、スライド数から採る。
+function footer(slide) {
+  const page = pptx.slides.length;
   slide.addText('見守り隊 / CareRoute AI', {
     x: 0.45, y: H - 0.42, w: 4, h: 0.28,
     fontSize: 10, color: C.mute, fontFace: BODY,
@@ -123,7 +127,7 @@ function title(slide, text, sub) {
   s.addText('映像も音声も取らない。家電の ON/OFF と消費電力だけを見る。', {
     x: 0.95, y: 4.31, w: 8.2, h: 0.36, fontSize: 13, color: C.cream, fontFace: BODY,
   });
-  footer(s, 2);
+  footer(s);
 }
 
 /* ------------------------------------------------- 3. 何がわかるか */
@@ -159,7 +163,51 @@ function title(slide, text, sub) {
       x: 6.42, y: 3.8, w: 3.05, h: 0.3, fontSize: 10, color: C.mute, fontFace: BODY, align: 'center',
     });
   }
-  footer(s, 3);
+  footer(s);
+}
+
+/* ------------------------------- 3.5 AIである必然性（審査基準4） */
+{
+  const s = pptx.addSlide();
+  s.background = { color: C.white };
+  spine(s);
+  title(s, 'なぜ、AIが要るのか', 'ルールだけでは「異常」は出せても、「様子」は答えられない');
+
+  // 左：ルールでできること / 右：できないこと。対比で必然性を示す。
+  const panes = [
+    {
+      head: 'ルールベースで足りる', color: C.ok,
+      items: ['照明が12時間点かない → 異常', '深夜に3回以上点灯 → 注意', '安全判定（ON/OFF の可否）'],
+      note: '判定は速く、説明でき、外部APIに依存しない。\nだからここはAIに渡していない。',
+    },
+    {
+      head: 'ルールベースでは足りない', color: C.alert,
+      items: ['「今日のお母さん、どう？」', '「最近ちょっと変じゃない？」', '数値ではなく、言葉で返す'],
+      note: '家族が知りたいのは閾値超えの有無ではなく、\n「いつもと比べてどうか」という解釈。',
+    },
+  ];
+  panes.forEach((p, i) => {
+    const x = 0.62 + i * 4.6;
+    s.addShape(pptx.ShapeType.rect, { x, y: 1.72, w: 4.25, h: 2.32, fill: { color: C.cream } });
+    s.addShape(pptx.ShapeType.rect, { x, y: 1.72, w: 4.25, h: 0.07, fill: { color: p.color } });
+    s.addText(p.head, {
+      x: x + 0.26, y: 1.88, w: 3.8, h: 0.32, fontSize: 15, bold: true, color: p.color, fontFace: HEAD,
+    });
+    p.items.forEach((it, j) => {
+      s.addText('・' + it, {
+        x: x + 0.26, y: 2.26 + j * 0.31, w: 3.8, h: 0.3, fontSize: 12, color: C.ink, fontFace: BODY,
+      });
+    });
+    s.addText(p.note, {
+      x: x + 0.26, y: 3.28, w: 3.8, h: 0.62, fontSize: 10.5, color: C.note, fontFace: BODY, lineSpacing: 14,
+    });
+  });
+
+  s.addShape(pptx.ShapeType.rect, { x: 0.62, y: 4.24, w: 8.83, h: 0.72, fill: { color: C.ink } });
+  s.addText('AIは「言葉」に使い、「判断」には使わない ― 役割を分けたから、両方を捨てずに済んだ', {
+    x: 0.62, y: 4.42, w: 8.83, h: 0.4, fontSize: 13.5, bold: true, color: C.white, fontFace: BODY, align: 'center',
+  });
+  footer(s);
 }
 
 /* ------------------------------- 4. 一番時間をかけたところ（主役） */
@@ -248,7 +296,7 @@ function title(slide, text, sub) {
   s.addText('すべての経路が監査ログへ集まる ― 成功も、確認も、拒否も', {
     x: 0.62, y: 4.25, w: 8.83, h: 0.4, fontSize: 14, bold: true, color: C.white, fontFace: BODY, align: 'center',
   });
-  footer(s, 5);
+  footer(s);
 }
 
 /* ------------------------------------------- 6. 非対称設計 */
@@ -274,7 +322,7 @@ function title(slide, text, sub) {
   s.addText('拒否の理由が使う人に見えないと、ただの故障に見える。\nそのため機器カードにも「安全のため、遠隔では消す操作だけできます」と表示している。', {
     x: 0.62, y: 3.85, w: 8.83, h: 0.75, fontSize: 12.5, color: C.ink, fontFace: BODY, lineSpacing: 20,
   });
-  footer(s, 6);
+  footer(s);
 }
 
 /* ------------------------------------------- 7. 構成 */
@@ -308,7 +356,62 @@ function title(slide, text, sub) {
   s.addText('DeviceEvents（状態変化）と SwitchBotPlugReadings（電力テレメトリ）は\nコードを共有していない。片方の障害がもう片方を巻き込まないため。', {
     x: 0.92, y: 3.87, w: 8.2, h: 0.5, fontSize: 11.5, color: C.cream, fontFace: BODY, lineSpacing: 16,
   });
-  footer(s, 7);
+  footer(s);
+}
+
+/* ------------------------------- 7.5 LLMコスト（審査基準6） */
+{
+  const s = pptx.addSlide();
+  s.background = { color: C.white };
+  spine(s);
+  title(s, 'LLMコストは、設計で削る', '呼ぶ回数を減らす。これが一番効く');
+
+  // 左：センサー経路（LLM 0回）／右：会話経路（ここだけ課金）
+  const lanes = [
+    {
+      head: 'センサー経路', sub: '5分ごとのポーリング',
+      big: '0', unit: '回', cap: 'LLM呼び出し',
+      body: '1世帯あたり 288回/日 の取得と判定。すべてルールベースなので、デバイスが増えても LLM 費用は増えない。',
+      color: C.ok,
+    },
+    {
+      head: '会話経路', sub: '家族が話しかけたときだけ',
+      big: '1', unit: '回', cap: '発話あたり',
+      body: '意図解析・要約・通知文の生成のみ。費用は「世帯数」ではなく「会話した回数」に比例する。',
+      color: C.rose,
+    },
+  ];
+  lanes.forEach((l, i) => {
+    const x = 0.62 + i * 4.6;
+    s.addShape(pptx.ShapeType.rect, { x, y: 1.66, w: 4.25, h: 1.78, fill: { color: C.cream } });
+    s.addShape(pptx.ShapeType.rect, { x, y: 1.66, w: 4.25, h: 0.07, fill: { color: l.color } });
+    s.addText(l.head, { x: x + 0.24, y: 1.8, w: 2.4, h: 0.3, fontSize: 14, bold: true, color: l.color, fontFace: HEAD });
+    s.addText(l.sub, { x: x + 0.24, y: 2.08, w: 2.5, h: 0.26, fontSize: 10, color: C.mute, fontFace: BODY });
+    // 数字と単位は1つのテキストにする。別ボックスにすると単位だけ浮いて見える。
+    s.addText([
+      { text: l.big, options: { fontSize: 40, bold: true, color: l.color, fontFace: HEAD } },
+      { text: ' ' + l.unit, options: { fontSize: 13, color: l.color, fontFace: BODY } },
+    ], { x: x + 2.55, y: 1.76, w: 1.5, h: 0.62, align: 'right', margin: 0 });
+    s.addText(l.cap, { x: x + 2.55, y: 2.36, w: 1.5, h: 0.24, fontSize: 9.5, color: C.mute, fontFace: BODY, align: 'right' });
+    s.addText(l.body, {
+      x: x + 0.24, y: 2.66, w: 3.8, h: 0.72, fontSize: 10, color: C.ink, fontFace: BODY, lineSpacing: 13, margin: 0,
+    });
+  });
+
+  // モデル選択も実測に基づく（auto router は速いが遅延の幅が大きい）
+  s.addShape(pptx.ShapeType.rect, { x: 0.62, y: 3.52, w: 8.83, h: 0.92, fill: { color: C.white }, line: { color: C.cream, width: 1.5 } });
+  s.addText('締切のある経路だけ、安いモデルに固定する', {
+    x: 0.86, y: 3.62, w: 5.4, h: 0.28, fontSize: 12.5, bold: true, color: C.ink, fontFace: HEAD,
+  });
+  s.addText('LINE の webhook は 8 秒で打ち切られる。自動ルータは同じプロンプトで 5.6〜51 秒とばらついたため、\nこの経路だけ gpt-4.1-mini に固定（実測 3〜5 秒）。他の画面は自動ルータのまま＝速さと費用を両取りする。', {
+    x: 0.86, y: 3.9, w: 8.35, h: 0.46, fontSize: 10.5, color: C.mute, fontFace: BODY, lineSpacing: 13,
+  });
+
+  s.addShape(pptx.ShapeType.rect, { x: 0.62, y: 4.6, w: 8.83, h: 0.6, fill: { color: C.ink } });
+  s.addText('APIキー0本でも全機能が動く ― 審査でも運用でも、課金せずに試せる状態を既定にした', {
+    x: 0.62, y: 4.73, w: 8.83, h: 0.34, fontSize: 12.5, bold: true, color: C.white, fontFace: BODY, align: 'center',
+  });
+  footer(s);
 }
 
 /* ------------------------------------------- 8. 障害の話 */
@@ -364,7 +467,49 @@ function title(slide, text, sub) {
   ], {
     x: 5.32, y: 1.85, w: 4.15, h: 2.8, lineSpacing: 19,
   });
-  footer(s, 9);
+  footer(s);
+}
+
+/* ------------------------------- 9.5 ビジネス成立性（審査基準2） */
+{
+  const s = pptx.addSlide();
+  s.background = { color: C.white };
+  spine(s);
+  title(s, '誰が、いくら払うのか', 'カメラを置けなかった家庭が、そのまま顧客になる');
+
+  // 桁数が違うので一律のサイズだと折り返して単位に重なる。カードごとに指定する。
+  const stats = [
+    { n: '約700万', u: '世帯', fs: 27, c: '65歳以上の一人暮らし\n（内閣府 高齢社会白書）' },
+    { n: '3,000〜5,000', u: '円 / 月', fs: 19, c: '既存のセンサー型\n見守りサービスの相場' },
+    { n: '0', u: '円', fs: 27, c: '新規の見守り機器\n（家電はすでにある）' },
+  ];
+  stats.forEach((st, i) => {
+    const x = 0.62 + i * 2.98;
+    s.addShape(pptx.ShapeType.rect, { x, y: 1.68, w: 2.75, h: 1.5, fill: { color: C.cream } });
+    s.addText(st.n, {
+      x: x + 0.1, y: 1.84, w: 2.55, h: 0.5, fontSize: st.fs, bold: true, color: C.berry,
+      fontFace: HEAD, align: 'center', margin: 0, shrinkText: true,
+    });
+    s.addText(st.u, { x: x + 0.14, y: 2.36, w: 2.47, h: 0.24, fontSize: 11, color: C.rose, fontFace: BODY, align: 'center', margin: 0 });
+    s.addText(st.c, { x: x + 0.14, y: 2.64, w: 2.47, h: 0.46, fontSize: 9.5, color: C.mute, fontFace: BODY, align: 'center', lineSpacing: 12, margin: 0 });
+  });
+
+  s.addText('成立の条件は「安いこと」ではなく、「置けること」', {
+    x: 0.62, y: 3.30, w: 8.83, h: 0.32, fontSize: 15, bold: true, color: C.ink, fontFace: HEAD,
+  });
+
+  const points = [
+    ['導入の障壁を外した', 'カメラもマットも要らない。スマートプラグを既存の家電に挿すだけ。\n「見張られる」と感じさせないから、本人が拒まない。'],
+    ['受け手の負担も外した', '専用アプリを入れさせない。通知も操作も LINE の中で完結する。\nインストール率という最大の離脱要因が、そもそも発生しない。'],
+    ['原価が積み上がらない', '判定はルールベース、LLM は会話時のみ。\n1世帯あたりの固定費が小さく、月額数百円台でも粗利が残る。'],
+  ];
+  points.forEach((p, i) => {
+    const y = 3.68 + i * 0.48;
+    s.addShape(pptx.ShapeType.rect, { x: 0.62, y: y + 0.06, w: 0.07, h: 0.32, fill: { color: C.rose } });
+    s.addText(p[0], { x: 0.84, y, w: 2.1, h: 0.42, fontSize: 11.5, bold: true, color: C.berry, fontFace: BODY, margin: 0 });
+    s.addText(p[1], { x: 3.0, y, w: 6.45, h: 0.42, fontSize: 10, color: C.ink, fontFace: BODY, lineSpacing: 12, margin: 0 });
+  });
+  footer(s);
 }
 
 /* ------------------------------------------- 10. まとめ */
