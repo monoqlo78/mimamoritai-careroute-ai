@@ -123,7 +123,22 @@ SwitchBotPlugReadings
 実機の SwitchBot プラグ「リビングの電気」から 383 件が取り込まれ、
 最終取り込みは実行の約2分前でした。
 
-### 3-4. 運用コンソール（Fabric App / Rayfin）
+### 3-4. Eventstream（センサー → Fabric の入口）
+
+![Eventstream](images/evidence/fabric-06-eventstream.png)
+
+`MimamoriApp`（見守り隊 Web）から `DeviceStream` を通り、
+`ToEventhouse` と `ToLakehouse` の2つの宛先へ分岐しています。
+下部のデータプレビューには、実際に流れているイベントが
+`eventId` / `householdId` / `deviceId` とともに並んでいます。
+
+なお、この宛先は長らく非アクティブのままでした。
+「すべてアクティブ化」で起動し、両方の宛先が**アクティブ**になっています。
+アプリ側は Eventstream が止まっていても動き続けられるよう、
+Azure SQL を主経路として分けた設計にしているため、
+この停止中も見守り自体は継続していました。
+
+### 3-5. 運用コンソール（Fabric App / Rayfin）
 
 ![運用コンソール](images/evidence/fabric-02-console-full.png)
 
