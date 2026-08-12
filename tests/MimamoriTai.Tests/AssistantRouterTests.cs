@@ -269,10 +269,10 @@ public class AssistantRouterTests
     /// The reported symptom: asked how to add a family member, the answer opened with
     /// SwitchBot and read as an answer to a different question.
     ///
-    /// The screen label cannot be dropped — 「SwitchBot設定」 is the only place the family
-    /// setup lives, and an elderly user hunts the screen for the exact characters they were
-    /// given. So the fix is the frame around it: the reply has to say what is being done
-    /// before it says where to tap.
+    /// The screen label cannot be invented — an elderly user hunts the screen for the exact
+    /// characters they were given. Since the top bar now carries a 「家族の追加」 link, that is
+    /// what the reply quotes; the fix is the frame around it: the reply has to say what is
+    /// being done before it says where to tap.
     /// </summary>
     [Fact]
     public void The_Family_Answer_Says_What_It_Is_Doing_Before_It_Names_A_Screen()
@@ -285,8 +285,9 @@ public class AssistantRouterTests
         Assert.Contains("ご家族", firstLine);
         // The first thing read must not be the device vendor's name.
         Assert.DoesNotContain("SwitchBot", firstLine);
-        // ...but the label still has to be quoted, because it is what is on the screen.
-        Assert.Contains("「SwitchBot設定」", answer.Reply);
+        // ...and the button it sends them to must be one that exists on the screen.
+        Assert.Contains("「家族の追加」", answer.Reply);
+        Assert.Contains("「連携コードを発行する」", answer.Reply);
     }
 
     [Theory]

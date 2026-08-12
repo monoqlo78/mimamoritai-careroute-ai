@@ -44,9 +44,9 @@ public class AssistantKnowledgeTests
         var response = await orchestrator.HandleAsync(
             new AssistantRequest(db.HouseholdId, null, question, CommandSource.Line));
 
-        // The steps must match the screens that exist: SwitchBotSettings.razor issues the
-        // code, WebhookEndpoints reads it back as "連携 123456".
-        Assert.Contains("SwitchBot設定", response.Reply);
+        // The steps must match the screens that exist: Home.razor offers 「家族の追加」,
+        // SwitchBotSettings.razor issues the code, WebhookEndpoints reads it back as "連携 123456".
+        Assert.Contains("家族の追加", response.Reply);
         Assert.Contains("連携コードを発行する", response.Reply);
         Assert.Contains("連携 123456", response.Reply);
     }
@@ -344,7 +344,8 @@ public class AssistantKnowledgeTests
     /// </summary>
     [Theory]
     [InlineData("SwitchBot設定", "src/MimamoriTai.Web/Components/Pages/Home.razor")]
-    [InlineData("LINEでお知らせを受け取る", "src/MimamoriTai.Web/Components/Pages/SwitchBotSettings.razor")]
+    [InlineData("家族の追加", "src/MimamoriTai.Web/Components/Pages/Home.razor")]
+    [InlineData("ご家族の追加", "src/MimamoriTai.Web/Components/Pages/SwitchBotSettings.razor")]
     [InlineData("連携コードを発行する", "src/MimamoriTai.Web/Components/Pages/SwitchBotSettings.razor")]
     public void Screen_Labels_Quoted_By_The_Knowledge_Base_Still_Exist_On_The_Screen(
         string label, string uiPath)

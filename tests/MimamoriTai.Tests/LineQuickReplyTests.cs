@@ -49,7 +49,7 @@ public class LineQuickReplyTests
         var answer = AssistantKnowledgeBase.TryAnswer(chip.MessageText!, FaqMatchMode.Strict);
 
         Assert.NotNull(answer);
-        Assert.Contains("SwitchBot設定", answer!.Reply);
+        Assert.Contains("家族の追加", answer!.Reply);
         Assert.Contains("連携コードを発行する", answer.Reply);
         Assert.Contains("連携 123456", answer.Reply);
     }
