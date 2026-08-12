@@ -531,13 +531,16 @@ else
         // The 3D mascot is decoration. If WebGL is missing, the file 404s, or interop
         // is briefly unavailable, the still image underneath stays visible - so a
         // failure here must never surface to the family as an error.
+        // mimamoriUi.initMascot logs the real reason to the browser console first
+        // (including in production), so "the mascot is a still image" reports can be
+        // told apart from "the animation is broken" without guesswork.
         try
         {
             await JS.InvokeVoidAsync("mimamoriUi.initMascot");
         }
         catch (JSException)
         {
-            // Keep the poster.
+            // Keep the poster. The cause is already in the browser console.
         }
 
         // The mic button is only offered where the browser can actually honour it

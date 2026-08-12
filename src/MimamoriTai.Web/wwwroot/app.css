@@ -278,6 +278,13 @@ main { max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; position: rel
 }
 .assistant-mascot.is-ready canvas { opacity: 1; }
 .assistant-mascot.is-ready .mascot-poster { opacity: 0; }
+
+/* WebGLが使えないとき、GLBが取れなかったとき、描画の文脈を失ったときは
+   静止画をそのまま見せる。固まった3Dの最後のコマを見せ続けると、
+   「アニメーションが壊れて止まっている」ようにしか見えないため。
+   is-ready より後に置いて、こちらが勝つようにしてある。 */
+.mascot-viewer.is-fallback canvas { opacity: 0; }
+.mascot-viewer.is-fallback .mascot-poster { opacity: 1; }
 .risk-medium .status-stage { --risk-color: var(--cp-warning); }
 .risk-high .status-stage { --risk-color: var(--cp-danger); }
 /* ミマモの顔。状態は右下のバッジと見出しで伝えるので、絵は常に同じ表情にする。

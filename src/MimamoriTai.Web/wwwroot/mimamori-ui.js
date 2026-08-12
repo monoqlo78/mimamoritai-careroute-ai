@@ -12,8 +12,17 @@ window.mimamoriUi = {
         document.cookie = name + '=' + encodeURIComponent(value) + '; expires=' + expires + '; path=/; SameSite=Lax';
     },
     initMascot: async function () {
-        await import('/mimamori-mascot-3d.js');
-        window.mimamoriMascot.init();
+        // 3Dは装飾なので、失敗しても画面は止めない。ただし黙って静止画に
+        // 落ちると「アニメーションが壊れている」と見分けがつかず、原因を
+        // 追う手がかりがどこにも残らない。本番でも必ず理由をconsoleに出す。
+        try {
+            await import('/mimamori-mascot-3d.js');
+            window.mimamoriMascot.init();
+        } catch (error) {
+            console.error('Mascot 3D failed to start; the still image stays.', error);
+            document.querySelectorAll('.mascot-viewer').forEach((host) => host.classList.add('is-fallback'));
+            throw error;
+        }
     },
     reactMascot: async function (name) {
         if (!window.mimamoriMascot) {

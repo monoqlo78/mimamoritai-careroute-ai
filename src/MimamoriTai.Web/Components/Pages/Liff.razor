@@ -178,8 +178,19 @@
         // The attribute the viewer looks for is only rendered once _mascot3d is true, so
         // this must run after the re-render that adds it.
         await Task.Yield();
-        await JS.InvokeVoidAsync("mimamoriUi.initMascot");
-        _mascotReady = true;
+        try
+        {
+            await JS.InvokeVoidAsync("mimamoriUi.initMascot");
+            _mascotReady = true;
+        }
+        catch (JSException)
+        {
+            // Inside a LINE WebView the 7.6MB GLB or WebGL itself can simply be
+            // unavailable. The poster stays, and the real reason is already in the
+            // browser console - but the talk must not be interrupted by an error.
+            _mascot3d = false;
+        }
+
         StateHasChanged();
     }
 
