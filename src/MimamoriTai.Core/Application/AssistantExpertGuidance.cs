@@ -58,7 +58,6 @@ public static class AssistantExpertGuidance
         (ExpertField.Medical,
         [
             ["処方"], ["服用"], ["飲み合わせ"], ["のみあわせ"], ["副作用"], ["インスリン"],
-            ["ワクチン"], ["予防接種"], ["手術"], ["認知症"], ["診断"],
             // 薬 / サプリ only when something is being asked about them.
             ["薬", "いい"], ["薬", "よい"], ["薬", "大丈夫"], ["薬", "だいじょうぶ"],
             ["薬", "どう"], ["薬", "やめ"], ["薬", "止め"], ["薬", "量"], ["薬", "増や"],
@@ -68,14 +67,44 @@ public static class AssistantExpertGuidance
         ]),
         (ExpertField.Care,
         [
-            ["介護認定"], ["要介護"], ["要支援"], ["ケアマネ"], ["介護保険"], ["地域包括"],
-            ["デイサービス"], ["老人ホーム"], ["介護施設"]
+            ["介護認定"], ["要介護"], ["要支援"], ["ケアマネ"], ["介護保険"], ["地域包括"]
         ]),
         (ExpertField.Money,
         [
-            ["年金"], ["相続"], ["遺言"], ["確定申告"], ["後見人"], ["成年後見"],
-            ["保険金"], ["契約書"], ["弁護士"], ["税金"]
+            ["相続"], ["遺言"], ["後見人"], ["成年後見"]
         ])
+    ];
+
+    /// <summary>
+    /// Words that name one of these subjects without themselves being a question.
+    ///
+    /// 「デイサービスに行ってきました」「税金の紙が届いた」「手術の跡はもう痛くない」 are a
+    /// resident telling us about their day. Answering those with 「わたしからはお答えしません」
+    /// is worse than saying nothing: it turns the one moment of contact they initiated into a
+    /// rebuff, and it teaches them the assistant does not want to hear about their life.
+    ///
+    /// So these only refer when the message also *asks* something — see <see cref="AskMarkers"/>.
+    /// The narrow wordings above (飲み合わせ, 要介護, 相続 …) stay unconditional because they
+    /// are practically never small talk.
+    /// </summary>
+    private static readonly (ExpertField Field, string[] Words)[] Topics =
+    [
+        (ExpertField.Medical, ["手術", "認知症", "診断", "ワクチン", "予防接種", "点滴", "入院"]),
+        (ExpertField.Care, ["デイサービス", "老人ホーム", "介護施設", "介護"]),
+        (ExpertField.Money, ["年金", "確定申告", "保険金", "契約書", "弁護士", "税金", "保険"])
+    ];
+
+    /// <summary>
+    /// Wording that turns a subject into a question. Deliberately excludes 「手続き」 and
+    /// 「終わった」-style reports: 「保険金の手続きは終わったよ」 is news, not a request.
+    /// </summary>
+    private static readonly string[] AskMarkers =
+    [
+        "どう", "どこ", "どちら", "どれ", "いくら", "いつ", "だれ", "誰",
+        "いい", "よい", "べき", "できる", "できます", "できません", "したい", "たい",
+        "教え", "おしえ", "方法", "やり方", "申請", "受け", "もらえ", "なりますか",
+        "ですか", "ますか", "でしょうか", "わから", "分から", "困", "心配", "相談",
+        "必要", "大丈夫", "だいじょうぶ"
     ];
 
     /// <summary>
@@ -100,6 +129,21 @@ public static class AssistantExpertGuidance
             if (groups.Any(group => group.All(k => normalized.Contains(Normalize(k), StringComparison.Ordinal))))
             {
                 return new ExpertReferral(field, ReplyFor(field));
+            }
+        }
+
+        // Broad subjects refer only when the resident is asking rather than reporting.
+        // The question mark is checked on the raw text because Normalize strips punctuation.
+        var asking = message.Contains('?') || message.Contains('？')
+            || AskMarkers.Any(m => normalized.Contains(Normalize(m), StringComparison.Ordinal));
+        if (asking)
+        {
+            foreach (var (field, words) in Topics)
+            {
+                if (words.Any(w => normalized.Contains(Normalize(w), StringComparison.Ordinal)))
+                {
+                    return new ExpertReferral(field, ReplyFor(field));
+                }
             }
         }
 
