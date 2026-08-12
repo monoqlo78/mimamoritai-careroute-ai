@@ -77,6 +77,8 @@ public sealed class FabricSqlConsoleSync(
             var activity = await WriteActivityAsync(connection, snapshot, ct);
             var aiCalls = await WriteAiRouterCallsAsync(connection, snapshot, ct);
 
+            await LogAiRouterTotalsAsync(connection, snapshot, ct);
+
             var elapsed = ElapsedMs(started);
             logger.LogInformation(
                 "Fabric console sync wrote {Households} household(s), {Alerts} alert(s), {Activity} activity bucket(s) and {AiCalls} AI router group(s) in {Elapsed}ms.",
@@ -570,5 +572,70 @@ public sealed class FabricSqlConsoleSync(
         }
 
         return written;
+    }
+
+    // The console shows one number above the model chart: the sum of callCount
+    // over every row whose router is not the offline stub. When that number looks
+    // wrong there are three places it can go wrong -- the source table, this
+    // rollup, or the read the console does -- and from the outside they are
+    // indistinguishable. Log both ends of the write so the log alone says which.
+    //
+    // Reading it back rather than trusting the MERGE also catches the one failure
+    // that would otherwise be silent: rows landing in the table but the console
+    // still drawing its bundled snapshot, which happens to total a similar number.
+    private async Task LogAiRouterTotalsAsync(SqlConnection connection, Snapshot snapshot, CancellationToken ct)
+    {
+        const string MockRouter = "MockAiRouter";
+
+        var sourceRows = snapshot.AiCalls.Count;
+        var sourceTotal = snapshot.AiCalls.Sum(c => (long)c.CallCount);
+        var sourceViaRouter = snapshot.AiCalls
+            .Where(c => !string.Equals(c.Router, MockRouter, StringComparison.Ordinal))
+            .Sum(c => (long)c.CallCount);
+
+        // callCount is NVARCHAR in the Rayfin-generated table, so cast defensively:
+        // a single unparseable row must not take the whole diagnostic down.
+        const string Sql = """
+            SELECT
+                COUNT(*),
+                SUM(TRY_CAST(callCount AS BIGINT)),
+                SUM(CASE WHEN router <> @mock THEN TRY_CAST(callCount AS BIGINT) ELSE 0 END)
+            FROM dbo.AiRouterCalls;
+            """;
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = Sql;
+            command.CommandTimeout = _options.CommandTimeoutSeconds;
+            command.Parameters.AddWithValue("@mock", MockRouter);
+
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct)) return;
+
+            var fabricRows = reader.IsDBNull(0) ? 0 : reader.GetInt32(0);
+            var fabricTotal = reader.IsDBNull(1) ? 0L : reader.GetInt64(1);
+            var fabricViaRouter = reader.IsDBNull(2) ? 0L : reader.GetInt64(2);
+
+            logger.LogInformation(
+                "Fabric AI router rollup: source {SourceRows} row(s) / {SourceTotal} call(s) / {SourceViaRouter} via OrcaRouter; " +
+                "Fabric now holds {FabricRows} row(s) / {FabricTotal} call(s) / {FabricViaRouter} via OrcaRouter.",
+                sourceRows, sourceTotal, sourceViaRouter, fabricRows, fabricTotal, fabricViaRouter);
+
+            if (fabricViaRouter != sourceViaRouter)
+            {
+                // Rows the rollup no longer produces are never deleted, so Fabric
+                // holding more than the source means stale grains are still counted.
+                logger.LogWarning(
+                    "Fabric AI router total {FabricViaRouter} does not match the source total {SourceViaRouter}; " +
+                    "the console will show the Fabric figure.",
+                    fabricViaRouter, sourceViaRouter);
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // Diagnostics must never fail the sync: the write above already succeeded.
+            logger.LogWarning(ex, "Could not read the AI router totals back from Fabric.");
+        }
     }
 }
