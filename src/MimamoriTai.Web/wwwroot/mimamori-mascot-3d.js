@@ -32,6 +32,28 @@ const blinkSquash = 0.93;
 // しゃべっている間だけ閉じ開きを繰り返し、黙っているときは笑顔のまま。
 const jawCloseRad = 0.30;
 
+// 口を開け閉めする速さ（1秒あたりの回数）。
+// ここは以前 7.3 と 3.1 だった。人の音節に合わせたつもりの数字だが、
+// 顔だけを大写しにしている画面で 1秒に7回も開閉すると、
+// 「しゃべっている」ではなく「口だけが高速で震えている」ように見える。
+// 実際に「ものすごい勢いで口だけ動く」と報告された。
+// ゆっくり話しかけるくらいの速さまで落とす。
+const speakWaveHz = 2.2;
+const speakWaveSubHz = 1.1;
+
+// 黙っている間の口。10秒に1回くらい、軽く「ぱくぱく」と動かす。
+// 口元が完全に固まっていると、微笑んだ静止画にしか見えないため。
+// ここは「しゃべっている」ように見せる場所ではないので、
+// 深さも速さもしゃべるときよりはっきり控えめにしてある。
+// この待ち時間は「ぱくぱくが終わってから次が始まるまで」なので、
+// 実際の周期は ここ + idleMouthCycles / idleMouthHz（約1.5秒）になる。
+// 「10秒に1回」に合わせるため、待ち時間そのものは 10秒より短くしてある。
+const idleMouthGapMin = 7.0;
+const idleMouthGapMax = 9.5;
+const idleMouthHz = 1.3;
+const idleMouthCycles = 2;
+const idleMouthDepth = 0.4;
+
 // しゃべっているとき眉をどれだけ持ち上げるか（モデル座標）。
 const browLift = 0.018;
 
@@ -97,7 +119,31 @@ class MascotController {
         this.resizeObserver.observe(host);
         this.bindPointerReaction();
         this.bindContextRecovery();
+        this.bindVisibility();
         this.load();
+    }
+
+    // このページには顔だけの hero と、相談相手の2箇所に同じビューアが載る。
+    // 両方を常に描くと、画面に映っていないほうにも同じだけ GPU を使う。
+    // 実測でも canvas 2枚がどちらも全力で回っていた。
+    // 映っていないほうは描かない。まばたきの間隔も進めない（戻ってきた
+    // ときに溜まった分が一気に消化されて、まばたきが連発するのを防ぐ）。
+    bindVisibility() {
+        this.onScreen = true;
+        if (typeof IntersectionObserver !== "function") return;
+
+        this.visibilityObserver = new IntersectionObserver(
+            (entries) => {
+                entries.forEach((entry) => {
+                    this.onScreen = entry.isIntersecting;
+                    // 止めている間に進んだ実時間を捨てる。捨てないと復帰の
+                    // 1コマ目に巨大な delta が入って動きが飛ぶ。
+                    if (this.onScreen) this.clock.getDelta();
+                });
+            },
+            { rootMargin: "120px" },
+        );
+        this.visibilityObserver.observe(this.host);
     }
 
     // GPUの再起動やドライバの復帰、タブの切り替えで WebGL の文脈は失われる。
@@ -188,7 +234,15 @@ class MascotController {
         this.blinkPhase = 0;
         this.blinkQueued = 0;
         this.speakUntil = 0;
+        this.mouthAt = this.nextIdleMouthDelay();
+        this.mouthPhase = 0;
         this.faceTime = 0;
+    }
+
+    // 黙っている間、次に軽く口を動かすまでの秒数。
+    // 毎回きっちり10秒だと時計のように見えるので、少しばらつかせる。
+    nextIdleMouthDelay() {
+        return idleMouthGapMin + Math.random() * (idleMouthGapMax - idleMouthGapMin);
     }
 
     nextBlinkDelay() {
@@ -215,7 +269,15 @@ class MascotController {
         // まばたき
         let blink = 0;
         if (this.blinkPhase > 0) {
-            this.blinkPhase += delta;
+            // 1フレームで進める量を「閉じ切って保っている最中」までに抑える。
+            // まばたきは close 0.09 + hold 0.05 + open 0.14 = 0.28 秒しかないので、
+            // fps が落ちて delta が 0.28 に近づくと、閉じかけと開きかけの
+            // 間を1フレームで飛び越えてしまい、閉じた顔が一度も描かれない。
+            // 「瞬きが出るときと出ないときがある」の正体はこれ。
+            // ここで頭打ちにしておけば、どんな低fpsでも必ず1フレームは
+            // 完全に閉じた目が描かれる。60fps なら delta≒0.016 なので
+            // この上限には当たらず、通常時の見え方は変わらない。
+            this.blinkPhase += Math.min(delta, blinkCloseSec + blinkHoldSec * 0.5);
             const value = this.blinkValue(this.blinkPhase);
             if (value < 0) {
                 this.blinkPhase = 0;
@@ -240,7 +302,7 @@ class MascotController {
             bone.scale.y = 1 - blink * blinkSquash;
         });
 
-        // 口。話している間だけ動かす。ずっとぱくぱくさせると落ち着かない。
+        // 口。しゃべっている間と、黙っているときの軽いぱくぱくで動かす。
         // open = 1 が元の笑顔、0 が閉じた口。
         //
         // 「動きを控えめに」の設定でも口は動かす。まばたきと同じ理由で、
@@ -251,8 +313,9 @@ class MascotController {
         let speaking = 0;
         if (this.faceTime < this.speakUntil) {
             // 一定の周期だと機械的なので、速さの違う波を重ねて音節のようにする。
+            this.mouthPhase = 0;
             const t = this.faceTime * 2 * Math.PI;
-            const wave = 0.5 + 0.32 * Math.sin(t * 7.3) + 0.18 * Math.sin(t * 3.1 + 1.7);
+            const wave = 0.5 + 0.32 * Math.sin(t * speakWaveHz) + 0.18 * Math.sin(t * speakWaveSubHz + 1.7);
             speaking = 1;
 
             // 言い終わりは笑顔に戻す。
@@ -260,6 +323,25 @@ class MascotController {
             if (left < 0.25) speaking = left / 0.25;
 
             open = 1 - speaking * (1 - Math.max(0, Math.min(1, wave)));
+
+            // しゃべり終わったら、間を置いてから次のぱくぱくにする。
+            this.mouthAt = this.nextIdleMouthDelay();
+        } else if (this.mouthPhase > 0) {
+            // 黙っているときのぱくぱく。閉じて開くを idleMouthCycles 回。
+            // cos は両端が 0 で傾きも 0 なので、始まりも終わりも
+            // 笑顔からなめらかに出入りする（別途フェードを掛けなくてよい）。
+            this.mouthPhase += delta;
+            const duration = idleMouthCycles / idleMouthHz;
+            if (this.mouthPhase >= duration) {
+                this.mouthPhase = 0;
+                this.mouthAt = this.nextIdleMouthDelay();
+            } else {
+                const cycle = 0.5 - 0.5 * Math.cos(this.mouthPhase * idleMouthHz * 2 * Math.PI);
+                open = 1 - idleMouthDepth * cycle;
+            }
+        } else {
+            this.mouthAt -= delta;
+            if (this.mouthAt <= 0) this.mouthPhase = 0.0001;
         }
 
         if (this.faceBones.jaw) {
@@ -373,6 +455,7 @@ class MascotController {
 
     render() {
         if (!this.model || this.contextLost) return;
+        if (this.onScreen === false) return;
 
         // setAnimationLoop は「描き終えてから」次のフレームを予約する。
         // つまりここで一度でも例外が出るとループは二度と回らず、顔が
