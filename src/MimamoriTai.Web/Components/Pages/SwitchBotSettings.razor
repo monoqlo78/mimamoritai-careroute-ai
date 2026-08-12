@@ -19,7 +19,7 @@
         <span class="brand-mark" aria-hidden="true">み</span>
         <div>
             <h1>SwitchBot 設定</h1>
-            <p>ご家庭のSwitchBotアカウントを接続します</p>
+            <p>ご家族の追加と、ご家庭のSwitchBotの接続をここで行います</p>
         </div>
     </div>
     <div class="topbar-actions">
@@ -56,6 +56,36 @@ else
     {
         <div class="busy-bar" role="status" aria-live="polite">処理中…</div>
     }
+
+    <article class="card" id="family">
+        <p class="eyebrow">ご家族の追加</p>
+        <h2>LINEでお知らせを受け取る</h2>
+        <p class="muted">
+            ご家族を追加するには、ここで発行したコードを、ご本人のLINEから送っていただきます。
+            見守り隊の公式LINEアカウントを友だち追加したあと、下のボタンでコードを発行し、
+            LINEのトーク画面で「連携 123456」のように送信してください（123456の部分は発行されたコードに置き換えます）。
+            コードは発行から10分間・1回のみ有効です。
+        </p>
+
+        @if (_lineNotice is not null)
+        {
+            <p class="notice-@_lineNoticeKind">@_lineNotice</p>
+        }
+
+        @if (_lineCode is not null)
+        {
+            <div class="line-code-display">
+                <span class="line-code-value">連携 @_lineCode</span>
+                <span class="muted">有効期限: @FormatLocal(_lineCodeExpiresAtUtc) まで</span>
+            </div>
+        }
+
+        <div class="device-actions">
+            <button class="secondary-button" @onclick="GenerateLineCodeAsync" disabled="@_lineBusy">
+                連携コードを発行する
+            </button>
+        </div>
+    </article>
 
     <article class="card">
         <p class="eyebrow">接続状況</p>
@@ -108,34 +138,6 @@ else
         </div>
     </article>
 
-    <article class="card">
-        <p class="eyebrow">LINE連携</p>
-        <h2>LINEでお知らせを受け取る</h2>
-        <p class="muted">
-            見守り隊の公式LINEアカウントを友だち追加したあと、下のボタンでコードを発行し、
-            LINEのトーク画面で「連携 123456」のように送信してください（123456の部分は発行されたコードに置き換えます）。
-            コードは発行から10分間・1回のみ有効です。
-        </p>
-
-        @if (_lineNotice is not null)
-        {
-            <p class="notice-@_lineNoticeKind">@_lineNotice</p>
-        }
-
-        @if (_lineCode is not null)
-        {
-            <div class="line-code-display">
-                <span class="line-code-value">連携 @_lineCode</span>
-                <span class="muted">有効期限: @FormatLocal(_lineCodeExpiresAtUtc) まで</span>
-            </div>
-        }
-
-        <div class="device-actions">
-            <button class="secondary-button" @onclick="GenerateLineCodeAsync" disabled="@_lineBusy">
-                連携コードを発行する
-            </button>
-        </div>
-    </article>
 }
 
 @code {
