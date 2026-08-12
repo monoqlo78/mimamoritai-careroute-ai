@@ -9,7 +9,8 @@ import { type AuthUser, type IAuthService, toAuthUser } from './IAuthService';
 // These values only ever reach a developer's local machine — never use
 // them in production.
 const MOCK_EMAIL = 'dev@contoso.com';
-const MOCK_PASSWORD = 'LocalDev!Pass123';
+// NOT-A-SECRET: placeholder for the throwaway local backend account.
+const MOCK_PASSWORD = 'not-a-real-password';
 
 /**
  * Local-development auth service. Used when the API URL targets localhost.
