@@ -60,6 +60,7 @@ public static class ServiceCollectionExtensions
         services.Configure<AuthOptions>(configuration.GetSection(AuthOptions.SectionName));
         services.Configure<AdminOptions>(configuration.GetSection(AdminOptions.SectionName));
         services.Configure<MimamoriDataProtectionOptions>(configuration.GetSection(MimamoriDataProtectionOptions.SectionName));
+        services.Configure<FabricConsoleSyncOptions>(configuration.GetSection(FabricConsoleSyncOptions.SectionName));
 
         var connectionString = configuration.GetConnectionString("AppDb");
 
@@ -235,6 +236,23 @@ public static class ServiceCollectionExtensions
         }
 
         // --- Application services --------------------------------------------
+
+        // Scoped, unlike the other publishers here, because it reads the app database
+        // through IAppDbContext; the background service resolves it per cycle.
+        var fabricConsoleSync = configuration
+            .GetSection(FabricConsoleSyncOptions.SectionName)
+            .Get<FabricConsoleSyncOptions>() ?? new FabricConsoleSyncOptions();
+
+        if (fabricConsoleSync.IsConfigured)
+        {
+            services.TryAddSingleton<TokenCredential>(new DefaultAzureCredential());
+            services.AddScoped<IFabricConsoleSync, FabricSqlConsoleSync>();
+        }
+        else
+        {
+            services.AddScoped<IFabricConsoleSync, MockFabricConsoleSync>();
+        }
+
         services.AddScoped<ILocalDataQuestionService>(sp =>
             new LocalDataQuestionService(sp.GetRequiredService<IAppDbContext>(), sp.GetRequiredService<TimeProvider>()));
 

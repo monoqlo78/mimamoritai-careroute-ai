@@ -25,6 +25,7 @@ builder.Services.AddHostedService<SwitchBotPollingBackgroundService>();
 builder.Services.AddHostedService<DemoDataTopUpBackgroundService>();
 builder.Services.AddHostedService<EventStreamPublishBackgroundService>();
 builder.Services.AddHostedService<PlugMiniReadingPublishBackgroundService>();
+builder.Services.AddHostedService<FabricConsoleSyncBackgroundService>();
 
 var app = builder.Build();
 
@@ -80,6 +81,7 @@ app.MapAlertEndpoints();
 app.MapDeviceSyncEndpoints();
 app.MapSwitchBotConnectionEndpoints();
 app.MapAuthEndpoints();
+app.MapFabricSyncEndpoints();
 
 await InitializeDatabaseAsync(app);
 

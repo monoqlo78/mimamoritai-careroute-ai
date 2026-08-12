@@ -278,7 +278,11 @@ async function withSnapshotFallback<T>(
   try {
     const rows = await read();
     if (rows.length > 0) {
-      if (dataOrigin !== 'snapshot') dataOrigin = 'fabric';
+      // Unconditional on purpose. Guarding this on the previous value made the
+      // banner sticky: one degraded read pinned the console to 'snapshot' for the
+      // rest of the session, so it kept claiming the data was stale long after
+      // Fabric had come back.
+      dataOrigin = 'fabric';
       return rows;
     }
   } catch (error) {
