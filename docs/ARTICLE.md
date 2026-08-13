@@ -148,19 +148,21 @@ LINE 上でも同じです。自由文の「リビングの電気を付けれる
 flowchart TB
     SB["SwitchBot Plug Mini"] --> App
     LINE["LINE"] --> App
-    App["Blazor Web App (App Service)"] --> SQL[("Azure SQL")]
-    App --> EH[("Fabric Eventhouse (KQL)")]
+    App["Blazor Web App (App Service)"] -- 読み書き（正データ） --> SQL[("Azure SQL")]
+    App -- 書き込みのみ --> EH[("Fabric Eventhouse (KQL)")]
     App --> AI["OrcaRouter (LLM)"]
-    EH --> DA["Fabric Data Agent (MCP)"]
-    DA --> App
+    App -- 傾向の質問だけ --> DA["Fabric Data Agent (MCP)"]
+    DA -- KQL --> EH
+    App -- 集計を MERGE --> FSQL[("Fabric SQL DB / 運用コンソール")]
 ```
 
 | 用途 | 使ったもの |
 |---|---|
 | アプリ | .NET 10 / Blazor Web App（InteractiveServer） |
-| 業務データ | Azure SQL Database |
-| 時系列分析 | Microsoft Fabric Eventhouse（KQL） |
-| 自然言語分析 | Fabric Data Agent（MCP 経由） |
+| **正データ** | **Azure SQL Database**（画面・操作・監査ログはすべてここ） |
+| 時系列分析 | Microsoft Fabric Eventhouse（KQL）※アプリからは書き込みのみ |
+| 自然言語分析 | Fabric Data Agent（MCP 経由）※Eventhouse に対して KQL を書く |
+| 運用コンソール | Fabric SQL Database（アプリから集計を一方向に MERGE） |
 | LLM | [OrcaRouter](https://www.orcarouter.ai/)（OpenAI 互換 / 自動ルーティング） |
 | デバイス | SwitchBot Plug Mini (JP) |
 | 家族接点 | LINE Messaging API / LINE Login / LIFF |
@@ -181,6 +183,42 @@ flowchart TB
 - `SwitchBotPlugReadings` … ポーリング周期ごとの**電力テレメトリ**（変化がなくても毎回）
 
 意図的にコードを共有していません。片方の設定ミスや障害が、もう片方を巻き込まないようにするためです。**これは後で本当に効きました**（後述）。
+
+#### どこが正データで、Fabric はどこにいるのか
+
+ここは説明でよく混乱するので、はっきり書いておきます。**正データは Azure SQL だけです。Fabric は分析用の写しです。**
+
+| 経路 | 向き | 用途 |
+| --- | --- | --- |
+| アプリ ⇄ **Azure SQL** | 読み書き | **画面・LINE の返信・家電操作・監査ログ、全部ここ**。唯一の正データ |
+| アプリ → **Eventhouse**（KQL） | **書き込みのみ** | 上の2テーブルを時系列分析用に複製 |
+| アプリ → **Fabric Data Agent** → Eventhouse | 質問と回答 | 傾向・比較の質問のときだけ。KQL は Data Agent が書く |
+| アプリ → **Fabric SQL DB** | 書き込み（MERGE） | 運用コンソールが読む集計スナップショット |
+
+**アプリから Eventhouse に SELECT しに行くコードはありません。**読むのは Fabric Data Agent 越しだけです。逆に運用コンソール用の Fabric SQL は書きっぱなしで、アプリが読み返すこともありません。**依存の向きを一方向にそろえてある**ので、Fabric が止まってもアプリの機能は落ちません（実際に止まりましたが、落ちませんでした。4章）。
+
+そのうえで、**質問への回答はまず SQL で作ります**。
+
+```csharp
+// まずローカルで答えを作る。Fabric はそのあとの「上乗せ」でしかない。
+var local = await localData.AnswerAsync(request.HouseholdId, question, ct);
+var answer = local;
+
+if (fabric.IsConfigured && plan.Scope == QueryScope.Analysis)
+{
+    var remote = await TryAskFabricAsync(question, ct);   // 制限時間つき
+    if (remote is { Success: true }) answer = Merge(remote.Answer, local.Answer);
+}
+```
+
+| 質問 | スコープ | 使うもの |
+| --- | --- | --- |
+| 「いま母はどうしてる？」「最後に使ったのは？」 | `Recent` | **Azure SQL だけ**。Fabric は呼ばない |
+| 「先週と比べて減ってる？」「深夜が増えてない？」 | `Analysis` | SQL の答え ＋ Fabric Data Agent |
+
+`Recent` で Fabric を呼ばないのは、**ローカルの答えが既に完全だから**です。同じ答えを得るために数秒払うのは、ただの遅延です。スコープは意図解析のときに一緒に返ってきているので、この判定に追加のモデル呼び出しは要りません。
+
+面白かったのは、**Data Agent はデータソースに到達できなくても謝罪文を HTTP 200 で返してくる**ことです。「申し訳ありません、データベースに接続できず…」がそのまま成功扱いで家族の画面に出ると、かなり具合が悪い。なので定型句を検出して**失敗として扱い**、ローカルの答えに戻します。さらに、たとえ検出をすり抜けても壊れないように、**ローカルの答えを常に先に作って持ち回っています**。文言リストで人間の言い回しを網羅しきることはできないので、**取りこぼしても劣化で済む形**にしておくほうが確実でした。
 
 蓄積したデータは「いつもと比べてどうか」に変換して見せています。絶対値ではなく**平常時との差**にしたのは、そもそも「普通」が人によって違うからです。
 

@@ -63,9 +63,17 @@ flowchart TB
     subgraph Infra["MimamoriTai.Infrastructure"]
         Ai["IAiRouterClient\nOrcaRouterClient / MockAiRouterClient"]
         Device["IDeviceProvider\nSwitchBotDeviceProvider / MockDeviceProvider"]
-        Fabric["IFabricDataAgentClient\nMockFabricDataAgentClient"]
+        Fabric["IFabricDataAgentClient\nFabricDataAgentMcpClient / Mock"]
+        Pub["IEventStreamPublisher\nIPlugMiniReadingStreamPublisher"]
+        ConsoleSync["IFabricConsoleSync\nFabricSqlConsoleSync"]
         Line["ILineMessagingClient\nLineMessagingClient / MockLineMessagingClient"]
-        Db[("AppDbContext\nSQL Server or SQLite")]
+        Db[("AppDbContext\nAzure SQL（正データ）")]
+    end
+
+    subgraph FabricPlatform["Microsoft Fabric"]
+        Eventhouse[("Eventhouse / KQL\nDeviceEvents, SwitchBotPlugReadings")]
+        Agent["Fabric Data Agent"]
+        FabricSql[("Fabric SQL DB\nRayfin 運用コンソール")]
     end
 
     LineApp -- Webhook --> WebhookEp
@@ -87,9 +95,39 @@ flowchart TB
     RiskSvc --> ActivitySvc --> Db
     LocalQA --> ActivitySvc
 
+    Pub -- 書き込みのみ --> Eventhouse
+    Fabric -- MCP 質問 --> Agent
+    Agent -- KQL --> Eventhouse
+    ConsoleSync -- 集計を MERGE --> FabricSql
+
     WebhookEp --> Line
     Orchestrator -.応答送信.-> Line
 ```
+
+### データの流れ ― どこが何を読んでいるか
+
+**正データ（source of truth）は Azure SQL だけです。** Fabric は「分析のための写し」であり、画面表示・家電操作・アラート判定が Fabric に依存することはありません。Fabric が止まってもアプリの機能は落ちません。
+
+| 経路 | 向き | 実装 | 用途 |
+| --- | --- | --- | --- |
+| アプリ → Azure SQL | 読み書き | `AppDbContext`（EF Core） | **すべての画面・LINE 応答・家電操作・監査ログ**。ここだけが正データ |
+| アプリ → Eventhouse `DeviceEvents` | **書き込みのみ** | `EventhouseStreamPublisher` | 家電の ON/OFF イベントを時系列分析用に複製 |
+| アプリ → Eventhouse `SwitchBotPlugReadings` | **書き込みのみ** | `EventhousePlugMiniReadingStreamPublisher` | Plug Mini の電力テレメトリを**ポーリング周期ごとに**複製（状態変化が無くても） |
+| アプリ → Fabric Data Agent → Eventhouse | 質問 → 自然文の回答 | `FabricDataAgentMcpClient`（MCP） | **複数日にまたがる傾向・比較の質問だけ**。Data Agent が KQL を書いて Eventhouse に問い合わせる |
+| アプリ → Fabric SQL DB | 書き込み（MERGE） | `FabricSqlConsoleSync` | Rayfin 運用コンソールが表示する世帯横断の集計スナップショット |
+
+**アプリが Eventhouse を直接クエリすることはありません。**読み出しは Fabric Data Agent 越しだけです。逆に Fabric SQL DB はコンソール専用で、アプリが読み返すことはありません。
+
+#### 質問への回答は「まず SQL、傾向のときだけ Fabric」
+
+`AssistantOrchestrator` は毎回まずアプリDBから答えを作り（`LocalDataQuestionService`）、そのうえで**質問の性質が「傾向・比較」のときだけ** Data Agent に問い合わせて、返ってきたら要約に重ねます。
+
+| 質問の例 | `QueryScope` | 使うもの |
+| --- | --- | --- |
+| 「いま母はどうしてる？」「最後に家電を使ったのは？」 | `Recent` | **Azure SQL のみ**（Fabric は呼ばない） |
+| 「先週と比べて活動は減ってる？」「深夜の利用が増えてない？」 | `Analysis` | Azure SQL の答え ＋ **Fabric Data Agent の分析** |
+
+`Recent` で Fabric を呼ばないのは、ローカルの答えが既に完全なので、秒単位の待ち時間を払う意味が無いからです。`Analysis` でも Fabric には**制限時間**があり（アシスタントは既定の予算、機器詳細ページは8秒）、超過・失敗・「接続できませんでした」という体裁の回答が返ってきた場合はローカルの答えをそのまま使います。**Fabric が無くても回答は必ず出ます。**
 
 ## 主な機能
 
@@ -365,8 +403,10 @@ dotnet test
 |---|---|---|
 | SwitchBot | ✅ 設定すれば実接続 | `SwitchBotDeviceProvider` はOpenAPI v1.1のレスポンス（`deviceList`/`infraredRemoteList`、機種別のstatusフィールド）を実装済み。`SwitchBot:Enabled=true`＋Token/Secretで有効化。ダッシュボードの「実機を同期」ボタン（または`POST /api/devices/sync`）でDBへ反映し、`SwitchBotPollingBackgroundService`が実機の状態変化をイベントとして記録する。詳細は `docs/SWITCHBOT_SETUP.md`。 |
 | OrcaRouter | ✅ 設定すれば実接続 | `OrcaRouter:ApiKey` が空の間は `MockAiRouterClient` が固定応答を返す。 |
-| Microsoft Fabric Data Agent | 🟡 モック稼働 | `MockFabricDataAgentClient` は常に `IsConfigured = false` を返し、代わりに `LocalDataQuestionService` がDBから直接回答。実際のMCP接続クライアントは未実装（`docs/FABRIC_SETUP.md` 参照）。 |
-| Microsoft Fabric Eventhouse（リアルタイム分析） | ✅ 設定すれば実接続 | `Eventhouse:Enabled=true`＋`ClusterUri`で有効化（認証はマネージドID、秘密情報不要）。`SwitchBotPollingBackgroundService`がAzure SQL保存後に同じイベントをストリーミング取り込みし、`POST /api/stream/publish`／ダッシュボードの「Fabricへ送信」ボタンで手動疎通確認も可能。Eventstream `MimamoriDeviceStream`（Webhook型pushの将来の表玄関）は構築済みだがコードからは未使用。 |
+| Microsoft Fabric Data Agent | ✅ 設定すれば実接続 | `FabricDataAgentMcpClient` が MCP（JSON-RPC 2.0 / streamable HTTP）で公開済み Data Agent に接続します。データソースは Eventhouse の KQL データベース `MimamoriEventhouse`。認証は**サービスプリンシパル**（Data Agent のクエリ認証はマネージドIDに未対応のため）。未設定・失敗・タイムアウト時は `LocalDataQuestionService` がアプリDBから回答します。詳細は `docs/FABRIC_SETUP.md`。 |
+| Microsoft Fabric Eventhouse（リアルタイム分析） | ✅ 設定すれば実接続 | `Eventhouse:Enabled=true`＋`ClusterUri`で有効化（認証はマネージドID、秘密情報不要）。`SwitchBotPollingBackgroundService`がAzure SQL保存後に同じイベントをストリーミング取り込みし、`POST /api/stream/publish`／ダッシュボードの「Fabricへ送信」ボタンで手動疎通確認も可能。`DeviceEvents` と `SwitchBotPlugReadings` の2テーブルへ、独立した publisher が別々に書きます。 |
+| Microsoft Fabric Eventstream（Event Hubs 互換エンドポイント） | ⚪ 実装済み・本番では未使用 | `EventStream:Enabled=true` にすると `EventHubEventStreamPublisher` が優先され、`アプリ → Event Hub → Eventstream → Eventhouse` の経路になります。**本番は `false`** で、Eventhouse へ直接取り込む経路を使っています（ホップが増えるほど「送信成功なのに着かない」事故が起きたため。`docs/ARTICLE.md` 4-2）。 |
+| Microsoft Fabric SQL データベース（Rayfin 運用コンソール） | ✅ 実接続 | `FabricSqlConsoleSync` が**アプリDB → Fabric SQL** の一方向に集計スナップショットを MERGE します（`FabricConsoleSyncBackgroundService` が定期実行）。世帯横断の件数と機械生成テキストのみで、プロンプト本文・暗号化資格情報・家族向けアラート文面は送りません。 |
 | LINE | ✅ 設定すれば実接続 | `Line:ChannelAccessToken`/`ChannelSecret` が空の間は `MockLineMessagingClient` がダッシュボードのLINEシミュレーターとして動作。署名検証ロジックはモックでも有効。送信する吹き出しの表示名とアイコンは `Line:SenderName`/`Line:SenderIconPath`（＋公開HTTPSの `Line:PublicBaseUrl`）でミマモに上書きされる。 |
 | LINE内でCGを表示（LIFF） | ✅ 登録済み（要デプロイ） | LIFFアプリ `2011065310-k0R1hHKz` を作成済みで `appsettings.json` に設定済み。`Line:LiffChannelId` はIDトークンをLINE側で検証するために必須で、未設定なら世帯データは一切表示しない。手順は `docs/line-one-touch-setup.md`。 |
 | データベース | ✅ 両対応 | 接続文字列があれば SQL Server + マイグレーション、無ければ SQLite ファイルへ自動フォールバック。 |
