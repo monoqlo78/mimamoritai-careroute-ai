@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using MimamoriTai.Core.Abstractions;
 using MimamoriTai.Core.Application;
@@ -197,10 +198,32 @@ public static class ServiceCollectionExtensions
         // Preference order: EventStream (Event Hubs-protocol custom endpoint,
         // the primary ingestion path) > Eventhouse (direct KQL REST ingestion)
         // > Mock, so the app runs end to end with zero secrets either way.
+        //
+        // When both are configured the direct Eventhouse path is kept wired as a
+        // fallback rather than discarded: the Eventstream is an extra hop that can
+        // pause or throttle on its own, and both paths land in the same table.
         var eventStream = configuration.GetSection(EventStreamOptions.SectionName).Get<EventStreamOptions>() ?? new EventStreamOptions();
         var eventhouse = configuration.GetSection(EventhouseOptions.SectionName).Get<EventhouseOptions>() ?? new EventhouseOptions();
 
-        if (eventStream.IsConfigured)
+        if (eventStream.IsConfigured && eventhouse.IsConfigured)
+        {
+            services.TryAddSingleton<TokenCredential>(new DefaultAzureCredential());
+
+            // The Event Hubs producer is expensive to build and thread-safe, so it
+            // stays a singleton; the typed HttpClient below is transient by design.
+            services.AddSingleton<EventHubEventStreamPublisher>();
+            services.AddHttpClient<EventhouseStreamPublisher>(client =>
+            {
+                client.BaseAddress = new Uri(eventhouse.ClusterUri.TrimEnd('/') + "/");
+                client.Timeout = TimeSpan.FromSeconds(eventhouse.TimeoutSeconds);
+            });
+
+            services.AddTransient<IEventStreamPublisher>(sp => new FallbackEventStreamPublisher(
+                sp.GetRequiredService<EventHubEventStreamPublisher>(),
+                sp.GetRequiredService<EventhouseStreamPublisher>(),
+                sp.GetRequiredService<ILogger<FallbackEventStreamPublisher>>()));
+        }
+        else if (eventStream.IsConfigured)
         {
             services.AddSingleton<IEventStreamPublisher, EventHubEventStreamPublisher>();
         }

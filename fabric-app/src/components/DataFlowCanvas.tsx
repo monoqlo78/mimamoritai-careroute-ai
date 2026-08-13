@@ -125,11 +125,26 @@ const NODES: FlowNode[] = [
     accent: 'ai',
   },
   {
+    id: 'eventstream',
+    // The only free slot on the lower row, and it sits directly under the app,
+    // which is exactly where this hop happens.
+    x: 0.085,
+    y: 0.78,
+    title: 'Eventstream',
+    subtitle: 'Eventhouse / Lakehouse',
+    // A count of forwarded events would have to come from Eventhouse, which this
+    // console never reads, so state the topology instead of guessing a number.
+    metric: () => '宛先 2',
+    accent: 'fabric',
+  },
+  {
     id: 'sync',
     x: 0.515,
     y: 0.78,
     title: '同期ジョブ',
-    subtitle: 'sync-to-fabric.ps1',
+    // The C# background service in the web app, not the ps1 used to bootstrap
+    // the Fabric SQL side once.
+    subtitle: 'FabricConsoleSync / 15分ごと',
     metric: (s) => (s.origin === 'fabric' ? '読み取り専用' : '停止中'),
     accent: 'fabric',
   },
@@ -193,6 +208,15 @@ const EDGES: FlowEdge[] = [
     label: '意図解析・要約を依頼',
     weight: (s) => 3 + Math.min(14, s.aiCalls / 4),
     color: [0.98, 0.44, 0.58],
+  },
+  {
+    from: 'app',
+    to: 'eventstream',
+    // Real-time hop, separate from the 15-minute aggregate sync below: raw device
+    // events leave the app as they are polled, before any aggregation.
+    label: 'イベント転送',
+    weight: (s) => 4 + s.devices + Math.min(12, s.activityEvents / 20),
+    color: [0.2, 0.83, 0.6],
   },
   {
     from: 'sql',
