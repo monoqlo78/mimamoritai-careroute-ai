@@ -8,6 +8,7 @@
 @inject DeviceInsightQuestionService Insight
 @inject DeviceControlService Control
 @inject DeviceSettingsService Settings
+@inject PowerUsageService PowerUsage
 @implements IAsyncDisposable
 
 <PageTitle>@(_model is null ? "デバイス詳細" : _model.Name) / 見守り隊</PageTitle>
@@ -230,6 +231,50 @@ else
         </article>
     </section>
 
+    <details class="detail-panel">
+        <summary>
+            <span>使用電力量</span>
+            <span class="summary-meta">
+                @if (_power.HasData)
+                {
+                    @($"最終計測 {HouseholdTime.LocalTime(_power.MeasuredAtUtc!.Value):HH\\:mm}")
+                }
+                else
+                {
+                    @("計測値なし")
+                }
+            </span>
+        </summary>
+        <div class="detail-content">
+            @if (!_power.HasData)
+            {
+                @* Only Plug Mini class devices meter power, so this is the normal state
+                   for a light or an air conditioner rather than an error. *@
+                <p class="empty-state">この機器は電力を計測していません</p>
+            }
+            else
+            {
+                <ul class="power-figures">
+                    <li>
+                        <span class="power-label">昨日</span>
+                        <span class="power-value">@PowerUsageService.Format(_power.YesterdayWh)</span>
+                    </li>
+                    <li>
+                        <span class="power-label">過去1週間</span>
+                        <span class="power-value">@PowerUsageService.Format(_power.Last7DaysWh)</span>
+                    </li>
+                    <li>
+                        <span class="power-label">過去1カ月</span>
+                        <span class="power-value">@PowerUsageService.Format(_power.Last30DaysWh)</span>
+                    </li>
+                </ul>
+
+                <BarChart Points="PowerBars()" Unit="Wh"
+                          AriaLabel="@PowerBarsAriaLabel()" Class="device-trend" />
+            }
+        </div>
+    </details>
+
     <details class="detail-panel" open>
         <summary>
             <span>直近@(_model.PeriodDays)日間の使用回数</span>
@@ -265,6 +310,7 @@ else
     [Parameter] public Guid DeviceId { get; set; }
 
     private DeviceDetailModel? _model;
+    private PowerUsageSummary _power = PowerUsageSummary.Empty;
     private FabricAnswer? _insight;
     private bool _insightLoading;
     private bool _notFoundOrDenied;
@@ -299,8 +345,7 @@ else
             new BarChartPoint(d.Date.ToString("M/d"), d.OnCount, d.Date == today))];
     }
 
-    private string UsageBarsAriaLabel()
-    {
+    private string UsageBarsAriaLabel()    {
         if (_model is null || _model.DailyBreakdown.Count == 0)
         {
             return "使用回数の記録はまだありません";
@@ -308,6 +353,33 @@ else
 
         var parts = _model.DailyBreakdown.Select(d => $"{d.Date:M月d日} {d.OnCount}回");
         return $"日ごとの使用回数：{string.Join("、", parts)}";
+    }
+
+    /// <summary>
+    /// The last fortnight of the 30-day series: a month of daily bars squeezed into a
+    /// phone-width card leaves each one about a pixel wide, which reads as noise. The
+    /// monthly figure above the chart is what carries that window.
+    /// </summary>
+    private IReadOnlyList<BarChartPoint> PowerBars()
+    {
+        var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
+
+        return [.. _power.Daily
+            .Where(d => d.Date >= today.AddDays(-13))
+            .Select(d => new BarChartPoint(
+                d.Date.ToString("M/d"), d.EnergyWh, d.Date == today,
+                PowerUsageService.Format(d.EnergyWh)))];
+    }
+
+    private string PowerBarsAriaLabel()
+    {
+        if (!_power.HasData)
+        {
+            return "電力量の記録はまだありません";
+        }
+
+        return "日ごとの使用電力量："
+            + string.Join("、", PowerBars().Select(p => $"{p.Label} {p.Display}"));
     }
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
@@ -332,6 +404,12 @@ else
         _notFoundOrDenied = _model is null;
         _nameDraft = _model?.Name ?? string.Empty;
         _roomDraft = _model?.Room ?? string.Empty;
+
+        // Sequential, not concurrent: both reads share this circuit's DbContext, which
+        // cannot serve two operations at once.
+        _power = _model is null
+            ? PowerUsageSummary.Empty
+            : await PowerUsage.GetAsync(_model.HouseholdId, DeviceId);
 
         if (!includeInsight)
         {

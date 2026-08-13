@@ -474,6 +474,13 @@ a.ghost.small { min-height: 32px; padding: 4px 10px; font-size: 12px; }
 .summary-meta { margin-left: auto; color: var(--cp-text-muted); font-size: 12px; font-weight: 400; }
 .detail-content { padding: 0 20px 20px; border-top: 1px solid var(--cp-border); padding-top: 20px; }
 
+/* Three headline figures above the chart. auto-fit rather than a fixed three columns so
+   they stack instead of truncating "1.23 kWh" on a narrow phone. */
+.power-figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; margin: 0 0 16px; padding: 0; list-style: none; }
+.power-figures li { padding: 10px 12px; border: 1px solid var(--cp-border); border-radius: 0.625rem; background: var(--cp-bg-elevated); }
+.power-label { display: block; color: var(--cp-text-muted); font-size: 11px; }
+.power-value { display: block; margin-top: 2px; font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
 .device-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .device-card { padding: 16px; border: 1px solid var(--cp-border); border-radius: 0.625rem; background: var(--cp-bg-elevated); }
 .device-card.restricted { border-color: var(--cp-danger); }

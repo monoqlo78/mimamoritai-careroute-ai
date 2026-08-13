@@ -258,6 +258,7 @@ public static class ServiceCollectionExtensions
             new LocalDataQuestionService(sp.GetRequiredService<IAppDbContext>(), sp.GetRequiredService<TimeProvider>()));
 
         services.AddScoped<ActivityService>();
+        services.AddScoped<PowerUsageService>();
         services.AddScoped<RiskAssessmentService>();
         services.AddScoped<DeviceControlService>();
 
