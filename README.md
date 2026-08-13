@@ -229,6 +229,20 @@ dotnet user-secrets set "Eventhouse:ClusterUri" "<your-eventhouse-engine-uri>"
 
 `SwitchBot:Enabled` と `Line:Enabled` は `appsettings.json` 側の `bool` フィールドですが、appsettings には含まれていないため、有効化する場合は `appsettings.Development.json` や環境変数（`SwitchBot__Enabled=true` など）で設定してください。それぞれの設定手順の詳細は `docs/SWITCHBOT_SETUP.md` / `docs/LINE_SETUP.md` / `docs/FABRIC_SETUP.md` を参照。
 
+### 本番（Azure）では Key Vault から読み込む
+
+上記の User Secrets はローカル開発向けです。Azure にデプロイした環境では、**シークレットをアプリ設定に置かず、起動時に Azure Key Vault から読み込みます**。設定するのは Vault の場所1つだけです。
+
+```powershell
+az webapp config appsettings set -g <resource-group> -n <app-name> `
+  --settings KeyVault__Uri="https://<vault-name>.vault.azure.net/"
+```
+
+- 認証は **App Service のシステム割り当てマネージドID**（`DefaultAzureCredential`）で、Vault に `Key Vault Secrets User` ロールを付与します。**Key Vault へ接続するための資格情報自体が存在しません。**
+- **シークレット名は `:` を `--` に置き換えます**（Key Vault の名前にコロンを使えないため）。例: `OrcaRouter:ApiKey` → `OrcaRouter--ApiKey`。App Service のアプリ設定で使う `__` とは別の記法です。
+- `KeyVault:Uri` が空（既定）のときは Key Vault を一切参照しません。**`git clone` して `dotnet run` するだけで動く、というゼロコンフィグの前提は変わりません。**
+- 実装は `src/MimamoriTai.Web/Services/KeyVaultConfigurationExtensions.cs`、方針は `docs/SECURITY.md` を参照。
+
 実機（SwitchBot）へ切り替えるために必要な環境変数は以下のとおりです（`.env` ではなく環境変数または User Secrets として設定してください。プレースホルダー以外の実際の値をコミットしないこと）。
 
 | 環境変数 | 既定値 | 説明 |

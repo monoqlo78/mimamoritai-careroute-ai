@@ -50,6 +50,8 @@ MimamoriTai.Web  ──depends on──>  MimamoriTai.Infrastructure  ──depe
 
 各モックは「設定が無ければ安全に倒れる」ことを目的としており、`IsConfigured` プロパティを通じて呼び出し側（`AssistantOrchestrator` や `DashboardService`）が実接続かどうかを判定できます。
 
+**設定値がどこから来るか**: 上表の分岐はすべて `IConfiguration` の値だけを見ています。値の出所は環境ごとに異なり、ローカルでは `appsettings.json`（空のプレースホルダー）＋ User Secrets、Azure では **Azure Key Vault** です。`Program.cs` の先頭で `AddMimamoriTaiKeyVault()`（`Web/Services/KeyVaultConfigurationExtensions.cs`）が `KeyVault:Uri` を見て、設定されていればマネージドID（`DefaultAzureCredential`）で Key Vault を構成プロバイダーとして重ねます。**インフラ層はこの違いを知りません** — `IsConfigured` が true になった理由が User Secrets か Key Vault かで挙動は変わりません。`KeyVault:Uri` が空なら Key Vault は参照されず、秘密情報ゼロのモード（`dotnet run` だけで全機能）がそのまま維持されます。詳細は `docs/SECURITY.md`。
+
 ## リアルタイム分析パス（Fabric Eventhouse）
 
 SwitchBot実機のデータは、Azure SQL（`mimamori.DeviceEvents`、**正のデータストア**）に加えて、Microsoft Fabric Eventhouse（KQLデータベース）へもストリーミングされ、リアルタイム分析・可視化に利用できます。

@@ -360,6 +360,29 @@ LINE の webhook 処理は **1 イベントあたり 8 秒**でキャンセル�
 なお `-fast` は「締切がある呼び出し」を表す接尾辞で、チャネル名ではありません。
 他の用途にも同じ規則で展開できます（例 `intent-fast`）。
 
+### タイムアウトしたときは `FastModel` へ退避する
+
+上表の分散は、後日さらに悪化した状態で観測されました。同一プロンプトを本番から
+3 回投げた実測が **120 秒超 / 24.8 秒 / 15.6 秒**（いずれも `qwen3.7-plus`）で、
+`OrcaRouter:TimeoutSeconds`（既定 30 秒）を超える引きが現実に発生します。
+
+問題は再試行の方でした。タイムアウト後も同じ `orcarouter/auto` を指定して投げ直すので、
+**また別の遅いモデルを引いて再びタイムアウトし、30 秒 × 3 回を費やして何も返さない**という
+挙動になり、ダッシュボードの要約が空のままになります。
+
+そこで `OrcaRouterClient` は、**タイムアウトした場合に限り**残りの再試行を `FastModel` に
+切り替えます（`CompleteAsync`）。
+
+- 1 回目は必ず `orcarouter/auto` のままなので、自動ルーティングを見せる価値は失われません。
+- 退避するのはタイムアウト（`HttpClient.Timeout` 由来の `TaskCanceledException`）のときだけです。
+  429 / 5xx は従来どおり同じモデルで再試行します。
+- すでに `FastModel` を使っている経路（`-fast`）は退避先が無いので、同じモデルで再試行します。
+- 呼び出し側がキャンセルした場合は再試行しません（放棄されたページ読み込みでトークンを使わないため）。
+
+本番ログでの実測: `timed out on orcarouter/auto; retrying on openai/gpt-4.1-mini` の直後に
+**2.3 秒で 200** が返り、`AiRequestLogs` にも成功として記録されました。
+回帰テストは `OrcaRouterClientTests` の `Timeout_on_the_auto_router_retries_on_the_fast_model` 他 2 件です。
+
 #### Fabric の待ち時間予算（`Fabric:QueryTimeoutSeconds`、既定 2 秒）
 
 要約・データ質問の経路は、**先にローカル DB から完全な答えを作ってから**
