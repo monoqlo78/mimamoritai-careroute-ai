@@ -120,7 +120,7 @@ LLM 呼び出しは [OrcaRouter](https://www.orcarouter.ai/) に集約してい�
 
 ## 安全設計（このプロジェクトの差別化ポイント）
 
-安全設計は2つの軸で考えています。**AIに危険な判断をさせないこと**と、**秘密情報を扱う場所そのものを減らすこと**です。方針の全文は [docs/SECURITY.md](docs/SECURITY.md) を参照してください。
+安全設計は2つの軸で考えています。**AIに危険な判断をさせないこと**と、**秘密情報を扱う場所そのものを減らすこと**です。方針の全文は [docs/SECURITY.md](docs/SECURITY.md) を参照してください。ネットワーク面では、App Service から Key Vault と Azure SQL へは **Private Endpoint 経由**で接続しています（公開エンドポイントを通りません）。ハッカソン後に環境を消し切る手順は [docs/CLEANUP.md](docs/CLEANUP.md) にまとめてあります。
 
 ### AIに危険な判断をさせない
 
@@ -134,11 +134,12 @@ LLM 呼び出しは [OrcaRouter](https://www.orcarouter.ai/) に集約してい�
 
 さらに、**LLMの出力は一切信用しません**。`IntentParser.TryParse` は不正なJSONに対して `null` を返し、`AssistantOrchestrator` は **1回だけ**修復を試みてそれでも失敗すれば、何も実行せずに諦めます。
 
-### 秘密情報を「持たない・渡さない・見せない」
+### 秘密情報を「持たない・通さない・渡さない・見せない」
 
 | 方針 | 実装 |
 | --- | --- |
 | **持たない** | 本番の App Service にはシークレットを1件も置きません。起動時に Azure Key Vault から読み込み、認証は**システム割り当てマネージドID**（`DefaultAzureCredential`）で行います。**Key Vault へ接続するための資格情報自体が存在しません。**（後述の「本番（Azure）では Key Vault から読み込む」） |
+| **通さない** | Key Vault と Azure SQL へは **Private Endpoint 経由**でのみ接続します。App Service を VNet 統合し、Private DNS ゾーンで名前解決を private IP に向けているため、**シークレットとデータベースへの通信は公開エンドポイントを通りません**。あわせて、Vault が一時的に読めない場合でもプロセスを落とさず起動を継続します（該当機能だけが無効化されます）。（後述の `docs/SECURITY.md`） |
 | **渡さない** | LINE Webhook はチャネルシークレットを鍵とした HMAC-SHA256 を `CryptographicOperations.FixedTimeEquals`（**タイミング攻撃に耐性のある定数時間比較**）で検証し、失敗したリクエストは **401 Unauthorized** を返して `AssistantOrchestrator` には一切渡しません。送信元と世帯の紐付けは6桁の連携コード（**ハッシュ保存**・有効期限10分・使い捨て・試行回数制限）で行い、**既定では未リンクの送信元をどの世帯にも自動接続しません**（`Line:AllowDefaultHouseholdFallback=false`）。 |
 | **見せない** | 世帯ごとの SwitchBot Token/Secret は ASP.NET Core Data Protection で暗号化し、`EncryptedToken`/`EncryptedSecret` のみを保存します（**平文では一切保存せず、独自の可逆暗号も使いません**）。復号は世帯単位の短命なスコープ内だけで行い、**保存後の値が画面に再表示されることはありません**。本番で `DataProtection:KeyDirectory` が未設定なら**起動時に例外を投げて停止**します（一時キーのまま黙って起動し、再起動のたびに全世帯の認証情報が読めなくなる事故を防ぐため）。 |
 
@@ -285,6 +286,8 @@ az webapp config appsettings set -g <resource-group> -n <app-name> `
 - 認証は **App Service のシステム割り当てマネージドID**（`DefaultAzureCredential`）で、Vault に `Key Vault Secrets User` ロールを付与します。**Key Vault へ接続するための資格情報自体が存在しません。**
 - **シークレット名は `:` を `--` に置き換えます**（Key Vault の名前にコロンを使えないため）。例: `OrcaRouter:ApiKey` → `OrcaRouter--ApiKey`。App Service のアプリ設定で使う `__` とは別の記法です。
 - `KeyVault:Uri` が空（既定）のときは Key Vault を一切参照しません。**`git clone` して `dotnet run` するだけで動く、というゼロコンフィグの前提は変わりません。**
+- **Vault へ到達できなくてもアプリは起動します。** 初回読み込みの失敗は警告として記録し、起動は継続します（シークレットが必要な機能だけが個別に無効化されます）。Vault の一時的な不通でサイト全体が落ちるのを防ぐためです。
+- Azure 環境では Vault の公開アクセスがガバナンスポリシーで閉じられるため、**App Service と Key Vault / Azure SQL は Private Endpoint で接続**しています。構成は `docs/SECURITY.md` を参照。
 - 実装は `src/MimamoriTai.Web/Services/KeyVaultConfigurationExtensions.cs`、方針は `docs/SECURITY.md` を参照。
 
 実機（SwitchBot）へ切り替えるために必要な環境変数は以下のとおりです（`.env` ではなく環境変数または User Secrets として設定してください。プレースホルダー以外の実際の値をコミットしないこと）。

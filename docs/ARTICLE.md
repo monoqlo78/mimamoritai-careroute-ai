@@ -164,6 +164,8 @@ flowchart TB
 | LLM | [OrcaRouter](https://www.orcarouter.ai/)（OpenAI 互換 / 自動ルーティング） |
 | デバイス | SwitchBot Plug Mini (JP) |
 | 家族接点 | LINE Messaging API / LINE Login / LIFF |
+| 秘密の保管 | Azure Key Vault（マネージドID／Private Endpoint 経由） |
+| 閉域化 | Azure VNet 統合 ＋ Private Endpoint ＋ Private DNS（3-2） |
 
 図にするとこうですが、この流れは運用コンソールの中でそのまま動いています。数字はダミーではなく、その時点の実データです。
 
@@ -251,7 +253,7 @@ private static bool IsRetryable(int status) => status == 429 || status >= 500;
 
 ### 3-2. 秘密をどこに「置かなかった」か
 
-扱っているのが家庭の中なので、ここは最後まで削りませんでした。方針は3つだけです。**持たない・渡さない・見せない**。
+扱っているのが家庭の中なので、ここは最後まで削りませんでした。方針は4つだけです。**持たない・通さない・渡さない・見せない**。
 
 #### 持たない ― Key Vault とマネージドID
 
@@ -275,6 +277,70 @@ builder.AddMimamoriTaiKeyVault();
 これを間違えると、例外は出ずに**キーが空のまま起動して、呼び出したときだけ静かに失敗します**。4章と同じ壊れ方です。
 
 なお `KeyVault:Uri` が空のときはプロバイダーごと追加しません。`git clone` して `dotnet run` すればモックで全機能が動く、というゼロコンフィグをここでも壊さないためです。
+
+#### 通さない ― Private Endpoint と、サイトが全断した話
+
+デプロイ先のテナントには、Key Vault の公開アクセスを自動で無効化するガバナンスポリシーが効いていました。ある日サイトが丸ごと 503 になり、ログを落としたらこれでした。
+
+```
+Azure.RequestFailedException: Public network access is disabled and request is not from
+a trusted service nor via an approved private link. Status: 403 (Forbidden)
+   at ...AddMimamoriTaiKeyVault(...)
+   at Program.<Main>$(String[] args)
+dotnet "MimamoriTai.Web.dll" Aborted (core dumped) / exit code: 134
+```
+
+`AddAzureKeyVault()` の初回読み込みは**同期**なので、失敗すると例外が `Main` を突き抜けてプロセスごと落ちます。App Service はコールドスタートの連続失敗としてサイトを止めます。**シークレット1件のために全画面が落ちる**、割に合わない壊れ方でした。
+
+対処は2つ。まず**公開アクセスを開け直すのではなく Private Endpoint にしました**。ポリシーがまた閉じても関係ないからです。App Service を VNet 統合し、Key Vault と Azure SQL に Private Endpoint を立て、Private DNS ゾーンを VNet にリンクします。ここで一つ注意があって、**App Service は Key Vault の言う「信頼された Microsoft サービス」ではありません**。`bypass=AzureServices` では通らないので、IP 許可か Private Endpoint のどちらかが要ります。
+
+作ったのはこれだけです。
+
+| リソース | 役割 |
+| --- | --- |
+| VNet `vnet-mimamoritai` | 閉域の器 |
+| Subnet `snet-appsvc` | App Service の**リージョン統合用**（`Microsoft.Web/serverFarms` に委任） |
+| Subnet `snet-pe` | Private Endpoint 用 |
+| Private Endpoint（Key Vault） | `privatelink.vaultcore.azure.net` |
+| Private Endpoint（Azure SQL） | `privatelink.database.windows.net` |
+| Private DNS ゾーン × 2 | 上記2つを VNet にリンク |
+
+```
+App Service ──(VNet 統合)── snet-appsvc
+                                │  ※ RFC1918 宛だけ VNet へ
+                                ▼
+                             snet-pe ──▶ Private Endpoint ──▶ Key Vault
+                                     └─▶ Private Endpoint ──▶ Azure SQL
+```
+
+ハマりどころが2つありました。1つは**サブネットの委任**で、VNet 統合用のサブネットは `Microsoft.Web/serverFarms` に委任していないと統合できません。もう1つは**リージョンをまたげる**ことで、VNet は japanwest、Key Vault と SQL は japaneast にありますが、Private Endpoint は問題なく張れます。「同じリージョンに作り直さないと」と思い込んで一度手を止めたのですが、不要でした。
+
+もう一つ、`vnetRouteAllEnabled` は **false** のままにしました。true にすると全アウトバウンドが VNet 経由になって送信元 IP が変わり、外部サービス側の許可設定を壊しかねません。false なら **RFC1918 宛（＝Private Endpoint 宛）だけ**が VNet を通ります。DNS はこの設定に関係なく VNet 側が使われるので、名前解決は効いたままです。
+
+この「false のまま」は今回わりと効きました。使っている Azure SQL は**共有サーバー上のデータベース**で、サーバー単位のファイアウォールは自分のものではありません。route-all を有効にすると送信元 IP が変わって、**自分以外の利用者ごと巻き込んで落とす**ことになります。閉域化のために共有資産の設定を書き換えるのは、たいてい間違いだと思っています。**自分の側だけで閉じる**構成に寄せました。
+
+効いているかどうかは、名前が private IP に落ちるかで判定できます。
+
+```
+nslookup kv-mimamoritai.vault.azure.net
+→ 10.x.x.x   （public IP が返ってきたら DNS ゾーンのリンク漏れ）
+```
+
+そのうえで、**Vault が読めなくても起動は止めないようにしました**。
+
+```csharp
+try
+{
+    addProvider(builder, vaultUri);
+}
+catch (Exception ex)
+{
+    // 秘密が要る機能だけが無効化される。サイト全体を落とすより、そのほうがまし。
+    reportFailure($"Key Vault '{vaultUri}' could not be read at startup ...");
+}
+```
+
+fail fast は good practice ですが、**落とす範囲を間違えると可用性の敵になります**。「その機能だけ止める」と「全部止める」は、区別して設計する価値がありました。
 
 #### 渡さない ― 署名検証と、推測しない紐付け
 

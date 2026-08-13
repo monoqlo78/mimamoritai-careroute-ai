@@ -20,6 +20,32 @@
 - **反映**: `ReloadInterval` は30分です。シークレットをローテーションしても、再デプロイなしで最大30分後に反映されます。
 - **監査**: Key Vault 側にアクセスログが残るため、「どのIDがいつどのシークレットを読んだか」を後から追跡できます。アプリ設定に平文で置く方式では得られない性質です。
 
+### Key Vault へは Private Endpoint 経由で到達する
+
+ハッカソン環境のテナントには **Key Vault の `publicNetworkAccess` を `Disabled` に書き換えるガバナンスポリシー**（`keyvault_publicnetwork_modify`）が効いています。実際にこれが発動し、起動時の Key Vault 読み込みが `403 Forbidden`（"Public network access is disabled and request is not from a trusted service nor via an approved private link"）で失敗、プロセスが異常終了（exit code 134）して App Service がサイト全体を 503 でブロックする、という事故が起きました。
+
+対処として、公開アクセスを開け直すのではなく **Private Endpoint 方式**に切り替えています。ポリシーが再び公開アクセスを閉じても影響を受けません。
+
+| リソース | 役割 |
+| --- | --- |
+| `vnet-mimamoritai`（10.20.0.0/16） | 専用の仮想ネットワーク |
+| `snet-appsvc`（10.20.1.0/24） | App Service の VNet 統合用（`Microsoft.Web/serverFarms` に委任） |
+| `snet-pe`（10.20.2.0/24） | Private Endpoint 用 |
+| `pe-kv-mimamoritai` | Key Vault への Private Endpoint |
+| `pe-sql-mimamoritai` | Azure SQL への Private Endpoint |
+| `privatelink.vaultcore.azure.net` / `privatelink.database.windows.net` | 上記 VNet にリンクした Private DNS ゾーン |
+
+設計上の判断:
+
+- **App Service は Key Vault の "信頼された Microsoft サービス" ではありません。** そのため `bypass=AzureServices` では通らず、IP 許可か Private Endpoint のどちらかが必須です。IP 許可は App Service の送信元 IP が変わると壊れるので採用していません。
+- **`vnetRouteAllEnabled` は `false`** にしています。`true` にすると全アウトバウンドが VNet 経由になり送信元 IP が変わるため、共有の SQL サーバーや外部 API 側の許可設定を壊す恐れがあります。`false` なら **RFC1918 宛（＝Private Endpoint 宛）だけ**が VNet を通り、他は従来どおりです。DNS はこの設定に関係なく VNet の設定が使われるので、Private DNS ゾーンをリンクしておけば名前解決は効きます。
+- **SQL サーバーは他案件と共有**しているため、サーバー側の `publicNetworkAccess` やファイアウォールは一切変更していません。**Private Endpoint リソースだけを本プロジェクトのリソースグループ側に作成**しており、共有サーバーには承認済みの接続が1件増えるだけです。
+- **Key Vault が読めなくても起動は止めません。** 初回ロードは `AddMimamoriTaiKeyVault()` の中で `try/catch` して警告を出し、起動を継続します。秘密情報が必要な機能は個別に無効化されるので、サイト全体を落とすより安全です（上記の 503 はこの穴が原因でした）。
+
+### Microsoft Fabric を Private Link にしなかった理由
+
+Fabric にも Private Link はありますが、**採用していません**。テナントレベルの Private Link はテナント全体の Fabric アクセスに影響し、ワークスペースレベルでも前提としてテナント設定「ワークスペースレベルの受信ネットワーク規則を構成する」を Fabric 管理者が有効化する必要があります。本プロジェクトは**共有テナントの一利用者**であり、他の利用者に影響する設定を変更しない方針のため、ここは意図的に既定（公開アクセス）のままにしています。Fabric 側のデータ保護は、ワークスペースのロール割り当てとサービスプリンシパルの権限で担保しています。
+
 
 ## 世帯ごとのSwitchBot認証情報（Data Protectionによる暗号化）
 
