@@ -19,12 +19,26 @@ namespace MimamoriTai.Web.Services;
 /// <c>OrcaRouter:ApiKey</c>. Because this provider is added last it wins over
 /// appsettings.json, and because it is registered only when <c>KeyVault:Uri</c> is set,
 /// the app still starts with zero configuration (all-mock demo mode) when it is absent.
+///
+/// The very first load happens synchronously inside <c>AddAzureKeyVault</c>, so a vault that
+/// is temporarily unreachable (network policy flipping <c>publicNetworkAccess</c> to disabled,
+/// a private endpoint whose DNS has not propagated yet, a managed identity that lost its role
+/// assignment) used to abort the process before it could serve a single request, which App
+/// Service then turns into a hard 503 after a few consecutive cold-start failures. That is a
+/// worse outcome than starting without the vault: the app already fails fast, per feature, on
+/// any secret it genuinely needs. So the load is best-effort and a failure is only reported.
 /// </summary>
 public static class KeyVaultConfigurationExtensions
 {
     public const string UriKey = "KeyVault:Uri";
 
     public static WebApplicationBuilder AddMimamoriTaiKeyVault(this WebApplicationBuilder builder)
+        => builder.AddMimamoriTaiKeyVault(AddAzureKeyVaultProvider, WriteStartupWarning);
+
+    internal static WebApplicationBuilder AddMimamoriTaiKeyVault(
+        this WebApplicationBuilder builder,
+        Action<WebApplicationBuilder, Uri> addProvider,
+        Action<string> reportFailure)
     {
         var uri = builder.Configuration[UriKey];
 
@@ -33,6 +47,23 @@ public static class KeyVaultConfigurationExtensions
             return builder;
         }
 
+        try
+        {
+            addProvider(builder, vaultUri);
+        }
+        catch (Exception ex)
+        {
+            reportFailure(
+                $"Key Vault '{vaultUri}' could not be read at startup ({ex.GetType().Name}: {ex.Message}). " +
+                "Continuing without it: configuration falls back to app settings, and any feature whose " +
+                "secret is missing stays disabled instead of taking the whole site down.");
+        }
+
+        return builder;
+    }
+
+    private static void AddAzureKeyVaultProvider(WebApplicationBuilder builder, Uri vaultUri)
+    {
         var client = new SecretClient(vaultUri, new DefaultAzureCredential());
 
         builder.Configuration.AddAzureKeyVault(
@@ -43,7 +74,8 @@ public static class KeyVaultConfigurationExtensions
                 // non-fatal: the previously loaded values stay in effect.
                 ReloadInterval = TimeSpan.FromMinutes(30)
             });
-
-        return builder;
     }
+
+    private static void WriteStartupWarning(string message)
+        => Console.Error.WriteLine($"warn: {typeof(KeyVaultConfigurationExtensions).FullName}[0]{Environment.NewLine}      {message}");
 }
