@@ -9,6 +9,10 @@ using MimamoriTai.Web.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Pull every secret from Key Vault before anything reads configuration. No-op when
+// KeyVault:Uri is unset, so `dotnet run` with zero configuration still works.
+builder.AddMimamoriTaiKeyVault();
+
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 

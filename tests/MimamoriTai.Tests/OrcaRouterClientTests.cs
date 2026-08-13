@@ -46,6 +46,16 @@ public sealed class OrcaRouterClientTests(Xunit.Abstractions.ITestOutputHelper o
             return this;
         }
 
+        public ScriptedHandler ThenTimeout()
+        {
+            // HttpClient surfaces its own Timeout as TaskCanceledException with the
+            // caller's token still unsignalled -- the exact shape the client treats
+            // as "this model was too slow".
+            _responses.Enqueue(() => throw new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout elapsing."));
+
+            return this;
+        }
+
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             Requests.Add(request);
@@ -348,5 +358,84 @@ public sealed class OrcaRouterClientTests(Xunit.Abstractions.ITestOutputHelper o
 
         var body = JsonDocument.Parse(handler.Bodies[0]).RootElement;
         Assert.Equal("orcarouter/auto", body.GetProperty("model").GetString());
+    }
+
+    /// <summary>
+    /// The auto router draws reasoning models whose latency for the same prompt has
+    /// been measured between 15s and over 120s, so it can exhaust the HTTP timeout.
+    /// Retrying auto just draws another slow model and burns the timeout again, which
+    /// is what left the dashboard summary empty after three full-length attempts.
+    /// After a timeout the client must escape to the fast model instead.
+    /// </summary>
+    [Fact]
+    public async Task Timeout_on_the_auto_router_retries_on_the_fast_model()
+    {
+        var handler = new ScriptedHandler()
+            .ThenTimeout()
+            .Then(HttpStatusCode.OK, Ok(model: "openai/gpt-4.1-mini"));
+
+        var client = Create(handler, new OrcaRouterOptions
+        {
+            ApiKey = ApiKey,
+            Model = "orcarouter/auto",
+            FastModel = "openai/gpt-4.1-mini"
+        });
+
+        var result = await client.CompleteAsync(Prompt(), "summary");
+
+        Assert.True(result.Success);
+        Assert.Equal(2, handler.Bodies.Count);
+        Assert.Equal("orcarouter/auto", JsonDocument.Parse(handler.Bodies[0]).RootElement.GetProperty("model").GetString());
+        Assert.Equal("openai/gpt-4.1-mini", JsonDocument.Parse(handler.Bodies[1]).RootElement.GetProperty("model").GetString());
+    }
+
+    /// <summary>
+    /// A path already pinned to the fast model has nowhere faster to escape to, so a
+    /// timeout there must retry the same model rather than silently changing routing.
+    /// </summary>
+    [Fact]
+    public async Task Timeout_on_the_fast_model_retries_the_same_model()
+    {
+        var handler = new ScriptedHandler()
+            .ThenTimeout()
+            .Then(HttpStatusCode.OK, Ok(model: "openai/gpt-4.1-mini"));
+
+        var client = Create(handler, new OrcaRouterOptions
+        {
+            ApiKey = ApiKey,
+            Model = "orcarouter/auto",
+            FastModel = "openai/gpt-4.1-mini"
+        });
+
+        var result = await client.CompleteAsync(Prompt(), "summary-fast");
+
+        Assert.True(result.Success);
+        Assert.Equal(2, handler.Bodies.Count);
+        Assert.All(handler.Bodies, b =>
+            Assert.Equal("openai/gpt-4.1-mini", JsonDocument.Parse(b).RootElement.GetProperty("model").GetString()));
+    }
+
+    /// <summary>
+    /// Escaping to the fast model must not turn a caller-driven cancellation into a
+    /// second request: an abandoned page load should stop costing tokens immediately.
+    /// </summary>
+    [Fact]
+    public async Task Caller_cancellation_does_not_escape_to_the_fast_model()
+    {
+        var handler = new ScriptedHandler().ThenTimeout();
+        var client = Create(handler, new OrcaRouterOptions
+        {
+            ApiKey = ApiKey,
+            Model = "orcarouter/auto",
+            FastModel = "openai/gpt-4.1-mini"
+        });
+
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+
+        var result = await client.CompleteAsync(Prompt(), "summary", ct: cts.Token);
+
+        Assert.False(result.Success);
+        Assert.Single(handler.Bodies);
     }
 }

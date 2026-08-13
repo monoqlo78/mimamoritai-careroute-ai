@@ -55,10 +55,11 @@ public sealed class OrcaRouterClient(
 
         var attempts = Math.Max(_options.MaxRetries, 0) + 1;
         AiCompletionResult? last = null;
+        var escapedSlowModel = false;
 
         for (var attempt = 1; attempt <= attempts; attempt++)
         {
-            var (result, retryAfter) = await SendOnceAsync(messages, purpose, jsonMode, model, sw, ct);
+            var (result, retryAfter, timedOut) = await SendOnceAsync(messages, purpose, jsonMode, model, sw, ct);
             last = result;
 
             if (result.Success || retryAfter is null || attempt == attempts)
@@ -69,6 +70,20 @@ public sealed class OrcaRouterClient(
             logger.LogWarning(
                 "OrcaRouter request for {Purpose} is retryable ({Error}); attempt {Attempt}/{Attempts} after {Delay}s.",
                 purpose, result.Error, attempt, attempts, retryAfter.Value.TotalSeconds);
+
+            // Retrying "orcarouter/auto" after a timeout tends to draw another reasoning
+            // model and time out again, so the caller waits the full timeout once per
+            // attempt and still gets nothing. Once the auto router has proven too slow
+            // for this request, fall back to the fast chat model for the remaining
+            // attempts: a late answer from a known-fast model beats no answer at all.
+            if (timedOut && !escapedSlowModel && CanEscapeTo(model, out var fastModel))
+            {
+                escapedSlowModel = true;
+                logger.LogWarning(
+                    "OrcaRouter request for {Purpose} timed out on {Model}; retrying on {FastModel}.",
+                    purpose, model, fastModel);
+                model = fastModel;
+            }
 
             try
             {
@@ -83,7 +98,19 @@ public sealed class OrcaRouterClient(
         return last!;
     }
 
-    private async Task<(AiCompletionResult Result, TimeSpan? RetryAfter)> SendOnceAsync(
+    /// <summary>
+    /// True when <paramref name="current"/> is not already the fast model and a fast
+    /// model is configured, i.e. when a timed-out request has somewhere faster to go.
+    /// </summary>
+    private bool CanEscapeTo(string current, out string fastModel)
+    {
+        fastModel = _options.FastModel;
+
+        return !string.IsNullOrWhiteSpace(fastModel)
+            && !string.Equals(current, fastModel, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task<(AiCompletionResult Result, TimeSpan? RetryAfter, bool TimedOut)> SendOnceAsync(
         IReadOnlyList<AiMessage> messages,
         string purpose,
         bool jsonMode,
@@ -128,7 +155,7 @@ public sealed class OrcaRouterClient(
                 var result = new AiCompletionResult(false, string.Empty, router, resolvedModel, sw.ElapsedMilliseconds,
                     $"OrcaRouter returned {status}.");
 
-                return (result, IsRetryable(status) ? ResolveRetryDelay(response) : null);
+                return (result, IsRetryable(status) ? ResolveRetryDelay(response) : null, false);
             }
 
             var body = await response.Content.ReadFromJsonAsync<ChatCompletionResponse>(cancellationToken: ct);
@@ -139,13 +166,13 @@ public sealed class OrcaRouterClient(
                 resolvedModel = body.Model;
             }
 
-            return (new AiCompletionResult(true, content, router, resolvedModel, sw.ElapsedMilliseconds), null);
+            return (new AiCompletionResult(true, content, router, resolvedModel, sw.ElapsedMilliseconds), null, false);
         }
         catch (TaskCanceledException) when (ct.IsCancellationRequested)
         {
             // Caller-driven cancellation is not a router failure and must not be retried.
             logger.LogWarning("OrcaRouter request for {Purpose} was cancelled by the caller.", purpose);
-            return (new AiCompletionResult(false, string.Empty, DisplayName, model, sw.ElapsedMilliseconds, "Canceled"), null);
+            return (new AiCompletionResult(false, string.Empty, DisplayName, model, sw.ElapsedMilliseconds, "Canceled"), null, false);
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
         {
@@ -155,7 +182,12 @@ public sealed class OrcaRouterClient(
 
             // A timeout or transport error is worth one more try; a malformed body is not.
             var retryable = ex is HttpRequestException or TaskCanceledException;
-            return (result, retryable ? TimeSpan.FromSeconds(1) : null);
+
+            // The caller's token is not cancelled here, so a TaskCanceledException means
+            // HttpClient.Timeout elapsed -- the model was too slow, not the request wrong.
+            var timedOut = ex is TaskCanceledException;
+
+            return (result, retryable ? TimeSpan.FromSeconds(1) : null, timedOut);
         }
     }
 
