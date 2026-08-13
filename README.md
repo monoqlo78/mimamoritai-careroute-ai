@@ -5,7 +5,21 @@
 
 📝 開発記録（Qiita）: [離れて暮らす高齢の家族を見守るサービスを作った ― 本人は「エアコンつけて」、家族は LINE で様子がわかる（Azure + Microsoft Fabric + OrcaRouter）](https://qiita.com/monoqlo78/items/27ea5bfa760bd8e3c3b7) — 同じ内容はリポジトリ内の [docs/ARTICLE.md](docs/ARTICLE.md) にもあります。
 
-🎬 デモ動画（3分11秒・字幕＋ナレーション入り・本番環境の画面録画）: [docs/demo/mimamoritai-demo.mp4](docs/demo/mimamoritai-demo.mp4) — 収録内容の一覧は [docs/demo/README.md](docs/demo/README.md) にあります。
+🎬 デモ動画（3分11秒・字幕＋ナレーション入り・本番環境の画面録画）: https://youtu.be/TnM-RHFZ_Lc — 原本は [docs/demo/mimamoritai-demo.mp4](docs/demo/mimamoritai-demo.mp4)、収録内容の一覧は [docs/demo/README.md](docs/demo/README.md) にあります。
+
+---
+
+**まず、動いているところから。**
+
+![運用コンソール ― 家の中の「いま」が流れていく](docs/images/dataflow.gif)
+
+家じゅうのデバイスから届いたイベントが、Azure SQL と Microsoft Fabric へ流れていく様子です。WebGL で描画していて、**映っている数字はダミーではなく、その時点の実データ**です。下段の「同期ジョブ 停止中」も演出ではなく、本当に止まっている状態を表示しています。
+
+![マスコット「ミマモ」](docs/images/mascot.gif)
+
+ダッシュボードに常駐する3Dマスコットの「ミマモ」です。**話しかけると反応します**。既製の素材ではなく、Blender を MCP 経由で操作してモデリングし、glTF として書き出したものです。
+
+---
 
 ## これは何か・解決したい課題
 
