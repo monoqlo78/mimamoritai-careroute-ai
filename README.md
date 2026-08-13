@@ -90,6 +90,10 @@ flowchart TB
 
 ## 安全設計（このプロジェクトの差別化ポイント）
 
+安全設計は2つの軸で考えています。**AIに危険な判断をさせないこと**と、**秘密情報を扱う場所そのものを減らすこと**です。方針の全文は [docs/SECURITY.md](docs/SECURITY.md) を参照してください。
+
+### AIに危険な判断をさせない
+
 高齢者の家庭に置かれた家電を、AIの自然言語理解だけで自由に操作させることはできません。そこで `DeviceSafetyPolicy` が次のガードレールをすべて満たした場合のみ、ONへの操作を許可します。
 
 1. **機器の安全分類**: `DeviceType` は `Safe`（Light, Fan, DemoDevice）とそれ以外すべての `Restricted`（Heater, Kettle, Microwave, CookingDevice, Plug, MotionSensor, ContactSensor, Unknown）に分類され、**AIからのON/Toggle操作は `Safe` のみ許可**。`Restricted` 機器でも `TurnOff`（消す操作）は安全側なので許可されます（非対称なガードレール）。
@@ -99,6 +103,16 @@ flowchart TB
 5. **すべての試行を監査**: 成功・失敗・**拒否**を問わず、すべての操作要求は `DeviceCommand` として永続化される。
 
 さらに、**LLMの出力は一切信用しません**。`IntentParser.TryParse` は不正なJSONに対して `null` を返し、`AssistantOrchestrator` は **1回だけ**修復を試みてそれでも失敗すれば、何も実行せずに諦めます。
+
+### 秘密情報を「持たない・渡さない・見せない」
+
+| 方針 | 実装 |
+| --- | --- |
+| **持たない** | 本番の App Service にはシークレットを1件も置きません。起動時に Azure Key Vault から読み込み、認証は**システム割り当てマネージドID**（`DefaultAzureCredential`）で行います。**Key Vault へ接続するための資格情報自体が存在しません。**（後述の「本番（Azure）では Key Vault から読み込む」） |
+| **渡さない** | LINE Webhook はチャネルシークレットを鍵とした HMAC-SHA256 を `CryptographicOperations.FixedTimeEquals`（**タイミング攻撃に耐性のある定数時間比較**）で検証し、失敗したリクエストは **401 Unauthorized** を返して `AssistantOrchestrator` には一切渡しません。送信元と世帯の紐付けは6桁の連携コード（**ハッシュ保存**・有効期限10分・使い捨て・試行回数制限）で行い、**既定では未リンクの送信元をどの世帯にも自動接続しません**（`Line:AllowDefaultHouseholdFallback=false`）。 |
+| **見せない** | 世帯ごとの SwitchBot Token/Secret は ASP.NET Core Data Protection で暗号化し、`EncryptedToken`/`EncryptedSecret` のみを保存します（**平文では一切保存せず、独自の可逆暗号も使いません**）。復号は世帯単位の短命なスコープ内だけで行い、**保存後の値が画面に再表示されることはありません**。本番で `DataProtection:KeyDirectory` が未設定なら**起動時に例外を投げて停止**します（一時キーのまま黙って起動し、再起動のたびに全世帯の認証情報が読めなくなる事故を防ぐため）。 |
+
+なお、**秘密情報が1つも無くても全機能が動く**という前提は変えていません。`KeyVault:Uri` が空（既定）のときは Key Vault を一切参照しないため、`git clone` して `dotnet run` するだけで動きます。
 
 ## クイックスタート（秘密情報なしで動作）
 

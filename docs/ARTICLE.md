@@ -262,6 +262,8 @@ builder.AddMimamoriTaiKeyVault();
 
 #### 渡さない ― 署名検証と、推測しない紐付け
 
+そもそも**パスワードを預かっていません**。ログインは OpenID Connect（Entra External ID / LINE Login）に委譲していて、こちらが保存するのは「どの発行元の、どのサブジェクトか」だけです。持っていないものは漏れません。
+
 LINE の Webhook は署名（HMAC-SHA256）を検証してから中身を見ます。比較は定数時間で行います。
 
 ```csharp
@@ -436,7 +438,8 @@ Draco をかければ 2.1MB まで落ちますが、読み込む側に専用の�
 ## 7. リンク
 
 - リポジトリ: https://github.com/monoqlo78/mimamoritai-careroute-ai
-- **デモ動画（3分11秒・字幕＋ナレーション入り）**: [docs/demo/mimamoritai-demo.mp4](https://github.com/monoqlo78/mimamoritai-careroute-ai/blob/main/docs/demo/mimamoritai-demo.mp4)
+- **デモ動画（3分11秒・字幕＋ナレーション入り）**: https://youtu.be/TnM-RHFZ_Lc （原本は [docs/demo/mimamoritai-demo.mp4](https://github.com/monoqlo78/mimamoritai-careroute-ai/blob/main/docs/demo/mimamoritai-demo.mp4)）
+- 安全設計の方針（秘密情報の扱い・監査ログ）: [docs/SECURITY.md](https://github.com/monoqlo78/mimamoritai-careroute-ai/blob/main/docs/SECURITY.md)
 - 稼働証跡（開発機以外からの到達性・TLS・画面）: [docs/EVIDENCE.md](https://github.com/monoqlo78/mimamoritai-careroute-ai/blob/main/docs/EVIDENCE.md)
 
 > デモ動画は、本番環境（Azure App Service）を実際に操作して画面録画したものです。扇風機をONにするところ、ストーブのONが**確認すら出さずに拒否される**ところ、そのOFFは通るところ、家族がLINEから様子を聞くところ、Fabricへ実データを送るところまでを、編集で切らずにそのまま入れています。
