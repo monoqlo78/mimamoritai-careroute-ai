@@ -118,6 +118,25 @@ flowchart TB
 
 **アプリが Eventhouse を直接クエリすることはありません。**読み出しは Fabric Data Agent 越しだけです。逆に Fabric SQL DB はコンソール専用で、アプリが読み返すことはありません。
 
+#### 取り込みのタイミング
+
+Fabric への書き込みは**すべてアプリ側からの push** です。Fabric 側のパイプライン・ミラーリング・スケジュールジョブは使っていません。すべて `BackgroundService` で、**例外は必ず捕捉して次サイクルで再試行**します。
+
+| 何を | いつ | 実装 | 既定間隔 |
+| --- | --- | --- | --- |
+| **DeviceEvents**（即時） | SwitchBot をポーリングして**状態変化を検出し Azure SQL に保存した直後**に、同じサイクル内で続けて送信 | `SwitchBotPollingBackgroundService` | 5分（`SwitchBot:PollIntervalMinutes`） |
+| **SwitchBotPlugReadings**（即時） | 同じサイクル内。**状態変化が無くても毎回**（電力の時系列を切らさないため） | 同上 | 同上 |
+| **DeviceEvents**（取りこぼしの再送） | `PublishedToStreamAtUtc` が null の行を古い順に最大200件 | `EventStreamPublishBackgroundService` | 5分（`FabricPublish:IntervalMinutes`） |
+| **SwitchBotPlugReadings**（同上） | 同じ契約の別サービス | `PlugMiniReadingPublishBackgroundService` | 同上 |
+| **Fabric SQL（運用コンソール）** | 世帯横断の集計スナップショットを4テーブルへ MERGE | `FabricConsoleSyncBackgroundService` | 15分（`FabricConsoleSync:IntervalMinutes`） |
+| 手動トリガー | `POST /api/stream/publish`／ダッシュボードの「Fabricへ送信」ボタン、`POST /api/fabric/sync` | — | 任意 |
+
+**2段構え（即時 push ＋ 未送信行のスイープ）**にしてあるのが要点です。送信できた行にだけ `PublishedToStreamAtUtc` のスタンプを押し、**失敗した行はスタンプを押さずに残す**ので、Fabric 容量が一時停止・スロットリングされていても復旧後に自然に追いつきます。落ちている間のデータが欠けません。
+
+再試行は `PeriodicBackoff` で、**失敗が続くと 2倍・4倍…と最大30分（コンソール同期は2時間）まで下がり、1回成功したら即座に通常間隔へ戻ります**。これは F2 容量のとき、存在しないテーブルへの取り込みが400を返し続け、1分ごとの再送が容量を飽和させて運用コンソールごと429で落ちた事故を受けての実装です。
+
+取り込みの口は **Eventhouse の streaming ingestion REST エンドポイント**（`v1/rest/ingest/{db}/{table}?streamFormat=json&mappingName=...`）に**改行区切りJSON（NDJSON）**を POST するだけです。Kusto の Ingest SDK は使っていません。認証はマネージドID（`DefaultAzureCredential`）でパスワードレス。
+
 #### 質問への回答は「まず SQL、傾向のときだけ Fabric」
 
 `AssistantOrchestrator` は毎回まずアプリDBから答えを作り（`LocalDataQuestionService`）、そのうえで**質問の性質が「傾向・比較」のときだけ** Data Agent に問い合わせて、返ってきたら要約に重ねます。
