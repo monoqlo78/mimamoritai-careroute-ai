@@ -13,7 +13,7 @@
 
 ![マスコット「ミマモ」](./images/mascot.gif)
 
-ダッシュボードに住んでいる3Dマスコットの「ミマモ」です。**話しかけると反応します**。これも既製の素材ではなく、MCP 経由で自分でモデリングして書き出しました（6章）。
+ダッシュボードに住んでいる3Dマスコットの「ミマモ」です。**話しかけると反応します**。これも既製の素材ではなく、**自作の MCP サーバー**で Blender を動かして自分でモデリングしました（6章）。
 
 ▶ **通しのデモ動画（3分11秒・字幕＋ナレーション入り）**: https://youtu.be/TnM-RHFZ_Lc
 
@@ -413,14 +413,18 @@ else { <div data-mascot-model="..."><canvas></canvas></div> }
 
 ---
 
-## 6. 余談：画面のマスコットも、MCP を使って自分で作った
+## 6. 余談：画面のマスコットも、自作の MCP サーバーで作った
 
 トップにいるマスコット「ミマモ」は、買ってきた素材ではなく **Blender で作った自作の 3D モデル**です。ただ、私が Blender を直接触っていた時間はほとんどありません。
 
 - **Blender MCP** … Blender を外から Python で操作する（＝形を作る側）
-- **Windows の画面操作 MCP** … Blender のビューポートをそのままスクリーンショットで撮る（＝見る側）
+- **[WindowsComputerUseMCP](https://github.com/monoqlo78/WindowsComputerUseMCP)** … Blender のビューポートをそのままスクリーンショットで撮る（＝見る側）
+
+後者は**以前に自分で作って公開している MCP サーバー**です。MCP クライアントから Windows のデスクトップアプリを、人間と同じ手段（画面キャプチャ・マウス・キーボード・UI Automation）で操作できるようにするもので、こちらも .NET 10 で書いています。
 
 この2つを組み合わせて、**「作る」はスクリプト、「見えているか」は画面キャプチャ**という分担で進めました。3D はコードを書いただけでは正しくなったか判断できないので、毎回レンダリングして目で見る工程が必ず要ります。そこが自動で回せたのが大きくて、頭の大きさ・目の位置・首の角度あたりは十数回作り直しています（採用したのは v16）。
+
+ちなみにこの MCP サーバーにも、**緊急停止（`Ctrl+Shift+F12` でどの画面からでも全入力を遮断）・危険操作の承認要求・全操作の監査ログ（入力文字列は既定でマスクし、文字数とハッシュだけ残す）**を入れてあります。2章に書いた「AI に全部は任せない」と同じ考え方で、AI にマウスとキーボードを渡す以上、**人間がいつでも取り上げられる手綱**は先に用意しておく、というつもりで作ったものでした。今回はそれが自分自身の役に立った形です。
 
 画面の中では、こんなふうに動いています。首をかしげて、まばたきして、頭の上のハートが少し遅れて揺れます。
 
@@ -457,6 +461,7 @@ Draco をかければ 2.1MB まで落ちますが、読み込む側に専用の�
 - **デモ動画（3分11秒・字幕＋ナレーション入り）**: https://youtu.be/TnM-RHFZ_Lc （原本は [docs/demo/mimamoritai-demo.mp4](https://github.com/monoqlo78/mimamoritai-careroute-ai/blob/main/docs/demo/mimamoritai-demo.mp4)）
 - 安全設計の方針（秘密情報の扱い・監査ログ）: [docs/SECURITY.md](https://github.com/monoqlo78/mimamoritai-careroute-ai/blob/main/docs/SECURITY.md)
 - 稼働証跡（開発機以外からの到達性・TLS・画面）: [docs/EVIDENCE.md](https://github.com/monoqlo78/mimamoritai-careroute-ai/blob/main/docs/EVIDENCE.md)
+- マスコット制作に使った自作 MCP サーバー: https://github.com/monoqlo78/WindowsComputerUseMCP （6章）
 
 > デモ動画は、本番環境（Azure App Service）を実際に操作して画面録画したものです。扇風機をONにするところ、ストーブのONが**確認すら出さずに拒否される**ところ、そのOFFは通るところ、家族がLINEから様子を聞くところ、Fabricへ実データを送るところまでを、編集で切らずにそのまま入れています。
 >

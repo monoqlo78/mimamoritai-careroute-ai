@@ -17,7 +17,7 @@
 
 ![マスコット「ミマモ」](docs/images/mascot.gif)
 
-ダッシュボードに常駐する3Dマスコットの「ミマモ」です。**話しかけると反応します**。既製の素材ではなく、Blender を MCP 経由で操作してモデリングし、glTF として書き出したものです。
+ダッシュボードに常駐する3Dマスコットの「ミマモ」です。**話しかけると反応します**。既製の素材ではなく、Blender MCP と自作の MCP サーバー [WindowsComputerUseMCP](https://github.com/monoqlo78/WindowsComputerUseMCP)（「作る」はスクリプト、「見えているか」は画面キャプチャ）を組み合わせてモデリングし、glTF として書き出したものです。
 
 ---
 
