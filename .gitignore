@@ -72,6 +72,9 @@ assets/mimamo-opus-three-views.png
 assets/build_log.txt
 assets/validate_log.txt
 
+## Office のロックファイル（編集中に生成される一時ファイル）
+~$*
+
 ## OS
 .DS_Store
 Thumbs.db
