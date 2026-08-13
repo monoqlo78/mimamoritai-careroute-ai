@@ -88,6 +88,22 @@ flowchart TB
 - **データQ&A**: Microsoft Fabric Data Agent が未設定の場合、`LocalDataQuestionService` がアプリDBから直接キーワードベースで回答。
 - **ゼロシークレットのデモデータ**: `DemoDataSeeder` が14日分の決定論的な生活データ（起床遅延・深夜活動・低活動の3パターンを注入済み）を自動投入。
 
+## AIルーティング（OrcaRouter）
+
+LLM 呼び出しは [OrcaRouter](https://www.orcarouter.ai/) に集約しています。OpenAI 互換のため `BaseUrl` と `Bearer` を差し替えるだけでよく、1つのクライアント実装（`OrcaRouterClient`）から複数プロバイダのモデルを使い分けられます。既定は名前付きルーターの `orcarouter/auto` です。
+
+方針は **「基本は自動に任せ、締切のある経路と JSON を要求する経路だけ固定する」**。
+
+| 経路 | `purpose` | 解決先 | 理由 |
+| --- | --- | --- | --- |
+| 意図解析 | `intent` | 固定モデル | `response_format: json_object` に非対応のモデルへ解決された回だけ壊れるため |
+| LINE Webhook | `summary-fast` | 固定の速いモデル | 応答に締切がある（`auto` は 5.6〜51 秒と分散が大きい） |
+| Web UI / API | `summary` | `orcarouter/auto` | 締切が無いので自動ルーティングの利点をそのまま活かす |
+
+`-fast` はチャネル名ではなく**「締切がある呼び出し」を表す接尾辞**で、呼ぶ側が「自分は待てない」と宣言する形にしています。あわせて `extra_body.models` にフォールバックチェーン（最大5件）を渡し、**429 と 5xx のみ再試行**します（4xx はこちらの投げ方の問題なので再試行しません）。
+
+応答ヘッダの `X-Orca-Router` / `X-Orca-Resolved-Model` から**実際に応答したモデル名**を取り出して `AiRequestLog` に記録し、ダッシュボードに表示します。ルーティングを任せる以上、**任せた結果が見えている必要がある**という考えです。
+
 ## 安全設計（このプロジェクトの差別化ポイント）
 
 安全設計は2つの軸で考えています。**AIに危険な判断をさせないこと**と、**秘密情報を扱う場所そのものを減らすこと**です。方針の全文は [docs/SECURITY.md](docs/SECURITY.md) を参照してください。
