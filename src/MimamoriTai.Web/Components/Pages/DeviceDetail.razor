@@ -289,6 +289,44 @@ else
         </div>
     </details>
 
+    @if (_telemetry.Count > 0)
+    {
+        <details class="detail-panel">
+            <summary>
+                <span>電力・電圧・電流の推移</span>
+                <span class="summary-meta">直近@(PowerUsageService.TelemetryHours)時間</span>
+            </summary>
+            <div class="detail-content">
+                @* Three separate charts rather than one with three lines: watts, volts and
+                   milliamps span wildly different magnitudes (0.3W against 104V against
+                   314mA), so plotting them together would flatten two of them into the
+                   axis. Each keeps its own scale and says what that scale is. *@
+                <SparkLine Points="Series(s => s.Watts)" Caption="消費電力"
+                           Current="@Latest(s => s.Watts, "W", 1)" Unit="W" Decimals="1"
+                           AriaLabel="@SeriesAriaLabel("消費電力", s => s.Watts, "ワット")"
+                           Class="device-spark" />
+
+                <SparkLine Points="Series(s => s.CurrentMa)" Caption="電流"
+                           Current="@Latest(s => s.CurrentMa, "mA", 0)" Unit="mA" Decimals="0"
+                           AriaLabel="@SeriesAriaLabel("電流", s => s.CurrentMa, "ミリアンペア")"
+                           Class="device-spark" />
+
+                <SparkLine Points="Series(s => s.VoltageV)" Caption="電圧"
+                           Current="@Latest(s => s.VoltageV, "V", 1)" Unit="V" Decimals="1"
+                           AriaLabel="@SeriesAriaLabel("電圧", s => s.VoltageV, "ボルト")"
+                           Class="device-spark" />
+
+                @* Voltage is the supply, not the resident: it barely moves and says
+                   nothing about whether anyone is home. Saying so stops a family reading
+                   a flat line as a broken sensor. *@
+                <p class="chart-note">
+                    消費電力と電流は家電の使われ方、電圧は電力会社から届いている電気の状態を表します。
+                    電圧はほとんど変わらないのが正常です。
+                </p>
+            </div>
+        </details>
+    }
+
     <details class="detail-panel" open>
         <summary>
             <span>直近@(_model.PeriodDays)日間の使用回数</span>
@@ -325,6 +363,7 @@ else
 
     private DeviceDetailModel? _model;
     private PowerUsageSummary _power = PowerUsageSummary.Empty;
+    private IReadOnlyList<PlugSample> _telemetry = [];
     private FabricAnswer? _insight;
     private bool _insightLoading;
     private bool _notFoundOrDenied;
@@ -396,6 +435,42 @@ else
             + string.Join("、", PowerBars().Select(p => $"{p.Label} {p.Display}"));
     }
 
+    /// <summary>
+    /// One measured quantity as a chartable series, dropping the samples where the plug
+    /// reported nothing. Those are left out rather than plotted as zero: a missing
+    /// reading would otherwise draw a spike down to the axis that never happened.
+    /// </summary>
+    private IReadOnlyList<SparkPoint> Series(Func<PlugSample, double?> pick) =>
+        [.. _telemetry
+            .Where(s => pick(s) is not null)
+            .Select(s => new SparkPoint(HouseholdTime.ToLocal(s.At), pick(s)!.Value))];
+
+    private string Latest(Func<PlugSample, double?> pick, string unit, int decimals)
+    {
+        var value = _telemetry.LastOrDefault(s => pick(s) is not null);
+        return value is null ? "—" : $"{pick(value)!.Value.ToString($"F{decimals}")} {unit}";
+    }
+
+    /// <summary>
+    /// Screen readers get the shape of the series rather than every sample: 288 readings
+    /// read aloud is unusable, while "between X and Y, now Z" is the same conclusion a
+    /// sighted reader draws from the line.
+    /// </summary>
+    private string SeriesAriaLabel(string name, Func<PlugSample, double?> pick, string unit)
+    {
+        var points = Series(pick);
+        if (points.Count == 0)
+        {
+            return $"{name}の記録はまだありません";
+        }
+
+        var min = points.Min(p => p.Value);
+        var max = points.Max(p => p.Value);
+        var now = points[^1].Value;
+
+        return $"{name}の推移：最小 {min:0.#}{unit}、最大 {max:0.#}{unit}、最新 {now:0.#}{unit}";
+    }
+
     private static string TrendWord(PowerUsageTrend trend) => trend switch
     {
         PowerUsageTrend.Higher => "いつもより多め",
@@ -451,6 +526,10 @@ else
         _power = _model is null
             ? PowerUsageSummary.Empty
             : await PowerUsage.GetAsync(_model.HouseholdId, DeviceId);
+
+        _telemetry = _model is null
+            ? []
+            : await PowerUsage.GetTelemetryAsync(_model.HouseholdId, DeviceId);
 
         if (!includeInsight)
         {

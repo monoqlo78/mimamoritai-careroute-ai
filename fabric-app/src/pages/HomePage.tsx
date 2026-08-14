@@ -29,6 +29,8 @@ import {
   riskDistribution,
   routerModels,
   routerSummary,
+  scopeRows,
+  type DataScope,
 } from '@/services/analytics';
 import {
   beginRefresh,
@@ -58,6 +60,11 @@ export function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [origin, setOrigin] = useState<DataOrigin>('fabric');
   const [energyDays, setEnergyDays] = useState(7);
+
+  // Production by default. An operator opening this console is asking about real
+  // homes, and the seeded demo household is the larger of the two by event count --
+  // leaving it in by default makes every chart mostly describe data nobody lives in.
+  const [scope, setScope] = useState<DataScope>('Production');
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -96,21 +103,35 @@ export function HomePage() {
   // Refreshes keep the previous numbers on screen instead of blanking them.
   const firstLoad = loading && !hasLoaded;
 
-  const totals = summarize(households);
-  const flow = pipelineStats(households, alerts, activity, origin, aiCalls);
-  const timeline = alertsByDay(alerts);
-  const risks = riskDistribution(alerts);
-  const delivery = deliveryStats(alerts);
-  const bars = householdBars(households);
-  const activityDaily = dailyActivity(activity);
-  const rhythm = hourlyRhythm(activity);
-  const devices = deviceBreakdown(activity);
-  const activityTotals = activitySummary(activity);
-  const energyDaily = dailyEnergy(activity, energyDays);
-  const energyHours = hourlyEnergy(activity);
+  // Everything below is derived from the scoped rows, so no chart can quietly add a
+  // demo home to a real one. AI router calls are the exception: they are recorded
+  // per purpose, not per household, and cannot be attributed either way.
+  const scoped = scopeRows(households, alerts, activity, scope);
+  const scopeCounts = {
+    all: households.length,
+    Production: households.filter((h) => h.dataSourceMode === 'Production').length,
+    Sample: households.filter((h) => h.dataSourceMode === 'Sample').length,
+  };
+
+  const totals = summarize(scoped.households);
+  const flow = pipelineStats(scoped.households, scoped.alerts, scoped.activity, origin, aiCalls);
+  const timeline = alertsByDay(scoped.alerts);
+  const risks = riskDistribution(scoped.alerts);
+  const delivery = deliveryStats(scoped.alerts);
+  const bars = householdBars(scoped.households);
+  const activityDaily = dailyActivity(scoped.activity);
+  const rhythm = hourlyRhythm(scoped.activity);
+  const devices = deviceBreakdown(scoped.activity);
+  const activityTotals = activitySummary(scoped.activity);
+  const energyDaily = dailyEnergy(scoped.activity, energyDays);
+  const energyHours = hourlyEnergy(scoped.activity);
   const energyTotal = energyDaily.reduce((sum, point) => sum + point.wh, 0);
   const aiModels = routerModels(aiCalls);
   const aiSummary = routerSummary(aiCalls);
+
+  // Every "全世帯" caption on this page is now a claim about the selected slice, so it
+  // has to name the slice or it silently overstates what was counted.
+  const scopeWord = scope === 'all' ? '全世帯' : scope === 'Production' ? '本番世帯' : 'デモ世帯';
 
   return (
     <div className="bg-gray-50 min-h-screen">
@@ -183,9 +204,51 @@ export function HomePage() {
           </section>
         ) : (
           <>
+        <section className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-900">表示するデータ</h2>
+            <p className="text-xs text-gray-500">
+              デモ世帯と本番世帯は同じテーブルに並んでいます。混ぜて合計すると
+              どちらの暮らしも表さない数字になるため、既定では本番だけを集計します。
+              {scope !== 'all' && scopeCounts[scope] === 0 && (
+                <span className="ml-1 font-medium text-amber-700">
+                  この区分の世帯はまだありません。
+                </span>
+              )}
+            </p>
+          </div>
+          <div className="flex rounded-md border border-gray-200 p-0.5">
+            {([
+              ['Production', '本番'],
+              ['Sample', 'デモ'],
+              ['all', 'すべて'],
+            ] as const).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setScope(value)}
+                className={`rounded px-3 py-1 text-xs font-medium transition ${
+                  scope === value
+                    ? 'bg-gray-900 text-white'
+                    : 'text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                {label}
+                <span className={scope === value ? 'ml-1 text-gray-300' : 'ml-1 text-gray-400'}>
+                  {scopeCounts[value]}
+                </span>
+              </button>
+            ))}
+          </div>
+        </section>
+
         <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-          <Kpi label="世帯" value={totals.households} sub={`本番 ${totals.production}`} />
-          <Kpi label="デバイス" value={totals.devices} sub="全世帯合計" />
+          <Kpi
+            label="世帯"
+            value={totals.households}
+            sub={scope === 'all' ? `本番 ${totals.production}` : scope === 'Production' ? '本番のみ' : 'デモのみ'}
+          />
+          <Kpi label="デバイス" value={totals.devices} sub={`${scopeWord}合計`} />
           <Kpi label="通知" value={totals.alerts} sub={`失敗 ${totals.failedAlerts}`} />
           <Kpi
             label="要対応"
@@ -234,6 +297,10 @@ export function HomePage() {
               が {aiSummary.models} 種類のモデルで応答しました（成功{' '}
               {aiSummary.success.toLocaleString()} 回）。
               用途ごとに別ベンダのモデルへ振り分けられています。
+            </p>
+            <p className="mt-1 text-[11px] text-gray-400">
+              AI の呼び出しは用途単位で記録しており世帯に紐づかないため、
+              上の本番／デモの絞り込みは掛かりません（常に全件）。
             </p>
             <p className="mt-1 text-xs text-gray-500">
               下段の細い棒は平均応答時間です。LINE の webhook は 8 秒でイベントを
@@ -347,7 +414,9 @@ export function HomePage() {
 
           {energyDaily.length === 0 ? (
             <p className="text-sm text-gray-400">
-              電力量がまだ取り込まれていません。SwitchBot プラグミニを接続した世帯があると表示されます。
+              {scope === 'Sample'
+                ? 'デモ世帯は実機のプラグを持たないため、電力量の計測はありません。上の切り替えで「本番」を選んでください。'
+                : '電力量がまだ取り込まれていません。SwitchBot プラグミニを接続した世帯があると表示されます。'}
             </p>
           ) : (
             <div className="grid gap-6 lg:grid-cols-2">
@@ -399,9 +468,11 @@ export function HomePage() {
           <h2 className="mb-4 text-base font-semibold text-gray-900">世帯一覧</h2>
           {loading ? (
             <p className="text-sm text-gray-400">読み込み中…</p>
-          ) : households.length === 0 ? (
+          ) : scoped.households.length === 0 ? (
             <p className="text-sm text-gray-400">
-              スナップショットがまだ届いていません。
+              {households.length === 0
+                ? 'スナップショットがまだ届いていません。'
+                : 'この区分の世帯はありません。上の切り替えで「すべて」を選ぶと表示されます。'}
             </p>
           ) : (
             <div className="overflow-x-auto">
@@ -421,7 +492,7 @@ export function HomePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {households.map((row) => (
+                  {scoped.households.map((row) => (
                     <tr
                       key={row.id}
                       className={`border-t border-gray-100 ${

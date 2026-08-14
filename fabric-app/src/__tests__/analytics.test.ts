@@ -12,6 +12,7 @@ import {
   riskDistribution,
   routerModels,
   routerSummary,
+  scopeRows,
   UNRESOLVED_BAR,
 } from '@/services/analytics';
 import type {
@@ -88,6 +89,53 @@ function alert(overrides: Partial<AlertRow> = {}): AlertRow {
 }
 
 const NOW = new Date('2026-08-11T23:00:00');
+
+describe('scopeRows', () => {
+  const real = household({ householdId: 'hh-real', dataSourceMode: 'Production' });
+  const demo = household({ id: 'h2', householdId: 'hh-demo', dataSourceMode: 'Sample' });
+  const alerts = [
+    alert({ householdId: 'hh-real' }),
+    alert({ id: 'a2', householdId: 'hh-demo' }),
+  ];
+  const activity = [
+    bucket({ householdId: 'hh-real' }),
+    bucket({ id: 'a2', householdId: 'hh-demo' }),
+  ];
+
+  it('keeps only the rows belonging to the chosen data source', () => {
+    const scoped = scopeRows([real, demo], alerts, activity, 'Production');
+
+    expect(scoped.households).toEqual([real]);
+    expect(scoped.alerts.map((a) => a.householdId)).toEqual(['hh-real']);
+    expect(scoped.activity.map((a) => a.householdId)).toEqual(['hh-real']);
+  });
+
+  it('selects the demo side without touching the production rows', () => {
+    const scoped = scopeRows([real, demo], alerts, activity, 'Sample');
+
+    expect(scoped.households).toEqual([demo]);
+    expect(scoped.alerts.map((a) => a.householdId)).toEqual(['hh-demo']);
+    expect(scoped.activity.map((a) => a.householdId)).toEqual(['hh-demo']);
+  });
+
+  it('passes everything through untouched when nothing is being separated', () => {
+    const scoped = scopeRows([real, demo], alerts, activity, 'all');
+
+    expect(scoped.households).toHaveLength(2);
+    expect(scoped.alerts).toHaveLength(2);
+    expect(scoped.activity).toHaveLength(2);
+  });
+
+  // An alert whose household has since been deleted cannot be called demo or
+  // production, and silently filing it under whichever tab is open would make a
+  // real delivery failure appear in the demo view.
+  it('drops rows that point at a household the table does not know', () => {
+    const orphan = alert({ id: 'a9', householdId: 'hh-gone' });
+    const scoped = scopeRows([real], [...alerts, orphan], activity, 'Production');
+
+    expect(scoped.alerts.map((a) => a.id)).toEqual(['a1']);
+  });
+});
 
 describe('alertsByDay', () => {
   it('always returns a fixed-width window, oldest first', () => {

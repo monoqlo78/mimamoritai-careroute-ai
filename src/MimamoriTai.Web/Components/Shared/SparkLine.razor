@@ -1,0 +1,77 @@
+@using MimamoriTai.Web.Charts
+@using G = MimamoriTai.Web.Charts.SparkLineGeometry
+
+@* Inline SVG, like BarChart: no charting library, no JS interop, renders with the page. *@
+
+<figure class="spark-line @Class">
+    <figcaption>
+        <span class="spark-line-title">@Caption</span>
+        <span class="spark-line-current">@Current</span>
+    </figcaption>
+
+    @if (Points.Count == 0)
+    {
+        <p class="empty-state">まだ計測がありません</p>
+    }
+    else
+    {
+        var (min, max) = G.Range(Points);
+        var segments = G.Segments(Points);
+        var dots = G.Isolated(Points);
+
+        <div class="spark-line-plot">
+            @* The band actually drawn. Without it a flat line could be 0V or 104V and the
+               chart would look identical, which is the whole risk of not starting at zero. *@
+            <p class="spark-line-scale" aria-hidden="true">
+                <span>@Format(max)</span>
+                <span>@Format(min)</span>
+            </p>
+
+            <svg viewBox="0 0 @G.F(G.ViewWidth) @G.F(G.ViewHeight)" role="img"
+                 aria-label="@AriaLabel" preserveAspectRatio="none">
+                <line x1="0" y1="@G.F(G.PlotBottom)" x2="@G.F(G.ViewWidth)" y2="@G.F(G.PlotBottom)"
+                      class="spark-line-axis" />
+
+                @foreach (var segment in segments)
+                {
+                    <polyline points="@segment" class="spark-line-path" />
+                }
+
+                @foreach (var dot in dots)
+                {
+                    @* Stretched viewBox turns a circle into an ellipse, so a lone sample is
+                       marked with a short vertical tick instead, as the bar chart does. *@
+                    var x = G.F(G.X(dot.At, Points.Min(p => p.At), Points.Max(p => p.At)));
+                    var y = G.Y(dot.Value, min, max);
+                    <line x1="@x" y1="@G.F(y - 1)" x2="@x" y2="@G.F(y + 1)" class="spark-line-dot" />
+                }
+            </svg>
+        </div>
+
+        <p class="spark-line-span" aria-hidden="true">
+            <span>@Points.Min(p => p.At).ToString("M/d HH:mm")</span>
+            <span>@Points.Max(p => p.At).ToString("M/d HH:mm")</span>
+        </p>
+    }
+</figure>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<SparkPoint> Points { get; set; } = [];
+
+    [Parameter, EditorRequired] public string Caption { get; set; } = string.Empty;
+
+    /// <summary>The latest reading, spelled out with its unit beside the caption.</summary>
+    [Parameter] public string? Current { get; set; }
+
+    [Parameter] public string Unit { get; set; } = string.Empty;
+
+    /// <summary>Decimal places for the scale labels; watts need one, millivolts none.</summary>
+    [Parameter] public int Decimals { get; set; } = 1;
+
+    [Parameter] public string AriaLabel { get; set; } = "推移グラフ";
+
+    [Parameter] public string? Class { get; set; }
+
+    private string Format(double value) =>
+        value.ToString($"F{Decimals}", System.Globalization.CultureInfo.InvariantCulture) + Unit;
+}

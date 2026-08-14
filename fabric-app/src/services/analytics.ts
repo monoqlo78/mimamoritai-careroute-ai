@@ -16,6 +16,49 @@ function toInt(value: string): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
+/**
+ * Which households a page is looking at.
+ *
+ * Demo and production households live side by side in the same tables, and every
+ * chart below sums whatever rows it is handed. Left alone, a seeded demo home and
+ * a real one are added together into a single line, which is worse than showing
+ * neither: the numbers look authoritative and describe nobody.
+ */
+export type DataScope = 'all' | 'Production' | 'Sample';
+
+export interface ScopedRows {
+  households: HouseholdRow[];
+  alerts: AlertRow[];
+  activity: ActivityRow[];
+}
+
+/**
+ * Narrows the three household-shaped tables to one data source.
+ *
+ * Alerts and activity carry a household id but not its mode, so the households
+ * table is the authority and rows pointing at a household it does not contain are
+ * dropped. That loses orphans left behind by a deleted household -- which is the
+ * safe direction, because an orphan cannot be attributed to demo or production
+ * and would otherwise land in whichever view the reader happened to open.
+ */
+export function scopeRows(
+  households: HouseholdRow[],
+  alerts: AlertRow[],
+  activity: ActivityRow[],
+  scope: DataScope
+): ScopedRows {
+  if (scope === 'all') return { households, alerts, activity };
+
+  const kept = households.filter((row) => row.dataSourceMode === scope);
+  const ids = new Set(kept.map((row) => row.householdId));
+
+  return {
+    households: kept,
+    alerts: alerts.filter((row) => ids.has(row.householdId)),
+    activity: activity.filter((row) => ids.has(row.householdId)),
+  };
+}
+
 export interface DayBucket {
   /** Local midnight of the bucket. */
   date: Date;

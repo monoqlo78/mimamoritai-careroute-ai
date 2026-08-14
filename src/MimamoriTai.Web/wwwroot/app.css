@@ -725,6 +725,79 @@ a.ghost.small { min-height: 32px; padding: 4px 10px; font-size: 12px; }
 .bar-chart-labels li.is-highlighted { visibility: visible; }
 .bar-chart-labels li.is-highlighted { color: var(--cp-text); font-weight: 600; }
 
+/* Live plug telemetry (watts / volts / milliamps). Shorter than the daily bars: three
+   of these stack in one panel, and each is read for its shape rather than its values. */
+.spark-line { margin: 0 0 14px; }
+.spark-line:last-of-type { margin-bottom: 0; }
+.spark-line figcaption {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 4px;
+    font-size: 12px;
+}
+.spark-line-title { color: var(--cp-text-muted); font-weight: 600; }
+/* The number a family actually reads; the line behind it is context for this number. */
+.spark-line-current {
+    color: var(--cp-text);
+    font-size: 15px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+.spark-line-plot { display: flex; align-items: stretch; gap: 6px; }
+.spark-line-scale {
+    display: flex;
+    flex: 0 0 44px;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin: 0;
+    padding-bottom: 2px;
+    color: var(--cp-text-muted);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+}
+.spark-line svg {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: block;
+    width: 100%;
+    height: 56px;
+    overflow: visible;
+}
+.spark-line-axis { stroke: var(--cp-border); stroke-width: 0.4; vector-effect: non-scaling-stroke; }
+.spark-line-path {
+    fill: none;
+    stroke: var(--cp-accent);
+    stroke-width: 1.6;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    vector-effect: non-scaling-stroke;
+}
+.spark-line-dot {
+    stroke: var(--cp-accent);
+    stroke-width: 2;
+    stroke-linecap: round;
+    vector-effect: non-scaling-stroke;
+}
+.spark-line-span {
+    display: flex;
+    justify-content: space-between;
+    margin: 3px 0 0;
+    padding-left: 50px;
+    color: var(--cp-text-muted);
+    font-size: 10px;
+}
+.spark-line .empty-state { margin: 0; }
+.chart-note {
+    margin: 10px 0 0;
+    color: var(--cp-text-muted);
+    font-size: 11px;
+    line-height: 1.6;
+}
+
 .trend-card { margin-bottom: 16px; }
 .trend-grid {
     display: grid;

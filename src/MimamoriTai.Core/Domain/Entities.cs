@@ -328,18 +328,19 @@ public class SwitchBotConnection
 ///   - <see cref="CurrentMa"/> &lt;- `electricCurrent`: instantaneous current draw, mA.
 ///   - <see cref="DailyEnergyWh"/> &lt;- `weight`: SwitchBot documents this as "the
 ///     power consumed in a day, measured in Watts", which cannot be right for a daily
-///     total. Checked against a live plug it is kilowatt-hours rounded to one decimal:
-///     days whose measured draw integrates to ~708Wh, ~234Wh and ~109Wh reported 0.6,
-///     0.3 and 0. Stored raw for fidelity, but the "Wh" in the property name is a
-///     misnomer kept only to avoid a migration, and it must not be used as an energy
-///     figure -- <c>PowerUsageService</c> integrates <see cref="ApproxWatts"/> instead.
-///     The existing <c>SwitchBotDeviceProvider.ResolveState</c> mapping of the same
-///     field to <c>ProviderDeviceStatus.PowerWatts</c> is unchanged.
+///     total. Checked against a live plug it is instantaneous real power in Watts:
+///     a plug drawing 314mA at 104V (32.7VA apparent) reported 0.3 here, which is the
+///     real power a near-idle load actually draws. Stored raw for fidelity, but the
+///     "Wh" in the property name is a misnomer kept only to avoid a migration, and it
+///     must never be read as an energy figure -- <c>PowerUsageService</c> integrates
+///     these watts over time to get energy. The existing
+///     <c>SwitchBotDeviceProvider.ResolveState</c> mapping of the same field to
+///     <c>ProviderDeviceStatus.PowerWatts</c> is correct and unchanged.
 ///   - <see cref="UsageMinutesToday"/> &lt;- `electricityOfDay`: minutes the outlet has
 ///     been switched on today; reset by the device at local midnight.
-///   - <see cref="ApproxWatts"/>: voltage * current / 1000, a power-factor-1
-///     approximation of instantaneous real power. Not accurate for reactive loads;
-///     clearly an approximation, never treated as a certified power reading.
+///   - <see cref="ApproxWatts"/>: voltage * current / 1000, i.e. apparent power (VA).
+///     Kept for the record but never charted or integrated: on the reading above it
+///     overstates real power by two orders of magnitude.
 /// </summary>
 public class PlugMiniReading
 {

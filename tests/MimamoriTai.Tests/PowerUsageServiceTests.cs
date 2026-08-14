@@ -389,4 +389,93 @@ public class PowerUsageServiceTests
     [InlineData(2345d, "2.35 kWh")]
     public void Format_Switches_To_KWh_Once_The_Number_Gets_Long(double? wh, string expected) =>
         Assert.Equal(expected, PowerUsageService.Format(wh));
+
+    [Fact]
+    public async Task Telemetry_Returns_The_Raw_Readings_Oldest_First()
+    {
+        var light = TestDb.Light();
+        using var db = await new TestDb().SeedAsync(light);
+
+        // Inserted newest first, to prove the ordering comes from the query.
+        foreach (var minutesAgo in new[] { 5, 10, 15 })
+        {
+            db.Context.PlugMiniReadings.Add(new PlugMiniReading
+            {
+                HouseholdId = db.HouseholdId,
+                DeviceId = light.Id,
+                OccurredAtUtc = NowUtc.AddMinutes(-minutesAgo),
+                DailyEnergyWh = minutesAgo,
+                VoltageV = 104,
+                CurrentMa = 314
+            });
+        }
+
+        await db.Context.SaveChangesAsync();
+
+        var samples = await Service(db).GetTelemetryAsync(db.HouseholdId, light.Id);
+
+        Assert.Equal([15d, 10d, 5d], samples.Select(s => s.Watts));
+        Assert.All(samples, s => Assert.Equal(104, s.VoltageV));
+        Assert.All(samples, s => Assert.Equal(314, s.CurrentMa));
+    }
+
+    /// <summary>
+    /// The daily totals load a month of history; the live charts must not, or a chart
+    /// meant to show the last day would silently plot thousands of stale samples.
+    /// </summary>
+    [Fact]
+    public async Task Telemetry_Excludes_Readings_Older_Than_The_Window()
+    {
+        var light = TestDb.Light();
+        using var db = await new TestDb().SeedAsync(light);
+
+        db.Context.PlugMiniReadings.Add(new PlugMiniReading
+        {
+            HouseholdId = db.HouseholdId,
+            DeviceId = light.Id,
+            OccurredAtUtc = NowUtc.AddHours(-30),
+            DailyEnergyWh = 99
+        });
+        db.Context.PlugMiniReadings.Add(new PlugMiniReading
+        {
+            HouseholdId = db.HouseholdId,
+            DeviceId = light.Id,
+            OccurredAtUtc = NowUtc.AddHours(-1),
+            DailyEnergyWh = 1
+        });
+        await db.Context.SaveChangesAsync();
+
+        var samples = await Service(db).GetTelemetryAsync(db.HouseholdId, light.Id);
+
+        Assert.Equal([1d], samples.Select(s => s.Watts));
+    }
+
+    /// <summary>
+    /// A reading the plug did not report stays null. Defaulting it to zero would draw a
+    /// dip to the axis that never happened -- and, on the current chart, would read as
+    /// an appliance switching off.
+    /// </summary>
+    [Fact]
+    public async Task Telemetry_Keeps_Unreported_Fields_Missing_Rather_Than_Zero()
+    {
+        var light = TestDb.Light();
+        using var db = await new TestDb().SeedAsync(light);
+
+        db.Context.PlugMiniReadings.Add(new PlugMiniReading
+        {
+            HouseholdId = db.HouseholdId,
+            DeviceId = light.Id,
+            OccurredAtUtc = NowUtc.AddMinutes(-5),
+            DailyEnergyWh = null,
+            VoltageV = null,
+            CurrentMa = null
+        });
+        await db.Context.SaveChangesAsync();
+
+        var sample = Assert.Single(await Service(db).GetTelemetryAsync(db.HouseholdId, light.Id));
+
+        Assert.Null(sample.Watts);
+        Assert.Null(sample.VoltageV);
+        Assert.Null(sample.CurrentMa);
+    }
 }

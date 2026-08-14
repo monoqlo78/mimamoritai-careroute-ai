@@ -7,6 +7,18 @@ namespace MimamoriTai.Core.Application;
 public sealed record PowerUsageDay(DateOnly Date, double EnergyWh);
 
 /// <summary>
+/// One raw meter reading from a Plug Mini, as reported.
+///
+/// Every field is nullable because the plug omits them when it has nothing to report
+/// (and older rows predate some of them); a missing reading is left missing rather
+/// than defaulted to zero, since "the meter said nothing" and "the meter said no
+/// current" mean opposite things to someone watching for whether a kettle was used.
+/// </summary>
+/// <param name="Watts">Real power, from SwitchBot's `weight`. Never apparent power.</param>
+public sealed record PlugSample(
+    DateTimeOffset At, double? Watts, double? VoltageV, double? CurrentMa);
+
+/// <summary>
 /// How a day compares with how this home normally uses electricity.
 ///
 /// Deliberately relative to the resident's own habit rather than any absolute figure:
@@ -271,6 +283,43 @@ public sealed class PowerUsageService(IAppDbContext db, TimeProvider clock)
 
     private static double SumFrom(IEnumerable<PowerUsageDay> daily, DateOnly from) =>
         daily.Where(d => d.Date >= from).Sum(d => d.EnergyWh);
+
+    /// <summary>Longest stretch of live telemetry offered to the UI.</summary>
+    public const int TelemetryHours = 24;
+
+    /// <summary>
+    /// The raw meter readings behind the daily totals, newest window first, for charting
+    /// power, voltage and current as they actually moved.
+    ///
+    /// This is deliberately not derived from <see cref="GetAsync"/>: that answers "how
+    /// much did they use today", which is an integral over a day, while this answers
+    /// "what is the plug doing right now and how did it get here", which is a level over
+    /// minutes. Aggregating the second into the first is what hides an appliance
+    /// switching on and off.
+    ///
+    /// <see cref="Domain.PlugMiniReading.ApproxWatts"/> is never returned: it is apparent
+    /// power and overstates a reactive load enormously (see the class remarks). The watts
+    /// here are the plug's own real-power figure, carried by the misnamed
+    /// <c>DailyEnergyWh</c>.
+    /// </summary>
+    /// <param name="hours">Window length; clamped to <see cref="TelemetryHours"/>.</param>
+    public async Task<IReadOnlyList<PlugSample>> GetTelemetryAsync(
+        Guid householdId, Guid? deviceId = null, int hours = TelemetryHours, CancellationToken ct = default)
+    {
+        var window = Math.Clamp(hours, 1, TelemetryHours);
+        var since = clock.GetUtcNow().AddHours(-window);
+
+        var rows = await db.PlugMiniReadings
+            .Where(r => r.HouseholdId == householdId
+                && r.OccurredAtUtc >= since
+                && (deviceId == null || r.DeviceId == deviceId))
+            .OrderBy(r => r.OccurredAtUtc)
+            .Select(r => new PlugSample(
+                r.OccurredAtUtc, r.DailyEnergyWh, r.VoltageV, r.CurrentMa))
+            .ToListAsync(ct);
+
+        return rows;
+    }
 
     /// <summary>
     /// Formats watt-hours the way a bill does: kWh once the number gets long enough that
