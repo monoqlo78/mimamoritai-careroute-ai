@@ -51,6 +51,11 @@ for line in (BASE / "narration.txt").read_text(encoding="utf-8").splitlines():
     idx, budget, text = line.split("|", 2)
     rows.append((idx, float(budget), text))
 
+# 引数で番号を渡すと、その行だけ作り直す。原稿を一部だけ直したときに使う。
+only = set(a.zfill(2) for a in sys.argv[1:])
+if only:
+    rows = [r for r in rows if r[0] in only]
+
 report = []
 for idx, budget, text in rows:
     dest = OUT / f"n{idx}.wav"
