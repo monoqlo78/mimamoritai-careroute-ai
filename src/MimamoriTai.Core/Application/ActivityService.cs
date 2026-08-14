@@ -58,17 +58,20 @@ public sealed class ActivityService(IAppDbContext db)
     public static DailyActivity Summarize(DateOnly date, IReadOnlyList<DeviceEvent> events)
     {
         // "usage" means the device was actually switched on by/for the resident.
-        var usage = events
-            .Where(e => e.State.Equals("on", StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        var usage = events.Where(IsUse).ToList();
 
-        if (events.Count == 0)
+        if (usage.Count == 0)
         {
             return new DailyActivity(date, null, null, 0, 0, 0);
         }
 
-        var first = events.Min(e => e.OccurredAtUtc);
-        var last = events.Max(e => e.OccurredAtUtc);
+        // The day starts at the first real use. Anything logged before that -- a plug
+        // reporting its standby draw, or the socket being de-energised -- is the house
+        // sitting still, and calling it the moment someone got up is the kind of
+        // confident falsehood this app exists to avoid. The closing time may still come
+        // from a later "off", because that is genuinely when the use ended.
+        var first = usage.Min(e => e.OccurredAtUtc);
+        var last = events.Where(e => e.OccurredAtUtc >= first).Max(e => e.OccurredAtUtc);
         var night = usage.Count(e =>
         {
             var hour = HouseholdTime.LocalTime(e.OccurredAtUtc).Hour;
@@ -85,4 +88,29 @@ public sealed class ActivityService(IAppDbContext db)
             Math.Max(activeMinutes, 0),
             night);
     }
+
+    /// <summary>
+    /// Whether an event is evidence that somebody used an appliance.
+    ///
+    /// Being switched on is not enough on its own. A Plug Mini left permanently
+    /// energised -- which is how anyone actually lives with one -- reports a small
+    /// standby draw forever, so a bare "on" says only that the socket has electricity
+    /// in it. The poller already knows this and applies
+    /// <see cref="SwitchBotPollingCycleService.InUseWattsThreshold"/> when it decides
+    /// what to record; reading the events back has to apply the same rule, or the two
+    /// halves of the app disagree about what a use is.
+    ///
+    /// That disagreement is not hypothetical. Events written before the poller learned
+    /// to prefer real watts over volts-times-amps carry the apparent-power figure, and
+    /// one production morning a socket sitting idle at 0.3W was logged as 32.7W and
+    /// reported to the family as "活動を始めた8時35分". Holding both sides to the same
+    /// threshold retires those rows without having to trust when they were written.
+    ///
+    /// Events with no measurement attached still count. A button press, a motion
+    /// sensor and a contact sensor all arrive without watts, and there is no evidence
+    /// there to dismiss them with.
+    /// </summary>
+    private static bool IsUse(DeviceEvent e) =>
+        e.State.Equals("on", StringComparison.OrdinalIgnoreCase)
+        && e.PowerWatts is null or >= SwitchBotPollingCycleService.InUseWattsThreshold;
 }

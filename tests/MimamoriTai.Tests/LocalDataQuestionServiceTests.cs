@@ -136,6 +136,31 @@ public sealed class LocalDataQuestionServiceTests
     }
 
     /// <summary>
+    /// A family that has just been told "いつもとほぼ同じです" and asks "具体的に数値も教えて"
+    /// is asking about the power, but says none of the words the routing looks for. It
+    /// came back with the activity summary and not one figure. Any list of keywords will
+    /// keep missing phrasings like this, so the readings ride along with the overview
+    /// itself rather than waiting to be asked for by name.
+    /// </summary>
+    [Theory]
+    [InlineData("具体的に数値も教えて")]
+    [InlineData("もう少し詳しく")]
+    [InlineData("今日の様子は？")]
+    public async Task Overview_Always_Carries_The_Measured_Figures(string question)
+    {
+        var device = Plug("リビングの電気");
+        using var db = await new TestDb().SeedAsync(device);
+        var now = new DateTimeOffset(2026, 1, 1, 3, 0, 0, TimeSpan.Zero);
+        await AddRawReadingAsync(db, device, now.AddMinutes(-5), 12.2, 103.7, 131, 120);
+
+        var answer = await Service(db, now).AnswerAsync(db.HouseholdId, question);
+
+        Assert.Contains("消費電力は12.2W", answer.Answer);
+        Assert.Contains("103.7V", answer.Answer);
+        Assert.Contains("1台", answer.Answer);
+    }
+
+    /// <summary>
     /// The regression behind "家電は2台使っているようです" for a one-appliance household:
     /// with no inventory in the facts, the model reused the usage count as a device count.
     /// </summary>

@@ -5,7 +5,7 @@ namespace MimamoriTai.Tests;
 
 public class ActivityServiceTests
 {
-    private static DeviceEvent Event(DateOnly date, int hour, int minute, string state)
+    private static DeviceEvent Event(DateOnly date, int hour, int minute, string state, double? watts = null)
     {
         var localMidnightUtc = HouseholdTime.StartOfLocalDayUtc(date);
         return new DeviceEvent
@@ -13,8 +13,59 @@ public class ActivityServiceTests
             EventType = "PowerState",
             State = state,
             Source = EventSource.Seed,
+            PowerWatts = watts,
             OccurredAtUtc = localMidnightUtc.AddHours(hour).AddMinutes(minute)
         };
+    }
+
+    [Fact]
+    public void Standby_Draw_Is_Not_The_Start_Of_The_Day()
+    {
+        // A plug left permanently in the socket reports a fraction of a watt around the
+        // clock. Older rows recorded that as volts-times-amps -- 104V x 314mA became
+        // 32.7W -- and the family was told the resident got up at 08:35 on a morning
+        // nobody had touched anything. The measurement travels with the event, so the
+        // summary can decline it on the same terms the poller would have.
+        var date = new DateOnly(2026, 8, 14);
+        var summary = ActivityService.Summarize(date,
+        [
+            Event(date, 8, 35, "on", 0.3),
+            Event(date, 10, 18, "off", 0.8)
+        ]);
+
+        Assert.Equal(0, summary.DeviceUsageCount);
+        Assert.Null(summary.FirstActivityTime);
+        Assert.Null(summary.LastActivityTime);
+        Assert.Equal(0, summary.ActiveMinutes);
+    }
+
+    [Fact]
+    public void Real_Use_After_Standby_Starts_The_Day_When_It_Started()
+    {
+        var date = new DateOnly(2026, 8, 14);
+        var summary = ActivityService.Summarize(date,
+        [
+            Event(date, 6, 0, "on", 0.4),
+            Event(date, 9, 15, "on", 42.0),
+            Event(date, 9, 50, "off", 0.0)
+        ]);
+
+        Assert.Equal(1, summary.DeviceUsageCount);
+        Assert.Equal(new TimeOnly(9, 15), summary.FirstActivityTime);
+        Assert.Equal(new TimeOnly(9, 50), summary.LastActivityTime);
+        Assert.Equal(35, summary.ActiveMinutes);
+    }
+
+    [Fact]
+    public void Events_Without_A_Measurement_Still_Count()
+    {
+        // Buttons, motion and contact sensors report no watts at all. There is nothing
+        // to disbelieve, so they are taken at their word.
+        var date = new DateOnly(2026, 8, 14);
+        var summary = ActivityService.Summarize(date, [Event(date, 7, 0, "on")]);
+
+        Assert.Equal(1, summary.DeviceUsageCount);
+        Assert.Equal(new TimeOnly(7, 0), summary.FirstActivityTime);
     }
 
     [Fact]

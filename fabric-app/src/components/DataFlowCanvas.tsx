@@ -150,10 +150,11 @@ const NODES: FlowNode[] = [
     title: 'Eventhouse',
     subtitle: 'KQL / MimamoriEventhouse',
     // DeviceEvents + SwitchBotPlugReadings -- the same readings the console shows,
-    // arriving by the other route. A row count would have to come from Eventhouse
-    // itself, which this console never queries, so state the shape instead of
-    // guessing a number.
-    metric: () => '2 テーブル',
+    // arriving by the other route. Naming the reader rather than counting rows: a row
+    // count would have to come from Eventhouse itself, which this console never
+    // queries, and the question this card kept raising was never "how much is in
+    // there" but "who reads it, if not this screen".
+    metric: () => 'AI が読む / 2 テーブル',
     accent: 'fabric',
   },
   {
@@ -672,27 +673,42 @@ export function DataFlowCanvas({ stats }: { stats: PipelineStats }) {
           </div>
         ))}
 
-        <div className="absolute bottom-3 left-4 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-400">
-          <span className="flex items-center gap-1.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-sky-400" />
-            リアルタイム見守り経路
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
-            分析経路（Fabric）
-          </span>
-          {stats.aiCalls > 0 && (
+        <div className="absolute bottom-3 left-4 right-4 flex flex-col gap-1">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-400">
             <span className="flex items-center gap-1.5">
-              <span className="h-1.5 w-1.5 rounded-full bg-rose-400" />
-              AI 経路（OrcaRouter / Data Agent）
+              <span className="h-1.5 w-1.5 rounded-full bg-sky-400" />
+              リアルタイム見守り経路
             </span>
-          )}
-          {stats.failedAlerts > 0 && (
-            <span className="flex items-center gap-1.5 text-red-300">
-              <span className="h-1.5 w-1.5 rounded-full bg-red-400" />
-              配信失敗 {stats.failedAlerts} 件
+            <span className="flex items-center gap-1.5">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+              分析経路（Fabric）
             </span>
-          )}
+            {stats.aiCalls > 0 && (
+              <span className="flex items-center gap-1.5">
+                <span className="h-1.5 w-1.5 rounded-full bg-rose-400" />
+                AI 経路（OrcaRouter / Data Agent）
+              </span>
+            )}
+            {stats.failedAlerts > 0 && (
+              <span className="flex items-center gap-1.5 text-red-300">
+                <span className="h-1.5 w-1.5 rounded-full bg-red-400" />
+                配信失敗 {stats.failedAlerts} 件
+              </span>
+            )}
+          </div>
+          {/*
+            The Fabric branch forks into two chains that never rejoin, and drawn without
+            a word of explanation that reads as one of them being redundant -- the
+            question it kept prompting was why the Eventstream exists at all, or why the
+            Eventhouse is not wired to this screen. Neither is drawn wrong: they carry
+            the same measurements and are read by different consumers. Saying so here,
+            under the picture, is the honest fix; drawing an Eventhouse-to-console edge
+            would be the dishonest one, because this console runs no KQL.
+          */}
+          <div className="text-[10px] leading-tight text-slate-500">
+            Eventstream と取り込みバッチは同じ計測値を運びます。Eventhouse は AI の質問応答が、
+            Fabric SQL Database はこの画面が読みます。
+          </div>
         </div>
       </div>
     </div>

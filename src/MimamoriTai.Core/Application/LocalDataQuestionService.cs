@@ -98,12 +98,16 @@ public sealed class LocalDataQuestionService(IAppDbContext db, TimeProvider cloc
             ? $"{resident}は今朝{start:HH\\:mm}頃から活動を始め、これまでに家電を{today.DeviceUsageCount}回利用しています。"
             : $"{resident}は本日まだ家電の利用が記録されていません。";
 
-        // The registered devices are stated explicitly so a summarising model can never
-        // infer a device count from the usage count ("2回" silently becoming "2台").
-        var inventory = await DeviceInventoryAsync(householdId, ct);
-
-        var since = HouseholdTime.StartOfLocalDayUtc(todayDate);
-        return Answer($"{head} {risk.Reason}。{await PowerChangeFactsAsync(householdId, since, ct)}{inventory}");
+        // The measured figures ride along with every overview, not only with questions
+        // that happened to name a unit. A family asking "具体的に数値も教えて" after being
+        // told the day looks normal is asking this same question in different words, and
+        // matching on keywords will always miss some of those words; the previous wording
+        // list did, and the follow-up came back with the rhythm summary and no numbers at
+        // all. Carrying the readings unconditionally means the volts, amps, watts and the
+        // day's energy are in front of the reader however the question was phrased -- and
+        // it also puts the freshness warning there, which matters most in exactly the
+        // vague "how are things?" question that would otherwise never trigger it.
+        return Answer($"{head} {risk.Reason}。{await PowerFactsAsync(householdId, ct)}");
     }
 
     /// <summary>
