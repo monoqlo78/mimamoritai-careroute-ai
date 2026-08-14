@@ -140,6 +140,11 @@ const NODES: FlowNode[] = [
     // (FallbackEventStreamPublisher), so name the cadence, not a destination
     // count -- the destination is now its own card, and the cadence is the whole
     // reason this branch exists next to the 15-minute console sync.
+    //
+    // "リアルタイム" is about the cadence of the hop, not a claim that the plug
+    // reaches Fabric unaided: SwitchBot is a vendor cloud with no AMQP or SAS of
+    // its own, so naming the endpoint type says plainly that something on our side
+    // has to open the connection.
     metric: () => 'リアルタイム',
     accent: 'fabric',
   },
@@ -245,9 +250,18 @@ const EDGES: FlowEdge[] = [
   {
     from: 'app',
     to: 'eventstream',
-    // Real-time hop, separate from the 15-minute aggregate sync below: raw device
-    // events leave the app as they are polled, before any aggregation.
-    label: 'イベント転送',
+    // The app is the producer because it has to be: Eventstream's custom endpoint
+    // speaks Event Hub/AMQP with a SAS credential, and SwitchBot's cloud can only
+    // poll-answer over REST or POST plain JSON at a URL. Nothing in that chain can
+    // hold a SAS token, so a gateway is not a shortcut here, it is the only join
+    // available between a closed vendor cloud and Fabric.
+    //
+    // What it forwards, though, is the persisted backlog and not the packet in
+    // flight -- the publisher reads DeviceEvents/PlugMiniReadings rows whose
+    // PublishedToStreamAtUtc is still null. Labelling it "イベント転送" implied a
+    // pass-through, which is why the picture read as if the web were the origin of
+    // the data rather than the sender of it.
+    label: '未送信行を転送',
     weight: (s) => 4 + s.devices + Math.min(12, s.activityEvents / 20),
     color: [0.2, 0.83, 0.6],
   },
