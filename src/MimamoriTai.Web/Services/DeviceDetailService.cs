@@ -68,7 +68,8 @@ public sealed class DeviceDetailService(
     IDataSourceContext dataSourceContext,
     HouseholdAccessService householdAccess,
     DeviceInsightService deviceInsight,
-    IntegrationStatus integrations)
+    IntegrationStatus integrations,
+    TimeProvider clock)
 {
     /// <summary>
     /// Loads the detail model for one device. Returns null when the device does not
@@ -109,13 +110,16 @@ public sealed class DeviceDetailService(
         // rate-limited returns nothing either. In both cases the last recorded event is the
         // best answer available - notably the one this app wrote itself when the family
         // pressed "つける", which is exactly the moment the old code claimed "停止中".
+        // For the first few seconds that event also beats a live read, because SwitchBot
+        // still reports the previous state right after a change - see DevicePowerState.
         var lastEvent = await db.DeviceEvents
             .Where(e => e.DeviceId == device.Id)
             .OrderByDescending(e => e.OccurredAtUtc)
             .Select(e => new { e.State, e.OccurredAtUtc })
             .FirstOrDefaultAsync(ct);
 
-        var isOn = status?.IsOn ?? string.Equals(lastEvent?.State, "on", StringComparison.OrdinalIgnoreCase);
+        var power = DevicePowerState.Resolve(
+            status?.IsOn, lastEvent?.State, lastEvent?.OccurredAtUtc, clock.GetUtcNow());
 
         var dailyBreakdown = summary?.DailyBreakdown
             .Select(d => new DeviceDailyUsageItem(d.Date, d.OnCount, d.OffCount))
@@ -143,8 +147,8 @@ public sealed class DeviceDetailService(
             device.IsActive,
             device.RemoteControlAllowed,
             device.SafetyClass.ToString(),
-            status?.IsOn ?? isOn,
-            status is not null || lastEvent is not null,
+            power.IsOn,
+            power.IsKnown,
             status is not null,
             status?.PowerWatts,
             status?.ObservedAtUtc ?? lastEvent?.OccurredAtUtc,

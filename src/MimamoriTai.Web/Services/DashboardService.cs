@@ -111,11 +111,17 @@ public sealed class DashboardService(
             // A null status means the hub told us nothing (offline, rate-limited, or an
             // infrared remote that has no status endpoint). Falling back to the newest
             // recorded event keeps the card honest instead of defaulting to "停止中".
+            // That event also outranks a live read for a few seconds after it happens,
+            // because SwitchBot's status endpoint still reports the previous state right
+            // after a change - see DevicePowerState.
             var lastEvent = await db.DeviceEvents
                 .Where(e => e.DeviceId == device.Id)
                 .OrderByDescending(e => e.OccurredAtUtc)
-                .Select(e => e.State)
+                .Select(e => new { e.State, e.OccurredAtUtc })
                 .FirstOrDefaultAsync(ct);
+
+            var power = DevicePowerState.Resolve(
+                status?.IsOn, lastEvent?.State, lastEvent?.OccurredAtUtc, clock.GetUtcNow());
 
             cards.Add(new DeviceCard(
                 device.Id,
@@ -123,8 +129,8 @@ public sealed class DashboardService(
                 device.Alias,
                 device.DisplayRoom,
                 device.DeviceType.ToString(),
-                status?.IsOn ?? string.Equals(lastEvent, "on", StringComparison.OrdinalIgnoreCase),
-                status is not null || lastEvent is not null,
+                power.IsOn,
+                power.IsKnown,
                 lastUsed.TryGetValue(device.Id, out var last) ? last : null,
                 todayEvents.Count(e => e.DeviceId == device.Id && e.State.Equals("on", StringComparison.OrdinalIgnoreCase)),
                 device.RemoteControlAllowed,
