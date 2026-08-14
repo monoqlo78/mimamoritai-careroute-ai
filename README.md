@@ -133,6 +133,8 @@ Fabric への書き込みは**すべてアプリ側からの push** です。Fab
 
 **2段構え（即時 push ＋ 未送信行のスイープ）**にしてあるのが要点です。送信できた行にだけ `PublishedToStreamAtUtc` のスタンプを押し、**失敗した行はスタンプを押さずに残す**ので、Fabric 容量が一時停止・スロットリングされていても復旧後に自然に追いつきます。落ちている間のデータが欠けません。
 
+`DeviceEvents` はさらに**経路を2本**持っています。主経路の Eventstream が失敗したら、その場で Eventhouse への直接取り込みに回します（`FallbackEventStreamPublisher`）。着地点は同じ KQL テーブルですが、Eventstream は宛先の一時停止や容量飽和で止まるのに対し、直接取り込みは Eventhouse だけを見るため、片方の事情でもう片方は止まりません。フォールバックで着いた分は**送信済みとして扱います**（実際に到達しているため再送する理由がない）。両方失敗したときだけスタンプを押さず、上のスイープが次の周期で拾います。
+
 再試行は `PeriodicBackoff` で、**失敗が続くと 2倍・4倍…と最大30分（コンソール同期は2時間）まで下がり、1回成功したら即座に通常間隔へ戻ります**。これは F2 容量のとき、存在しないテーブルへの取り込みが400を返し続け、1分ごとの再送が容量を飽和させて運用コンソールごと429で落ちた事故を受けての実装です。
 
 取り込みの口は **Eventhouse の streaming ingestion REST エンドポイント**（`v1/rest/ingest/{db}/{table}?streamFormat=json&mappingName=...`）に**改行区切りJSON（NDJSON）**を POST するだけです。Kusto の Ingest SDK は使っていません。認証はマネージドID（`DefaultAzureCredential`）でパスワードレス。
@@ -155,6 +157,7 @@ Fabric への書き込みは**すべてアプリ側からの push** です。Fab
 - **自然言語アシスタント**: 「リビングのライトつけて」「今日のお母さんどう？」等をダッシュボードのチャット欄・LINEシミュレーター・実LINE Webhookから同じ `AssistantOrchestrator` で処理。
 - **安全な家電操作ガードレール**: 後述の「安全設計」を参照。
 - **家族共有フィード**: `FamilyMessage` としてLINE/Webでのやり取りを時系列表示。
+- **使用電力量の可視化**: Plug Mini の `DailyEnergyWh` から、機器詳細で**昨日・過去1週間・過去1カ月**の消費電力量と日次グラフを表示（`PowerUsageService`）。SwitchBot が返すのは「その日の積算値」でローカル深夜にリセットされるため、日次はポーリング結果の**合計ではなく最大値**を採り、機器間で合算しています。
 - **AIルーティング可観測性**: OrcaRouterが解決したモデル名をレスポンスヘッダーから取得し `AiRequestLog` に記録、ダッシュボードに表示。
 - **データQ&A**: Microsoft Fabric Data Agent が未設定の場合、`LocalDataQuestionService` がアプリDBから直接キーワードベースで回答。
 - **ゼロシークレットのデモデータ**: `DemoDataSeeder` が14日分の決定論的な生活データ（起床遅延・深夜活動・低活動の3パターンを注入済み）を自動投入。
@@ -424,7 +427,7 @@ dotnet test
 | OrcaRouter | ✅ 設定すれば実接続 | `OrcaRouter:ApiKey` が空の間は `MockAiRouterClient` が固定応答を返す。 |
 | Microsoft Fabric Data Agent | ✅ 設定すれば実接続 | `FabricDataAgentMcpClient` が MCP（JSON-RPC 2.0 / streamable HTTP）で公開済み Data Agent に接続します。データソースは Eventhouse の KQL データベース `MimamoriEventhouse`。認証は**サービスプリンシパル**（Data Agent のクエリ認証はマネージドIDに未対応のため）。未設定・失敗・タイムアウト時は `LocalDataQuestionService` がアプリDBから回答します。詳細は `docs/FABRIC_SETUP.md`。 |
 | Microsoft Fabric Eventhouse（リアルタイム分析） | ✅ 設定すれば実接続 | `Eventhouse:Enabled=true`＋`ClusterUri`で有効化（認証はマネージドID、秘密情報不要）。`SwitchBotPollingBackgroundService`がAzure SQL保存後に同じイベントをストリーミング取り込みし、`POST /api/stream/publish`／ダッシュボードの「Fabricへ送信」ボタンで手動疎通確認も可能。`DeviceEvents` と `SwitchBotPlugReadings` の2テーブルへ、独立した publisher が別々に書きます。 |
-| Microsoft Fabric Eventstream（Event Hubs 互換エンドポイント） | ⚪ 実装済み・本番では未使用 | `EventStream:Enabled=true` にすると `EventHubEventStreamPublisher` が優先され、`アプリ → Event Hub → Eventstream → Eventhouse` の経路になります。**本番は `false`** で、Eventhouse へ直接取り込む経路を使っています（ホップが増えるほど「送信成功なのに着かない」事故が起きたため。`docs/ARTICLE.md` 4-2）。 |
+| Microsoft Fabric Eventstream（Event Hubs 互換エンドポイント） | ✅ 実接続（本番の主経路） | `EventStream:Enabled=true` で `アプリ → Event Hub → Eventstream → Eventhouse / Lakehouse` の経路になります。**Eventhouse への直接取り込みも同時に設定されている場合は捨てずにフォールバックとして残します**（`FallbackEventStreamPublisher`）。Eventstream 側は宛先の一時停止や容量飽和で止まりうるのに対し、直接取り込みは Eventhouse だけを見ているため、壊れる理由が違う2本を同じテーブルに向けています。フォールバックで着いた分は送信済みとして扱い（実際に到達しているため）、両方失敗したときだけ未送信のまま次周期で再試行します。経緯は `docs/ARTICLE.md` 4-2。 |
 | Microsoft Fabric SQL データベース（Rayfin 運用コンソール） | ✅ 実接続 | `FabricSqlConsoleSync` が**アプリDB → Fabric SQL** の一方向に集計スナップショットを MERGE します（`FabricConsoleSyncBackgroundService` が定期実行）。世帯横断の件数と機械生成テキストのみで、プロンプト本文・暗号化資格情報・家族向けアラート文面は送りません。 |
 | LINE | ✅ 設定すれば実接続 | `Line:ChannelAccessToken`/`ChannelSecret` が空の間は `MockLineMessagingClient` がダッシュボードのLINEシミュレーターとして動作。署名検証ロジックはモックでも有効。送信する吹き出しの表示名とアイコンは `Line:SenderName`/`Line:SenderIconPath`（＋公開HTTPSの `Line:PublicBaseUrl`）でミマモに上書きされる。 |
 | LINE内でCGを表示（LIFF） | ✅ 登録済み（要デプロイ） | LIFFアプリ `2011065310-k0R1hHKz` を作成済みで `appsettings.json` に設定済み。`Line:LiffChannelId` はIDトークンをLINE側で検証するために必須で、未設定なら世帯データは一切表示しない。手順は `docs/line-one-touch-setup.md`。 |

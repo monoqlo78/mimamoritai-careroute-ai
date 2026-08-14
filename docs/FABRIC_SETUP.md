@@ -71,6 +71,34 @@
 
   取り込みロール（`Eventhouse:PlugMiniTableName`/`PlugMiniMappingName` に書き込むプリンシパル）の権限確認は未実施です。取り込みが動いていることは `SwitchBotPlugReadings | summarize count()` で確認できます。
 
+### 使用電力量を KQL で見る
+
+`DailyEnergyWh` は SwitchBot が返す**その日の積算値**で、ポーリングのたびに増えてローカル深夜（JST）にリセットされます。合計するとポーリング回数ぶん膨れるので、**日ごとに最大値を採ってから**機器間で合算します（アプリの `PowerUsageService` と同じ考え方）。
+
+```kql
+// 日別の使用電力量（世帯合計・JST基準）
+SwitchBotPlugReadings
+| extend Day = bin(datetime_add('hour', 9, OccurredAtUtc), 1d)
+| summarize DeviceWh = max(DailyEnergyWh) by Day, DeviceId
+| summarize TotalWh = sum(DeviceWh) by Day
+| order by Day asc
+```
+
+```kql
+// 昨日 / 過去7日 / 過去30日
+SwitchBotPlugReadings
+| extend Day = bin(datetime_add('hour', 9, OccurredAtUtc), 1d)
+| summarize DeviceWh = max(DailyEnergyWh) by Day, DeviceId
+| summarize TotalWh = sum(DeviceWh) by Day
+| extend DaysAgo = datetime_diff('day', bin(datetime_add('hour', 9, now()), 1d), Day)
+| summarize
+    Yesterday = sumif(TotalWh, DaysAgo == 1),
+    Last7Days = sumif(TotalWh, DaysAgo between (0 .. 6)),
+    Last30Days = sumif(TotalWh, DaysAgo between (0 .. 29))
+```
+
+機器ごとの内訳を見たいときは、1本目の最後の `summarize` を `by Day, DeviceId` のまま残してください。
+
 ## 1. ワークスペースの作成
 2. 左下の「ワークスペース」→「新しいワークスペースの作成」から、見守り隊専用のワークスペースを作成します（Fabric容量が必要）。
 
