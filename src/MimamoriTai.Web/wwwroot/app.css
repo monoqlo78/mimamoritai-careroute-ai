@@ -481,6 +481,18 @@ a.ghost.small { min-height: 32px; padding: 4px 10px; font-size: 12px; }
 .power-label { display: block; color: var(--cp-text-muted); font-size: 11px; }
 .power-value { display: block; margin-top: 2px; font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; }
 
+/* The trend line carries the meaning, so it gets a left rule in the colour of the
+   verdict rather than being another grey paragraph under the numbers. */
+.power-trend { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; margin: 0 0 16px; padding: 10px 12px; border-left: 3px solid var(--cp-border); border-radius: 0.375rem; background: var(--cp-surface-soft); }
+.power-trend-word { font-size: 14px; font-weight: 600; }
+.power-trend-detail { color: var(--cp-text-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.power-trend.is-higher { border-left-color: var(--cp-warning, var(--cp-accent)); }
+.power-trend.is-higher .power-trend-word { color: var(--cp-warning, var(--cp-accent)); }
+.power-trend.is-lower { border-left-color: var(--cp-danger); }
+.power-trend.is-lower .power-trend-word { color: var(--cp-danger); }
+.power-trend.is-typical { border-left-color: var(--cp-success); }
+.power-trend.is-typical .power-trend-word { color: var(--cp-success); }
+
 .device-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .device-card { padding: 16px; border: 1px solid var(--cp-border); border-radius: 0.625rem; background: var(--cp-bg-elevated); }
 .device-card.restricted { border-color: var(--cp-danger); }

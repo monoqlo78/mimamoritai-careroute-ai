@@ -32,9 +32,9 @@
   | `room` | string | 部屋名（取り込み時点のスナップショット） |
   | `voltageV` | real (nullable) | 電圧（V）。SwitchBot Plug Mini (JP) ステータスの `voltage` フィールドをそのまま使用 |
   | `currentMa` | real (nullable) | 電流（mA）。ステータスの `electricCurrent` フィールド |
-  | `dailyEnergyWh` | real (nullable) | **注意（仕様の曖昧さ）**: SwitchBot公式ドキュメントのPlug Mini (JP) ステータスにある `weight` フィールドを直接この列にマッピングしています。既存コードのコメント（`SwitchBotDeviceProvider.cs`）は「1日の消費電力量」としていますが、公式仕様は単位を明示的に確定できていません（Wh・W・その他の可能性）。本実装では **Wh（ワット時）として扱う判断をしました**が、これは実測値と突き合わせて検証していない仮定です。実機での検証が済むまで、この列の値は目安としてのみ扱ってください（TODO: 実機データでの単位検証）。 |
+  | `dailyEnergyWh` | real (nullable) | **列名が誤り。実際は「その瞬間の実電力（W）」です。** SwitchBot Plug Mini (JP) ステータスの `weight` フィールドをそのままマッピングしていますが、公式ドキュメントの説明（"the power consumed in a day, measured in Watts"）は単位と期間が矛盾しており、実測で瞬時電力（W）と確定しました。根拠は4つ：(1) SwitchBotアプリの表示（電力0.9W／電流0.3A／電圧104.4V／使用時間9時間59分／消費電力量0.01kWh）に対しAPIのフィールドは4つしかなく、電圧・電流・使用時間で3つ使い切るため残る「電力」が `weight`、(2) 0.9W × 9.98h = 8.98Wh ≒ 0.01kWh とアプリの消費電力量が一致、(3) 本番データで `weight` が時系列で減少する（積算カウンタなら不可能）、(4) `currentMa = 0` のとき必ず `weight = 0`。**使用電力量（Wh）が欲しい場合はこの値を時間で積分してください**（後述のKQL参照）。列名の変更はストリーム定義とスキーマの互換性を壊すため見送っています。 |
   | `usageMinutesToday` | int (nullable) | 当日の稼働時間（分）。ステータスの `electricityOfDay` フィールド（`StatusBody` DTOに今回追加）。SwitchBot公式ドキュメントでは「今日の使用時間（分）」とされているフィールドです。 |
-  | `approxWatts` | real (nullable) | **近似値**: `voltageV * currentMa / 1000`（力率1と仮定した概算のみ）。`voltageV`/`currentMa` の両方が存在する場合のみ計算され、片方でも欠けている場合は null です。 |
+  | `approxWatts` | real (nullable) | **皮相電力（VA）であり実電力ではありません。** `voltageV * currentMa / 1000`（力率1と仮定）で算出しています。本番実測では `currentMa = 314`・`voltageV = 104.1` で `approxWatts = 32.7` に対し実電力（`dailyEnergyWh`）は 0.3W、つまり**力率0.009**でした。`currentMa = 314` なのに実電力が0のサンプルも203件あります。**活動判定や電力量計算には使わないでください**（実電力が取れないときのフォールバック専用）。`voltageV`/`currentMa` の両方が存在する場合のみ計算され、片方でも欠けている場合は null です。 |
   | `occurredAtUtc` | datetime | ポーリング周期の時刻（UTC、ISO 8601） |
 
 - **重複排除キー**: Azure SQL側では `(HouseholdId, DeviceId, OccurredAtUtc)` の組をアプリケーションレベルの重複排除キーとして使用しています（同じポーリング周期内で同じ機器の読み取りを二重挿入しない。詳細は `SwitchBotPollingCycleService` とそのテスト参照）。Eventhouse側にはこの一意性を強制するインデックス/ポリシーは構築していません（KQLの性質上、重複投入されても分析クエリ側で `summarize arg_max(...)` 等で最新値のみを扱うか、`OccurredAtUtc` での重複排除を行うことを推奨します）。
@@ -73,23 +73,35 @@
 
 ### 使用電力量を KQL で見る
 
-`DailyEnergyWh` は SwitchBot が返す**その日の積算値**で、ポーリングのたびに増えてローカル深夜（JST）にリセットされます。合計するとポーリング回数ぶん膨れるので、**日ごとに最大値を採ってから**機器間で合算します（アプリの `PowerUsageService` と同じ考え方）。
+**`DailyEnergyWh` は「その日の積算電力量」ではありません。** 列名に反して、SwitchBot が返す `weight` は**その瞬間の実電力（W）**です（実機での検証結果は後述）。したがって使用電力量（Wh）を出すには、**サンプルの値をそのサンプルが代表する時間で積分**します。アプリの `PowerUsageService` とまったく同じ考え方です。
+
+1サンプルが代表できる時間には **10分の上限**を設けます。ポーリングは5分間隔ですが、本番で491分の欠測が観測されており、上限がないと停電中もその電力で動き続けたことになってしまうためです。
 
 ```kql
 // 日別の使用電力量（世帯合計・JST基準）
 SwitchBotPlugReadings
+| where isnotnull(DailyEnergyWh)
+| order by DeviceId asc, OccurredAtUtc asc
+| extend NextAt = next(OccurredAtUtc), NextDevice = next(DeviceId)
+| extend SpanH = iff(NextDevice == DeviceId,
+    min_of(datetime_diff('second', NextAt, OccurredAtUtc) / 3600.0, 10.0 / 60), 10.0 / 60)
+| extend Wh = DailyEnergyWh * SpanH   // DailyEnergyWh は瞬時の実電力(W)
 | extend Day = bin(datetime_add('hour', 9, OccurredAtUtc), 1d)
-| summarize DeviceWh = max(DailyEnergyWh) by Day, DeviceId
-| summarize TotalWh = sum(DeviceWh) by Day
+| summarize TotalWh = sum(Wh) by Day
 | order by Day asc
 ```
 
 ```kql
 // 昨日 / 過去7日 / 過去30日
 SwitchBotPlugReadings
+| where isnotnull(DailyEnergyWh)
+| order by DeviceId asc, OccurredAtUtc asc
+| extend NextAt = next(OccurredAtUtc), NextDevice = next(DeviceId)
+| extend SpanH = iff(NextDevice == DeviceId,
+    min_of(datetime_diff('second', NextAt, OccurredAtUtc) / 3600.0, 10.0 / 60), 10.0 / 60)
+| extend Wh = DailyEnergyWh * SpanH
 | extend Day = bin(datetime_add('hour', 9, OccurredAtUtc), 1d)
-| summarize DeviceWh = max(DailyEnergyWh) by Day, DeviceId
-| summarize TotalWh = sum(DeviceWh) by Day
+| summarize TotalWh = sum(Wh) by Day
 | extend DaysAgo = datetime_diff('day', bin(datetime_add('hour', 9, now()), 1d), Day)
 | summarize
     Yesterday = sumif(TotalWh, DaysAgo == 1),
@@ -97,7 +109,30 @@ SwitchBotPlugReadings
     Last30Days = sumif(TotalWh, DaysAgo between (0 .. 29))
 ```
 
-機器ごとの内訳を見たいときは、1本目の最後の `summarize` を `by Day, DeviceId` のまま残してください。
+```kql
+// 「いつもと比べて今日はどうか」（遷移）
+// 直近14日の中央値を「いつも」とし、今日と比べます。アプリの表示と同じ判定です。
+let daily = SwitchBotPlugReadings
+| where isnotnull(DailyEnergyWh)
+| order by DeviceId asc, OccurredAtUtc asc
+| extend NextAt = next(OccurredAtUtc), NextDevice = next(DeviceId)
+| extend SpanH = iff(NextDevice == DeviceId,
+    min_of(datetime_diff('second', NextAt, OccurredAtUtc) / 3600.0, 10.0 / 60), 10.0 / 60)
+| extend Wh = DailyEnergyWh * SpanH
+| extend Day = bin(datetime_add('hour', 9, OccurredAtUtc), 1d)
+| summarize TotalWh = sum(Wh) by Day
+| extend DaysAgo = datetime_diff('day', bin(datetime_add('hour', 9, now()), 1d), Day);
+let today = toscalar(daily | where DaysAgo == 0 | summarize sum(TotalWh));
+// 中央値。1日の異常値が「いつも」を書き換えないようにするため平均ではなく中央値を使います。
+let baseline = toscalar(daily | where DaysAgo between (1 .. 14) | summarize percentile(TotalWh, 50));
+print TodayWh = today, Baseline = baseline, Ratio = today / baseline
+| extend Trend = case(isnull(Ratio), "不明", Ratio >= 1.4, "いつもより多め",
+    Ratio <= 0.6, "いつもより少なめ", "ほぼいつもどおり")
+```
+
+> 閾値 1.4 / 0.6 と中央値14日はアプリの `PowerUsageService` と揃えてあります。下振れ側を甘く（0.6）しているのは、「誰も起きていない」を見逃すほうが誤報より高くつくためです。
+
+機器ごとの内訳を見たいときは、`summarize ... by Day` を `by Day, DeviceId` に変えてください。
 
 ## 1. ワークスペースの作成
 2. 左下の「ワークスペース」→「新しいワークスペースの作成」から、見守り隊専用のワークスペースを作成します（Fabric容量が必要）。

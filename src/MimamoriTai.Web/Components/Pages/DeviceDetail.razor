@@ -256,6 +256,10 @@ else
             {
                 <ul class="power-figures">
                     <li>
+                        <span class="power-label">今日</span>
+                        <span class="power-value">@PowerUsageService.Format(_power.TodayWh)</span>
+                    </li>
+                    <li>
                         <span class="power-label">昨日</span>
                         <span class="power-value">@PowerUsageService.Format(_power.YesterdayWh)</span>
                     </li>
@@ -268,6 +272,16 @@ else
                         <span class="power-value">@PowerUsageService.Format(_power.Last30DaysWh)</span>
                     </li>
                 </ul>
+
+                @* The watt-hours alone mean nothing to a family; what they can act on is
+                   whether today departs from this home's own routine. *@
+                @if (_power.Headline.Trend != PowerUsageTrend.Unknown)
+                {
+                    <p class="power-trend @TrendClass(_power.Headline.Trend)">
+                        <span class="power-trend-word">@TrendWord(_power.Headline.Trend)</span>
+                        <span class="power-trend-detail">@TrendDetail(_power.Headline)</span>
+                    </p>
+                }
 
                 <BarChart Points="PowerBars()" Unit="Wh"
                           AriaLabel="@PowerBarsAriaLabel()" Class="device-trend" />
@@ -380,6 +394,33 @@ else
 
         return "日ごとの使用電力量："
             + string.Join("、", PowerBars().Select(p => $"{p.Label} {p.Display}"));
+    }
+
+    private static string TrendWord(PowerUsageTrend trend) => trend switch
+    {
+        PowerUsageTrend.Higher => "いつもより多め",
+        PowerUsageTrend.Lower => "いつもより少なめ",
+        _ => "ほぼいつもどおり"
+    };
+
+    private static string TrendClass(PowerUsageTrend trend) => trend switch
+    {
+        PowerUsageTrend.Higher => "is-higher",
+        PowerUsageTrend.Lower => "is-lower",
+        _ => "is-typical"
+    };
+
+    /// <summary>
+    /// Spells out what the comparison was made against, because "少なめ" on its own
+    /// invites the family to wonder whether the app simply lost the data.
+    /// </summary>
+    private static string TrendDetail(PowerUsageComparison c)
+    {
+        var baseline = $"いつも約{PowerUsageService.Format(c.Baseline)}／直近{c.BaselineDays}日";
+
+        return c.Ratio is { } r
+            ? $"（{baseline}の約{r * 100:0}%）"
+            : $"（{baseline}）";
     }
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();

@@ -35,7 +35,7 @@ public sealed class LocalDataQuestionServiceTests
             VoltageV = 104.1,
             CurrentMa = watts / 104.1 * 1000,
             ApproxWatts = watts,
-            DailyEnergyWh = 12.5,
+            DailyEnergyWh = watts, // SwitchBot's `weight`: instantaneous real watts
             UsageMinutesToday = 90,
             OccurredAtUtc = at,
             ReceivedAtUtc = at
@@ -50,15 +50,45 @@ public sealed class LocalDataQuestionServiceTests
         var device = Plug("リビングの電気");
         using var db = await new TestDb().SeedAsync(device);
         var now = new DateTimeOffset(2026, 1, 1, 3, 0, 0, TimeSpan.Zero);
-        await AddReadingAsync(db, device, now, 32.7);
+        await AddReadingAsync(db, device, now.AddMinutes(-5), 32.7);
 
         var answer = await Service(db, now).AnswerAsync(db.HouseholdId, "電力使用量は？");
 
         Assert.True(answer.Success);
         Assert.Contains("32.7", answer.Answer);
         Assert.Contains("104.1", answer.Answer);
-        Assert.Contains("12.5", answer.Answer);
+        Assert.Contains("使用電力量", answer.Answer);
         Assert.DoesNotContain("記録がありません", answer.Answer);
+    }
+
+    /// <summary>
+    /// The figure a family cares about is not the watt-hours but whether today looks
+    /// like their usual day, so the answer has to say which it is.
+    /// </summary>
+    [Fact]
+    public async Task Power_Question_Says_How_Today_Compares_With_The_Usual_Day()
+    {
+        var device = Plug("リビングの電気");
+        using var db = await new TestDb().SeedAsync(device);
+        var now = new DateTimeOffset(2026, 1, 8, 3, 0, 0, TimeSpan.Zero);
+
+        // Four previous mornings at 100W over the same hour, then this morning at a tenth.
+        foreach (var back in new[] { 1, 2, 3, 4 })
+        {
+            for (var i = 0; i < 12; i++)
+            {
+                await AddReadingAsync(db, device, now.AddDays(-back).AddMinutes(-60 + (i * 5)), 100);
+            }
+        }
+
+        for (var i = 0; i < 12; i++)
+        {
+            await AddReadingAsync(db, device, now.AddMinutes(-60 + (i * 5)), 10);
+        }
+
+        var answer = await Service(db, now).AnswerAsync(db.HouseholdId, "電力使用量は？");
+
+        Assert.Contains("少ない", answer.Answer);
     }
 
     [Fact]

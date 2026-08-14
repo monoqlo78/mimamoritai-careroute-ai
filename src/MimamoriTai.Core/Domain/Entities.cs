@@ -326,16 +326,15 @@ public class SwitchBotConnection
 /// Field semantics, per the SwitchBot OpenAPI v1.1 Plug Mini (JP) status response:
 ///   - <see cref="VoltageV"/> &lt;- `voltage`: instantaneous line voltage, Volts.
 ///   - <see cref="CurrentMa"/> &lt;- `electricCurrent`: instantaneous current draw, mA.
-///   - <see cref="DailyEnergyWh"/> &lt;- `weight`: SwitchBot's own documentation only
-///     describes this as "the amount of electricity used today" without a fully
-///     unambiguous unit. This codebase's existing <c>SwitchBotDeviceProvider.ResolveState</c>
-///     mapping already treats the same field as an instantaneous watts-like reading
-///     for <c>ProviderDeviceStatus.PowerWatts</c> (and that mapping/its test must not
-///     change). For this new time-series table the same raw value is stored again,
-///     labelled "Wh" to match the SwitchBot JP app's own label ("本日の使用電力量
-///     (Wh)"), i.e. a *daily cumulative* energy reading rather than an instantaneous
-///     power reading. This is a deliberate, documented judgment call, not a value
-///     confirmed against a live device -- see docs/FABRIC_SETUP.md.
+///   - <see cref="DailyEnergyWh"/> &lt;- `weight`: SwitchBot documents this as "the
+///     power consumed in a day, measured in Watts", which cannot be right for a daily
+///     total. Checked against a live plug it is kilowatt-hours rounded to one decimal:
+///     days whose measured draw integrates to ~708Wh, ~234Wh and ~109Wh reported 0.6,
+///     0.3 and 0. Stored raw for fidelity, but the "Wh" in the property name is a
+///     misnomer kept only to avoid a migration, and it must not be used as an energy
+///     figure -- <c>PowerUsageService</c> integrates <see cref="ApproxWatts"/> instead.
+///     The existing <c>SwitchBotDeviceProvider.ResolveState</c> mapping of the same
+///     field to <c>ProviderDeviceStatus.PowerWatts</c> is unchanged.
 ///   - <see cref="UsageMinutesToday"/> &lt;- `electricityOfDay`: minutes the outlet has
 ///     been switched on today; reset by the device at local midnight.
 ///   - <see cref="ApproxWatts"/>: voltage * current / 1000, a power-factor-1

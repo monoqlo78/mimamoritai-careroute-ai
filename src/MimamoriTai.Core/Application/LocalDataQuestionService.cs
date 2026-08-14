@@ -12,6 +12,10 @@ public sealed class LocalDataQuestionService(IAppDbContext db, TimeProvider cloc
 {
     private const string SourceName = "LocalData";
 
+    // Reads nothing but the same context and clock this service already holds, so it is
+    // built here rather than threaded through every construction site.
+    private PowerUsageService PowerUsage => new(db, clock);
+
     public async Task<FabricAnswer> AnswerAsync(Guid householdId, string question, CancellationToken ct = default)
     {
         var activity = new ActivityService(db);
@@ -164,9 +168,13 @@ public sealed class LocalDataQuestionService(IAppDbContext db, TimeProvider cloc
             parts.Add($"電圧{v:0.#}V・電流{ma:0}mA");
         }
 
-        if (latest.DailyEnergyWh is { } wh)
+        // Deliberately not SwitchBot's `weight` counter read as a daily total: that
+        // field is instantaneous watts, so the figure below is integrated from the
+        // measured draw instead -- the same arithmetic the SwitchBot app shows.
+        var usage = await PowerUsage.GetAsync(householdId, ct: ct);
+        if (usage.TodayWh > 0)
         {
-            parts.Add($"今日の積算電力量は{wh:0.##}Wh");
+            parts.Add($"今日の使用電力量は約{PowerUsageService.Format(usage.TodayWh)}");
         }
 
         if (latest.UsageMinutesToday is { } minutes)
@@ -179,8 +187,41 @@ public sealed class LocalDataQuestionService(IAppDbContext db, TimeProvider cloc
             .CountAsync(r => r.HouseholdId == householdId && r.OccurredAtUtc >= since, ct);
 
         return $"{latest.Name}の{measuredAt:HH\\:mm}時点の測定値では、{string.Join("、", parts)}です"
-            + $"（今日の測定回数は{samples}回）。{await PowerChangeFactsAsync(householdId, since, ct)}{inventory}";
+            + $"（今日の測定回数は{samples}回）。{DescribeTrend(usage)}"
+            + $"{await PowerChangeFactsAsync(householdId, since, ct)}{inventory}";
     }
+
+    /// <summary>
+    /// States whether today's electricity use is in line with this home's own habit.
+    ///
+    /// This is the sentence a family actually wants: the absolute watt-hours mean
+    /// nothing to them, but "いつもより少ない" is the difference between a normal day and
+    /// a day worth a phone call. Today is judged against how much the same hours had
+    /// consumed on previous days, so an answer given at breakfast is not compared with
+    /// whole finished days.
+    /// </summary>
+    private static string DescribeTrend(PowerUsageSummary usage)
+    {
+        var today = usage.Today ?? PowerUsageComparison.Unknown;
+        if (today.Trend == PowerUsageTrend.Unknown)
+        {
+            return usage.Yesterday is { Trend: not PowerUsageTrend.Unknown } y
+                ? $"昨日の使用電力量は約{PowerUsageService.Format(y.EnergyWh)}で、"
+                    + $"いつも（約{PowerUsageService.Format(y.Baseline)}）と比べて{TrendWord(y.Trend)}です。"
+                : "いつもと比べるための過去の実績がまだ足りません。";
+        }
+
+        var scale = today.Ratio is { } r ? $"（いつもの約{r * 100:0}%）" : string.Empty;
+        return $"今の時刻までの使用電力量は、直近{today.BaselineDays}日の同じ時間帯"
+            + $"（約{PowerUsageService.Format(today.Baseline)}）と比べて{TrendWord(today.Trend)}{scale}。";
+    }
+
+    private static string TrendWord(PowerUsageTrend trend) => trend switch
+    {
+        PowerUsageTrend.Higher => "多い",
+        PowerUsageTrend.Lower => "少ない",
+        _ => "ほぼいつもどおり"
+    };
 
     /// <summary>
     /// Describes the swings in draw recorded today. Consumption is not only on/off:

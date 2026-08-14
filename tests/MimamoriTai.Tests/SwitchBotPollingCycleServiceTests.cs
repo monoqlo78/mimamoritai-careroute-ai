@@ -389,9 +389,10 @@ public class SwitchBotPollingCycleServiceTests
         var provider = new FakePollingDeviceProvider();
 
         // Socket on, nothing running behind it: standby draw only.
+        // The fourth argument is SwitchBot's `weight`, i.e. instantaneous real watts.
         provider.Statuses[device.ExternalDeviceId] = new ProviderDeviceStatus(device.ExternalDeviceId, "on", null, clock.GetUtcNow());
         provider.PlugMiniReadings[device.ExternalDeviceId] =
-            new PlugMiniPowerReading(device.ExternalDeviceId, 100.0, 2.0, 0, 0, clock.GetUtcNow());
+            new PlugMiniPowerReading(device.ExternalDeviceId, 100.0, 2.0, 0.2, 0, clock.GetUtcNow());
         var idle = await service.PollHouseholdAsync(db.HouseholdId, provider);
         Assert.Equal("off", Assert.Single(idle.CreatedEvents).Event.State);
 
@@ -399,7 +400,7 @@ public class SwitchBotPollingCycleServiceTests
         clock.Advance(TimeSpan.FromMinutes(5));
         provider.Statuses[device.ExternalDeviceId] = new ProviderDeviceStatus(device.ExternalDeviceId, "on", null, clock.GetUtcNow());
         provider.PlugMiniReadings[device.ExternalDeviceId] =
-            new PlugMiniPowerReading(device.ExternalDeviceId, 100.0, 400.0, 3, 5, clock.GetUtcNow());
+            new PlugMiniPowerReading(device.ExternalDeviceId, 100.0, 400.0, 40, 5, clock.GetUtcNow());
         var inUse = await service.PollHouseholdAsync(db.HouseholdId, provider);
 
         var started = Assert.Single(inUse.CreatedEvents);
@@ -410,7 +411,7 @@ public class SwitchBotPollingCycleServiceTests
         clock.Advance(TimeSpan.FromMinutes(5));
         provider.Statuses[device.ExternalDeviceId] = new ProviderDeviceStatus(device.ExternalDeviceId, "on", null, clock.GetUtcNow());
         provider.PlugMiniReadings[device.ExternalDeviceId] =
-            new PlugMiniPowerReading(device.ExternalDeviceId, 100.0, 2.0, 6, 10, clock.GetUtcNow());
+            new PlugMiniPowerReading(device.ExternalDeviceId, 100.0, 2.0, 0.2, 10, clock.GetUtcNow());
         var finished = await service.PollHouseholdAsync(db.HouseholdId, provider);
 
         Assert.Equal("off", Assert.Single(finished.CreatedEvents).Event.State);
@@ -466,10 +467,11 @@ public class SwitchBotPollingCycleServiceTests
         var service = new SwitchBotPollingCycleService(db.Context, clock);
         var provider = new FakePollingDeviceProvider();
 
-        // A lamp: ~33W, matching the real Plug Mini readings in production.
+        // A lamp: ~33W real power, matching the real Plug Mini readings in production.
+        // The fourth argument is SwitchBot's `weight`, i.e. instantaneous real watts.
         provider.Statuses[device.ExternalDeviceId] = new ProviderDeviceStatus(device.ExternalDeviceId, "on", null, clock.GetUtcNow());
         provider.PlugMiniReadings[device.ExternalDeviceId] =
-            new PlugMiniPowerReading(device.ExternalDeviceId, 104.1, 314.0, 0, 0, clock.GetUtcNow());
+            new PlugMiniPowerReading(device.ExternalDeviceId, 104.1, 314.0, 33, 0, clock.GetUtcNow());
         var lamp = await service.PollHouseholdAsync(db.HouseholdId, provider);
         Assert.Equal("on", Assert.Single(lamp.CreatedEvents).Event.State);
 
@@ -477,7 +479,7 @@ public class SwitchBotPollingCycleServiceTests
         clock.Advance(TimeSpan.FromMinutes(5));
         provider.Statuses[device.ExternalDeviceId] = new ProviderDeviceStatus(device.ExternalDeviceId, "on", null, clock.GetUtcNow());
         provider.PlugMiniReadings[device.ExternalDeviceId] =
-            new PlugMiniPowerReading(device.ExternalDeviceId, 104.1, 8000.0, 10, 5, clock.GetUtcNow());
+            new PlugMiniPowerReading(device.ExternalDeviceId, 104.1, 8000.0, 830, 5, clock.GetUtcNow());
         var kettle = await service.PollHouseholdAsync(db.HouseholdId, provider);
 
         var surge = Assert.Single(kettle.CreatedEvents).Event;
@@ -489,7 +491,7 @@ public class SwitchBotPollingCycleServiceTests
         clock.Advance(TimeSpan.FromMinutes(5));
         provider.Statuses[device.ExternalDeviceId] = new ProviderDeviceStatus(device.ExternalDeviceId, "on", null, clock.GetUtcNow());
         provider.PlugMiniReadings[device.ExternalDeviceId] =
-            new PlugMiniPowerReading(device.ExternalDeviceId, 104.1, 314.0, 20, 10, clock.GetUtcNow());
+            new PlugMiniPowerReading(device.ExternalDeviceId, 104.1, 314.0, 33, 10, clock.GetUtcNow());
         var done = await service.PollHouseholdAsync(db.HouseholdId, provider);
         Assert.Equal("decreased", Assert.Single(done.CreatedEvents).Event.State);
 
@@ -592,9 +594,10 @@ public class SwitchBotPollingCycleServiceTests
         await db.Context.SaveChangesAsync();
 
         // One cycle at the lamp's level, which only lands in PlugMiniReadings.
+        // The fourth argument is SwitchBot's `weight`, i.e. instantaneous real watts.
         provider.Statuses[device.ExternalDeviceId] = new ProviderDeviceStatus(device.ExternalDeviceId, "on", null, clock.GetUtcNow());
         provider.PlugMiniReadings[device.ExternalDeviceId] =
-            new PlugMiniPowerReading(device.ExternalDeviceId, 104.1, 314.0, 0, 0, clock.GetUtcNow());
+            new PlugMiniPowerReading(device.ExternalDeviceId, 104.1, 314.0, 33, 0, clock.GetUtcNow());
         var lamp = await service.PollHouseholdAsync(db.HouseholdId, provider);
         Assert.Empty(lamp.CreatedEvents);
 
@@ -602,7 +605,7 @@ public class SwitchBotPollingCycleServiceTests
         clock.Advance(TimeSpan.FromMinutes(5));
         provider.Statuses[device.ExternalDeviceId] = new ProviderDeviceStatus(device.ExternalDeviceId, "on", null, clock.GetUtcNow());
         provider.PlugMiniReadings[device.ExternalDeviceId] =
-            new PlugMiniPowerReading(device.ExternalDeviceId, 104.1, 8000.0, 10, 5, clock.GetUtcNow());
+            new PlugMiniPowerReading(device.ExternalDeviceId, 104.1, 8000.0, 830, 5, clock.GetUtcNow());
         var kettle = await service.PollHouseholdAsync(db.HouseholdId, provider);
 
         var surge = Assert.Single(kettle.CreatedEvents).Event;

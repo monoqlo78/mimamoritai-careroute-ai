@@ -143,11 +143,18 @@ public sealed class SwitchBotPollingCycleService(IAppDbContext db, TimeProvider 
     /// state instead: rising above <see cref="InUseWattsThreshold"/> is a use starting,
     /// falling back below it is that use ending. Devices with no telemetry (a bot, a
     /// motion sensor, the demo provider) keep their reported state untouched.
+    ///
+    /// It reads the plug's own real-power measurement in preference to the
+    /// voltage-times-current estimate, because the estimate is apparent power and a
+    /// reactive standby load fools it badly: a live plug reporting 0.3W of real power
+    /// was drawing 314mA at 104V, which the estimate turns into 32.7W and this method
+    /// would then have called "in use" all day and all night. The estimate is still
+    /// used when the device reports no real power, which is better than no signal.
     /// </summary>
     internal static ProviderDeviceStatus? EffectiveState(
         ProviderDeviceStatus? status, PlugMiniPowerReading? reading)
     {
-        if (status is null || reading?.ApproxWatts is not { } watts)
+        if (status is null || (reading?.RealWatts ?? reading?.ApproxWatts) is not { } watts)
         {
             return status;
         }
