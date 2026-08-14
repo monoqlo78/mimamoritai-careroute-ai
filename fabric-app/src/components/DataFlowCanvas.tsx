@@ -62,7 +62,7 @@ const NODES: FlowNode[] = [
   {
     id: 'sensor',
     x: 0.085,
-    y: 0.26,
+    y: 0.14,
     title: 'SwitchBot / センサー',
     subtitle: '人感・開閉・温湿度',
     metric: (s) =>
@@ -72,7 +72,7 @@ const NODES: FlowNode[] = [
   {
     id: 'app',
     x: 0.3,
-    y: 0.26,
+    y: 0.14,
     title: '見守り隊 Web',
     subtitle: '.NET 10 Blazor / App Service',
     metric: (s) => `${s.households} 世帯`,
@@ -81,7 +81,7 @@ const NODES: FlowNode[] = [
   {
     id: 'sql',
     x: 0.515,
-    y: 0.26,
+    y: 0.14,
     title: 'Azure SQL',
     subtitle: 'スキーマ mimamori',
     metric: (s) => `本番 ${s.productionHouseholds} 世帯`,
@@ -90,7 +90,7 @@ const NODES: FlowNode[] = [
   {
     id: 'risk',
     x: 0.725,
-    y: 0.26,
+    y: 0.14,
     title: 'リスク判定',
     subtitle: '無反応・生活リズム逸脱',
     metric: (s) => `${s.alerts} 件検知`,
@@ -99,7 +99,7 @@ const NODES: FlowNode[] = [
   {
     id: 'line',
     x: 0.925,
-    y: 0.26,
+    y: 0.14,
     title: 'LINE 配信',
     subtitle: '家族への通知',
     metric: (s) => `宛先 ${s.lineRecipients}`,
@@ -107,8 +107,8 @@ const NODES: FlowNode[] = [
   },
   {
     id: 'orca',
-    // Far left: the AI path is a branch off the app, not a link in the analytics
-    // chain, and standing inside that chain made it read as one.
+    // Bottom row with the streaming branch, because both are things the app
+    // reaches out to on its own -- neither is a step on the way to this console.
     x: 0.085,
     y: 0.78,
     title: 'OrcaRouter',
@@ -128,10 +128,11 @@ const NODES: FlowNode[] = [
   },
   {
     id: 'eventstream',
-    // Under the app because that is genuinely where the hop starts: SwitchBot's
-    // consumer devices have no direct Azure path, so the poller is the only
-    // possible producer.
-    x: 0.253,
+    // Directly under the app, which is where this hop starts: SwitchBot's consumer
+    // devices have no direct Azure path, so the poller is the only possible
+    // producer. On its own row because this branch never reaches the console --
+    // sharing a row with the sync chain read as one pipeline feeding the console.
+    x: 0.3,
     y: 0.78,
     title: 'Eventstream',
     subtitle: 'カスタムエンドポイント',
@@ -144,7 +145,7 @@ const NODES: FlowNode[] = [
   },
   {
     id: 'eventhouse',
-    x: 0.421,
+    x: 0.505,
     y: 0.78,
     title: 'Eventhouse',
     subtitle: 'KQL / MimamoriEventhouse',
@@ -155,9 +156,22 @@ const NODES: FlowNode[] = [
     accent: 'fabric',
   },
   {
-    id: 'sync',
-    x: 0.589,
+    id: 'dataagent',
+    x: 0.71,
     y: 0.78,
+    title: 'Fabric Data Agent',
+    subtitle: 'MCP / 自然言語で照会',
+    // Drawn to answer the obvious question the Eventhouse card raises: if the
+    // console cannot read it, who does. This is who -- the app asks the Data
+    // Agent, which queries the Eventhouse. Rose like OrcaRouter because it is
+    // the same branch: things the app consults to answer a question.
+    metric: () => 'AI の質問応答',
+    accent: 'ai',
+  },
+  {
+    id: 'sync',
+    x: 0.515,
+    y: 0.47,
     title: 'コンソール同期',
     // The C# background service in the web app, not the ps1 used to bootstrap
     // the Fabric SQL side once.
@@ -167,8 +181,8 @@ const NODES: FlowNode[] = [
   },
   {
     id: 'fabric',
-    x: 0.757,
-    y: 0.78,
+    x: 0.72,
+    y: 0.47,
     title: 'Fabric SQL Database',
     subtitle: 'Rayfin プロビジョニング',
     metric: (s) =>
@@ -178,8 +192,8 @@ const NODES: FlowNode[] = [
   {
     id: 'console',
     x: 0.925,
-    y: 0.78,
-    title: 'この運用コンソール',
+    y: 0.47,
+    title: '運用コンソール',
     subtitle: 'Rayfin + Fabric SSO',
     metric: (s) => (s.origin === 'fabric' ? 'ライブ' : 'スナップショット'),
     accent: 'fabric',
@@ -246,6 +260,15 @@ const EDGES: FlowEdge[] = [
     label: '取り込み',
     weight: (s) => 4 + Math.min(12, s.activityEvents / 20),
     color: [0.2, 0.83, 0.6],
+  },
+  {
+    from: 'eventhouse',
+    to: 'dataagent',
+    // The Eventhouse is read, just not by this console. Leaving that unsaid is
+    // what made the streaming branch look like a redundant copy of the sync.
+    label: 'KQL 照会',
+    weight: (s) => 3 + Math.min(10, s.aiCalls / 6),
+    color: [0.98, 0.44, 0.58],
   },
   {
     from: 'sql',
@@ -377,7 +400,12 @@ export function DataFlowCanvas({ stats }: { stats: PipelineStats }) {
           `M ${px(a.x)} ${py(a.y)} ` +
           `C ${px(c1x)} ${py(c1y)}, ${px(c2x)} ${py(c2y)}, ${px(b.x)} ${py(b.y)}`,
         labelX: px(bezier(0.5, a.x, c1x, c2x, b.x)),
-        labelY: py(bezier(0.5, a.y, c1y, c2y, b.y)),
+        // An edge between two nodes on the same row has its midpoint at the row's
+        // own height, so a 10px lift left the label underneath the cards, which
+        // are drawn over this SVG. Those are the labels that explain the diagram,
+        // so lift same-row labels clear of the card instead. Sloped edges pass
+        // between rows and only need the small nudge off the curve.
+        labelY: py(bezier(0.5, a.y, c1y, c2y, b.y)) - (Math.abs(b.y - a.y) < 0.02 ? 40 : 10),
       };
     });
   }, [nodeById, size]);
@@ -582,7 +610,7 @@ export function DataFlowCanvas({ stats }: { stats: PipelineStats }) {
     <div className="overflow-x-auto">
       <div
         ref={wrapRef}
-        className="relative h-[420px] min-w-[900px] overflow-hidden rounded-xl bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950"
+        className="relative h-[470px] min-w-[900px] overflow-hidden rounded-xl bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950"
       >
         <div className="pointer-events-none absolute inset-0 opacity-40 [background-image:radial-gradient(circle_at_1px_1px,rgba(148,163,184,0.25)_1px,transparent_0)] [background-size:26px_26px]" />
 
@@ -603,7 +631,7 @@ export function DataFlowCanvas({ stats }: { stats: PipelineStats }) {
               />
               <text
                 x={labelX}
-                y={labelY - 10}
+                y={labelY}
                 textAnchor="middle"
                 className="fill-slate-400 text-[11px]"
               >
@@ -654,7 +682,7 @@ export function DataFlowCanvas({ stats }: { stats: PipelineStats }) {
           {stats.aiCalls > 0 && (
             <span className="flex items-center gap-1.5">
               <span className="h-1.5 w-1.5 rounded-full bg-rose-400" />
-              AI 経路（OrcaRouter）
+              AI 経路（OrcaRouter / Data Agent）
             </span>
           )}
           {stats.failedAlerts > 0 && (

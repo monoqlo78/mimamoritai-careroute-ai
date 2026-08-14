@@ -203,9 +203,9 @@ export function HomePage() {
                 データはこう流れています
               </h2>
               <p className="text-xs text-gray-500">
-                センサーから家族への通知まで。Fabric へは2経路あり、生イベントは
-                リアルタイムに Eventhouse へ、集計は15分ごとにこの画面へ届きます。
-                数字はすべて下の表と同じ実データです。
+                センサーから家族への通知まで。Fabric へは2経路あり、この画面に出ているのは
+                Azure SQL からの集計同期（15分ごと）だけです。Eventstream の生イベントは
+                Eventhouse に入り、AI の質問応答が読みます。数字はすべて下の表と同じ実データです。
               </p>
             </div>
             <div className="text-right text-xs text-gray-500">
