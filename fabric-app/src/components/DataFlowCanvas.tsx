@@ -107,7 +107,10 @@ const NODES: FlowNode[] = [
   },
   {
     id: 'orca',
-    x: 0.3,
+    // Pushed to the far left so the four Fabric-coloured cards to the right form
+    // one unbroken block. The AI path is a branch off the app, not part of the
+    // analytics chain, and sitting inside that chain made it read as one.
+    x: 0.085,
     y: 0.78,
     title: 'OrcaRouter',
     // Short enough to stay on one line inside the card; the longer wording
@@ -126,9 +129,11 @@ const NODES: FlowNode[] = [
   },
   {
     id: 'eventstream',
-    // The only free slot on the lower row, and it sits directly under the app,
-    // which is exactly where this hop happens.
-    x: 0.085,
+    // Directly under the app, which is where this hop actually happens, and
+    // immediately left of the console-sync card so every Fabric-coloured node
+    // sits in one run. Parked on the far left it read as a stray input rather
+    // than the head of the analytics path.
+    x: 0.3,
     y: 0.78,
     title: 'Eventstream',
     subtitle: 'Eventhouse / Lakehouse',
