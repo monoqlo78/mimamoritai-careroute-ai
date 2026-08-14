@@ -32,7 +32,8 @@ public sealed class AssistantOrchestrator(
     ILocalDataQuestionService localData,
     TimeProvider clock,
     IPendingActionStore? pendingActions = null,
-    TimeSpan? fabricBudget = null)
+    TimeSpan? fabricBudget = null,
+    IGuardedActionNotifier? guardedNotifier = null)
 {
     private readonly IPendingActionStore _pending = pendingActions ?? new InMemoryPendingActionStore();
 
@@ -245,9 +246,10 @@ public sealed class AssistantOrchestrator(
         string originalText,
         AssistantIntent intent,
         AiCompletionResult completion,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool hazardAcknowledged = false)
     {
-        var control = new DeviceControlService(db, deviceProvider, clock);
+        var control = new DeviceControlService(db, deviceProvider, clock, guardedNotifier);
         var outcome = await control.ExecuteAsync(
             request.HouseholdId,
             alias,
@@ -257,7 +259,8 @@ public sealed class AssistantOrchestrator(
             request.Source,
             request.PersonId,
             completion.ResolvedModel,
-            ct);
+            ct,
+            hazardAcknowledged);
 
         return new AssistantResponse(
             outcome.Message,
@@ -285,15 +288,20 @@ public sealed class AssistantOrchestrator(
             .ToListAsync(ct);
 
         var matches = DeviceResolver.Resolve(devices, plan.DeviceAlias);
-
-        // Exactly one safe, permitted target is the only case worth confirming.
-        if (matches.Count != 1
-            || DeviceSafetyPolicy.Validate(matches[0], action, plan.Confidence) is not null)
+        if (matches.Count != 1)
         {
             return null;
         }
 
         var device = matches[0];
+        var verdict = DeviceSafetyPolicy.Evaluate(device, action, plan.Confidence);
+
+        // A refusal is left to the control service, which words it precisely and audits
+        // the attempt. Only something we would actually carry out is worth confirming.
+        if (verdict.Decision == SafetyDecision.Deny)
+        {
+            return null;
+        }
 
         _pending.Set(new PendingDeviceAction(
             request.HouseholdId,
@@ -301,7 +309,8 @@ public sealed class AssistantOrchestrator(
             device.DisplayName,
             action,
             request.Message,
-            clock.GetUtcNow()));
+            clock.GetUtcNow(),
+            verdict.NeedsHazardCheck));
 
         var verb = action switch
         {
@@ -310,8 +319,21 @@ public sealed class AssistantOrchestrator(
             _ => "切り替えます"
         };
 
+        // For a heating appliance the question is not "shall I?" but "is it safe to?".
+        // The checks are spelled out so the person answering knows what they are vouching
+        // for, and so that a yes is a considered answer rather than a reflex.
+        var prompt = verdict.NeedsHazardCheck
+            ? string.Join(
+                "\n",
+                [
+                    $"{device.DisplayName} を{verb}。{verdict.Reason}",
+                    .. (verdict.HazardChecks ?? []).Select(c => $"・{c}"),
+                    "確認できたら「はい」、やめる場合は「いいえ」と送ってください。実行するとご家族全員にお知らせが届きます。"
+                ])
+            : $"{device.DisplayName} を{verb}。よろしいですか？（「はい」で実行、「いいえ」で中止）";
+
         return new AssistantResponse(
-            $"{device.DisplayName} を{verb}。よろしいですか？（「はい」で実行、「いいえ」で中止）",
+            prompt,
             plan.Intent,
             completion.ResolvedModel,
             completion.Router,
@@ -347,7 +369,7 @@ public sealed class AssistantOrchestrator(
         var response = answer.Value
             ? await ExecuteDeviceAsync(
                 request, pending.DeviceAlias, pending.Action, 1.0, pending.OriginalText,
-                AssistantIntent.ControlDevice, completion, ct)
+                AssistantIntent.ControlDevice, completion, ct, pending.RequiresHazardAcknowledgement)
             : new AssistantResponse(
                 $"{pending.DeviceName} の操作を中止しました。",
                 AssistantIntent.ControlDevice,

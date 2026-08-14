@@ -169,7 +169,8 @@ public sealed class DeviceSettingsService(
         Guid deviceId,
         bool remoteControlAllowed,
         bool treatAsSafeAppliance,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool blockRemoteTurnOn = false)
     {
         var (device, denied) = await ResolveEditableAsync(deviceId, ct);
         if (denied is not null)
@@ -179,20 +180,29 @@ public sealed class DeviceSettingsService(
 
         device!.RemoteControlAllowed = remoteControlAllowed;
 
-        // Never widen beyond what the device type itself allows: if the type is already
-        // classified Safe, keep it Safe. Restricted types are only relaxed by explicit
-        // owner consent, and withdrawing consent restores the type's own classification.
+        // Three settings, deliberately ordered so the most cautious one wins. An owner who
+        // has ticked "never switch this on from away" has said something specific about a
+        // specific appliance, and no default about device types should be able to override
+        // that. Below it, an explicit "treat as safe" drops the surroundings check; with
+        // neither ticked the device type decides, which for anything that heats means
+        // Guarded rather than blocked outright.
         var classified = DeviceSafetyPolicy.Classify(device.DeviceType);
-        device.SafetyClass = treatAsSafeAppliance || classified == SafetyClass.Safe
-            ? SafetyClass.Safe
-            : classified;
+        device.SafetyClass = blockRemoteTurnOn
+            ? SafetyClass.Restricted
+            : treatAsSafeAppliance || classified == SafetyClass.Safe
+                ? SafetyClass.Safe
+                : classified;
 
         await db.SaveChangesAsync(ct);
 
         var message = device.RemoteControlAllowed
-            ? device.SafetyClass == SafetyClass.Safe
-                ? "遠隔操作を許可しました。「つける」「消す」の両方が使えます。"
-                : "遠隔操作を許可しました。安全のため「消す」のみ使えます。"
+            ? device.SafetyClass switch
+            {
+                SafetyClass.Safe => "遠隔操作を許可しました。「つける」「消す」の両方が使えます。",
+                SafetyClass.Guarded =>
+                    "遠隔操作を許可しました。つけるときは周囲の安全を確認したうえで実行し、ご家族全員にお知らせが届きます。",
+                _ => "遠隔操作を許可しました。安全のため「消す」のみ使えます。"
+            }
             : "遠隔操作を禁止しました。この機器は画面からもAIからも操作できません。";
 
         return new DeviceSettingsUpdateResult(

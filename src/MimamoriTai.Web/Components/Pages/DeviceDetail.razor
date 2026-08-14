@@ -9,6 +9,7 @@
 @inject DeviceControlService Control
 @inject DeviceSettingsService Settings
 @inject PowerUsageService PowerUsage
+@inject IJSRuntime JS
 @implements IAsyncDisposable
 
 <PageTitle>@(_model is null ? "デバイス詳細" : _model.Name) / 見守り隊</PageTitle>
@@ -84,7 +85,7 @@ else
         </div>
         <div class="device-actions">
             <button class="secondary-button"
-                    title="@(_model.SafetyClass == "Restricted" ? "危険機器のためONは拒否されます" : "ONにする")"
+                    title="@(_model.SafetyClass switch { "Restricted" => "この機器は遠隔でONにしない設定です", "Guarded" => "周囲の安全を確認したうえでONにします", _ => "ONにする" })"
                     @onclick="@(() => ControlAsync(DeviceAction.TurnOn))"
                     disabled="@(_busy || !_model.IsEnabled)">つける</button>
             <button class="secondary-button"
@@ -99,6 +100,10 @@ else
     else if (_model.SafetyClass == "Restricted")
     {
         <p class="restricted-note">安全のため、遠隔では消す操作だけできます</p>
+    }
+    else if (_model.SafetyClass == "Guarded")
+    {
+        <p class="restricted-note">火や熱をあつかう機器です。ONにする前に周囲の確認をお願いします（ご家族全員に通知されます）</p>
     }
 
     <section class="permission-card">
@@ -143,7 +148,7 @@ else
                 <input type="checkbox"
                        checked="@_model.RemoteControlAllowed"
                        disabled="@_busy"
-                       @onchange="@(e => UpdatePermissionAsync((bool)e.Value!, _model.SafetyClass == "Safe"))" />
+                       @onchange="@(e => UpdatePermissionAsync((bool)e.Value!, _model.SafetyClass == "Safe", _model.SafetyClass == "Restricted"))" />
                 <span>
                     <strong>この機器の遠隔操作を許可する</strong>
                     <small>オフの間は「つける」「消す」の両方が拒否されます。</small>
@@ -152,14 +157,29 @@ else
 
             <label class="permission-row @(_model.RemoteControlAllowed ? "" : "is-disabled")">
                 <input type="checkbox"
-                       checked="@(_model.SafetyClass == "Safe")"
+                       checked="@(_model.SafetyClass == "Restricted")"
                        disabled="@(_busy || !_model.RemoteControlAllowed)"
-                       @onchange="@(e => UpdatePermissionAsync(_model.RemoteControlAllowed, (bool)e.Value!))" />
+                       @onchange="@(e => UpdatePermissionAsync(_model.RemoteControlAllowed, false, (bool)e.Value!))" />
                 <span>
-                    <strong>ONにするのも安全な機器として扱う</strong>
+                    <strong>遠隔でONにすることを禁止する</strong>
+                    <small>
+                        チェックすると、確認を挟んでもONにはできません（OFFは可能です）。
+                        ご本人が近くにいないときに絶対に通電させたくない機器に使ってください。
+                    </small>
+                </span>
+            </label>
+
+            <label class="permission-row @(_model.RemoteControlAllowed && _model.SafetyClass != "Restricted" ? "" : "is-disabled")">
+                <input type="checkbox"
+                       checked="@(_model.SafetyClass == "Safe")"
+                       disabled="@(_busy || !_model.RemoteControlAllowed || _model.SafetyClass == "Restricted")"
+                       @onchange="@(e => UpdatePermissionAsync(_model.RemoteControlAllowed, (bool)e.Value!, false))" />
+                <span>
+                    <strong>確認なしでONにできる機器として扱う</strong>
                     <small>
                         照明や扇風機など、留守中にONになっても危険がない機器のみチェックしてください。
-                        暖房器具・調理器具を接続している場合はオフのままにしてください（OFFのみ可能になります）。
+                        暖房器具・調理器具はオフのままにしてください。周囲の安全を確認してからONにでき、
+                        実行するとご家族全員にお知らせが届きます。
                     </small>
                 </span>
             </label>
@@ -626,6 +646,20 @@ else
             return;
         }
 
+        // The same hazard question the assistant asks over LINE, asked here too. Without
+        // it the button would simply be refused by the control service, which reads as a
+        // broken button rather than as a safeguard.
+        var hazardAcknowledged = false;
+        if (DeviceSafetyPolicy.CanEnergise(action) && _model.SafetyClass == "Guarded")
+        {
+            if (!await ConfirmHazardAsync())
+            {
+                return;
+            }
+
+            hazardAcknowledged = true;
+        }
+
         _busy = true;
         StateHasChanged();
 
@@ -639,7 +673,8 @@ else
                 originalText: $"[デバイス詳細] {_model.Alias} / {action}",
                 source: CommandSource.Web,
                 requestedByPersonId: null,
-                aiResolvedModel: null);
+                aiResolvedModel: null,
+                hazardAcknowledged: hazardAcknowledged);
 
             _notice = outcome.Message;
             _noticeKind = outcome.Status switch
@@ -655,6 +690,18 @@ else
         {
             _busy = false;
         }
+    }
+
+    private async Task<bool> ConfirmHazardAsync()
+    {
+        var type = Enum.TryParse<DeviceType>(_model!.DeviceType, out var parsed) ? parsed : DeviceType.Plug;
+        var checks = string.Join("\n", DeviceSafetyPolicy.HazardChecks(type).Select(c => $"・{c}"));
+        var message =
+            $"{_model.Name} は火や熱をあつかう機器です。周囲の安全を確認してからONにします。\n\n"
+            + $"{checks}\n\n"
+            + "実行するとご家族全員にお知らせが届きます。よろしいですか？";
+
+        return await JS.InvokeAsync<bool>("confirm", message);
     }
 
     private async Task SaveNamingAsync()
@@ -680,7 +727,10 @@ else
         }
     }
 
-    private async Task UpdatePermissionAsync(bool remoteControlAllowed, bool treatAsSafeAppliance)
+    private async Task UpdatePermissionAsync(
+        bool remoteControlAllowed,
+        bool treatAsSafeAppliance,
+        bool blockRemoteTurnOn)
     {
         if (_model is null || _busy)
         {
@@ -695,7 +745,8 @@ else
             var result = await Settings.UpdatePermissionsAsync(
                 _model.DeviceId,
                 remoteControlAllowed,
-                treatAsSafeAppliance);
+                treatAsSafeAppliance,
+                blockRemoteTurnOn: blockRemoteTurnOn);
 
             _notice = result.Message;
             _noticeKind = result.Status == DeviceSettingsUpdateStatus.Updated ? "ok" : "blocked";

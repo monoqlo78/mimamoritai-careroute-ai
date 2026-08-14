@@ -205,15 +205,23 @@ sequenceDiagram
     alt intent = control_device / device_status
         Orch->>Ctrl: ExecuteAsync(alias, action, confidence, ...)
         Ctrl->>DB: 機器一覧を取得しエイリアス解決
-        Ctrl->>Policy: Validate(device, action, confidence)
-        alt 違反あり(未許可/低確信度/Restricted等)
-            Policy-->>Ctrl: 理由文字列
+        Ctrl->>Policy: Evaluate(device, action, confidence)
+        alt Deny (未許可/低確信度/Restricted等)
+            Policy-->>Ctrl: SafetyVerdict(Deny, 理由)
             Ctrl->>DB: DeviceCommand(Status=Rejected, FailureReason) を保存
             Ctrl-->>Orch: DeviceControlOutcome(Executed=false)
-        else 許可
+        else ConfirmHazard かつ 未確認
+            Policy-->>Ctrl: SafetyVerdict(ConfirmHazard, 理由, ハザード質問)
+            Ctrl->>DB: DeviceCommand(Status=Rejected) を保存
+            Ctrl-->>Orch: DeviceControlOutcome(Executed=false, 質問付き)
+            Note over Orch,User: Orchが確認プロンプトを提示し、<br/>「はい」で hazardAcknowledged=true を付けて再実行
+        else Allow (または確認済み)
             Ctrl->>Provider: TurnOnAsync/TurnOffAsync/ToggleAsync
             Provider-->>Ctrl: ProviderResult
             Ctrl->>DB: DeviceCommand(Status=Succeeded/Failed) + DeviceEvent を保存
+            opt Guarded機器をONにした
+                Ctrl->>Ctrl: IGuardedActionNotifier で世帯全員にLINE通知<br/>(失敗しても操作は成功のまま)
+            end
             Ctrl-->>Orch: DeviceControlOutcome(Executed=true)
         end
     else intent = query_data
@@ -239,7 +247,7 @@ flowchart TD
     Start["自然言語コマンド受信\n(ControlDevice / DeviceStatus)"] --> Resolve["エイリアス／名称から機器を解決"]
     Resolve -->|一致0件| RejectNotFound["拒否: 対象機器が見つかりません"]
     Resolve -->|一致2件以上| RejectAmbiguous["拒否: どの機器か特定できません"]
-    Resolve -->|一致1件| Validate["DeviceSafetyPolicy.Validate"]
+    Resolve -->|一致1件| Validate["DeviceSafetyPolicy.Evaluate"]
 
     Validate --> CheckEnabled{"device.IsEnabled?"}
     CheckEnabled -->|No| RejectDisabled["拒否: 現在無効になっています"]
@@ -249,9 +257,18 @@ flowchart TD
     CheckConfidence -->|No| RejectLowConfidence["拒否: 確実に理解できませんでした"]
     CheckConfidence -->|Yes| CheckRemote{"RemoteControlAllowed == true?"}
     CheckRemote -->|No| RejectNoRemote["拒否: 遠隔操作が許可されていません"]
-    CheckRemote -->|Yes| CheckSafety{"SafetyClass == Restricted\nかつ action ∈ {TurnOn, Toggle}?"}
-    CheckSafety -->|Yes| RejectRestricted["拒否: 安全のため音声・チャットからの操作を禁止"]
-    CheckSafety -->|No| Allow["許可: IDeviceProviderで実行"]
+    CheckRemote -->|Yes| CheckEnergise{"action ∈ {TurnOn, Toggle}?"}
+    CheckEnergise -->|No（消す操作）| Allow["Allow: IDeviceProviderで実行"]
+    CheckEnergise -->|Yes| CheckSafety{"SafetyClass は?"}
+
+    CheckSafety -->|Safe| Allow
+    CheckSafety -->|Restricted| RejectRestricted["Deny: 遠隔でONにしない設定です\n（設定画面で変更可能）"]
+    CheckSafety -->|Guarded| CheckAck{"ハザード確認済み?\n(hazardAcknowledged)"}
+    CheckAck -->|No| Confirm["ConfirmHazard: 周囲の安全を尋ねる\n例「燃えやすいものはありませんか?」"]
+    CheckAck -->|Yes| AllowGuarded["Allow: 実行し、世帯全員へ通知"]
+
+    Confirm -->|利用者が「はい」| CheckAck
+    Confirm -->|利用者が「いいえ」/無応答| Audit
 
     RejectNotFound --> Audit["DeviceCommand(Status=Rejected)を保存"]
     RejectAmbiguous --> Audit
@@ -261,10 +278,15 @@ flowchart TD
     RejectRestricted --> Audit
     AllowStatus --> AuditOk["DeviceCommand(Status=Succeeded)を保存"]
     Allow --> Execute["Provider.TurnOnAsync等を実行"]
+    AllowGuarded --> Execute
     Execute --> AuditExec["DeviceCommand(Status=Succeeded/Failed) + DeviceEventを保存"]
+    AuditExec --> Notify["Guarded機器のONなら\nIGuardedActionNotifierで全員に通知"]
 ```
 
 重要な設計判断:
 - 判定ロジックは `DeviceSafetyPolicy` に集約され、I/Oを持たないため単体テストが容易。
+- **判定結果は文字列ではなく `SafetyVerdict`（`Allow` / `ConfirmHazard` / `Deny`）という型**。二値では「はい、ただし周囲を確認してから」を表現できず、危険な家電を一律に拒否するしかなくなる。寒い日に高齢の家族がストーブを扱えないとき、遠隔で何もできないことの方が危険な場合がある。
+- **ハザード確認の関門は `DeviceControlService`（サービス層）にある**。会話フローだけに置くと、APIを直接呼べば質問をスキップできてしまうため。Web の ON ボタンも同じサービスを通るので、`DeviceDetail.razor` / `Home.razor` は JS の `confirm` で同じ質問を提示してから `hazardAcknowledged: true` を渡す。
+- **通知は `SaveChangesAsync` の後に実行し、例外は握り潰す**。家電はすでにONになっているため、LINE の送信失敗を「操作が失敗した」と家族に読ませてはいけない。
 - **拒否も含めすべての試行が `DeviceCommand` として監査可能**（`DeviceControlService.RejectAsync`）。
-- LLMの出力（`confidence`, `deviceAlias`）は信用されず、必ずルールベースの `Validate` を通過する。
+- LLMの出力（`confidence`, `deviceAlias`）は信用されず、必ずルールベースの `Evaluate` を通過する。ハザード確認も同様で、モデルが「確認済み」と申告しても実際の確認ターンを経ていなければ実行されない。

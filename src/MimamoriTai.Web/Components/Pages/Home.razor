@@ -300,7 +300,7 @@ else
                     <p class="muted">最終利用 @FormatLocal(d.LastUsedUtc) ・ 今日 @d.TodayUsageCount 回</p>
                     <div class="device-actions">
                         <button class="secondary-button"
-                                title="@(d.SafetyClass == "Restricted" ? "危険機器のためONは拒否されます" : "ONにする")"
+                                title="@(d.SafetyClass switch { "Restricted" => "この機器は遠隔でONにしない設定です", "Guarded" => "周囲の安全を確認したうえでONにします", _ => "ONにする" })"
                                 @onclick="@(() => ControlAsync(d.Alias, DeviceAction.TurnOn))"
                                 disabled="@_busy">つける</button>
                         <button class="secondary-button"
@@ -310,6 +310,10 @@ else
                     @if (d.SafetyClass == "Restricted")
                     {
                         <p class="restricted-note">安全のため、遠隔では消す操作だけできます</p>
+                    }
+                    else if (d.SafetyClass == "Guarded")
+                    {
+                        <p class="restricted-note">火や熱をあつかう機器です。ONにする前に周囲の確認をお願いします（ご家族全員に通知されます）</p>
                     }
                     @if (_model.DataSourceMode != DataSourceMode.Sample)
                     {
@@ -792,11 +796,35 @@ else
     /// safety policy and the DeviceCommand audit trail apply identically. The UI never
     /// gets a privileged path around the guard rails.
     /// </summary>
+    private async Task<bool> ConfirmHazardAsync(DeviceCard card)
+    {
+        var type = Enum.TryParse<DeviceType>(card.DeviceType, out var parsed) ? parsed : DeviceType.Plug;
+        var checks = string.Join("\n", DeviceSafetyPolicy.HazardChecks(type).Select(c => $"・{c}"));
+        var message =
+            $"{card.Name} は火や熱をあつかう機器です。周囲の安全を確認してからONにします。\n\n"
+            + $"{checks}\n\n"
+            + "実行するとご家族全員にお知らせが届きます。よろしいですか？";
+
+        return await JS.InvokeAsync<bool>("confirm", message);
+    }
+
     private async Task ControlAsync(string alias, DeviceAction action)
     {
         if (_model is null || _busy)
         {
             return;
+        }
+
+        var card = _model.Devices.FirstOrDefault(d => d.Alias == alias);
+        var hazardAcknowledged = false;
+        if (card is not null && DeviceSafetyPolicy.CanEnergise(action) && card.SafetyClass == "Guarded")
+        {
+            if (!await ConfirmHazardAsync(card))
+            {
+                return;
+            }
+
+            hazardAcknowledged = true;
         }
 
         _busy = true;
@@ -812,7 +840,8 @@ else
                 originalText: $"[ボタン操作] {alias} / {action}",
                 source: CommandSource.Web,
                 requestedByPersonId: null,
-                aiResolvedModel: null);
+                aiResolvedModel: null,
+                hazardAcknowledged: hazardAcknowledged);
 
             _notice = outcome.Message;
             _noticeKind = outcome.Status switch

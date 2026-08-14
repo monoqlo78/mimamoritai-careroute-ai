@@ -15,7 +15,8 @@ public class AssistantOrchestratorTests
         TestDb db,
         IAiRouterClient? ai = null,
         IFabricDataAgentClient? fabric = null,
-        TimeSpan? fabricBudget = null)
+        TimeSpan? fabricBudget = null,
+        IGuardedActionNotifier? guardedNotifier = null)
     {
         var provider = new MockDeviceProvider();
         return new AssistantOrchestrator(
@@ -26,7 +27,93 @@ public class AssistantOrchestratorTests
             new LocalDataQuestionService(db.Context, TimeProvider.System),
             TimeProvider.System,
             null,
-            fabricBudget);
+            fabricBudget,
+            guardedNotifier);
+    }
+
+    /// <summary>
+    /// The change the family asked for: a heater is no longer a flat "cannot". It is a
+    /// question about the room, and a yes to that question is what energises it.
+    /// </summary>
+    [Fact]
+    public async Task Asking_For_The_Heater_Produces_A_Hazard_Question_Not_A_Refusal()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.GuardedHeater());
+        var orchestrator = Create(db);
+
+        var proposal = await orchestrator.HandleAsync(
+            new AssistantRequest(db.HouseholdId, db.ResidentId, "ストーブつけて", CommandSource.Line));
+
+        Assert.True(proposal.AwaitingConfirmation);
+        Assert.False(proposal.DeviceChanged);
+
+        Assert.Contains("燃えやすい", proposal.Reply);
+        Assert.Contains("ご家族全員", proposal.Reply);
+    }
+
+    [Fact]
+    public async Task Answering_The_Hazard_Question_Switches_The_Heater_On_And_Tells_Everyone()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.GuardedHeater());
+        var notifier = new RecordingGuardedNotifier();
+        var orchestrator = Create(db, guardedNotifier: notifier);
+
+        await orchestrator.HandleAsync(
+            new AssistantRequest(db.HouseholdId, db.ResidentId, "ストーブつけて", CommandSource.Line));
+
+        var response = await orchestrator.HandleAsync(
+            new AssistantRequest(db.HouseholdId, db.ResidentId, "はい", CommandSource.Line));
+
+        Assert.True(response.DeviceChanged);
+        Assert.Contains("つけました", response.Reply);
+        Assert.Single(notifier.Notices);
+    }
+
+    [Fact]
+    public async Task Declining_The_Hazard_Question_Leaves_The_Heater_Alone()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.GuardedHeater());
+        var notifier = new RecordingGuardedNotifier();
+        var orchestrator = Create(db, guardedNotifier: notifier);
+
+        await orchestrator.HandleAsync(
+            new AssistantRequest(db.HouseholdId, db.ResidentId, "ストーブつけて", CommandSource.Line));
+
+        var response = await orchestrator.HandleAsync(
+            new AssistantRequest(db.HouseholdId, db.ResidentId, "いいえ", CommandSource.Line));
+
+        Assert.False(response.DeviceChanged);
+        Assert.Empty(notifier.Notices);
+        Assert.Empty(db.Context.DeviceEvents);
+    }
+
+    /// <summary>
+    /// A device the owner marked "never switch on from away" is still refused outright,
+    /// and is never softened into a question - otherwise the setting would mean nothing.
+    /// </summary>
+    [Fact]
+    public async Task A_Device_Marked_No_Remote_TurnOn_Is_Never_Offered_As_A_Question()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Heater());
+        var orchestrator = Create(db);
+
+        var response = await orchestrator.HandleAsync(
+            new AssistantRequest(db.HouseholdId, db.ResidentId, "ストーブつけて", CommandSource.Line));
+
+        Assert.False(response.AwaitingConfirmation);
+        Assert.False(response.DeviceChanged);
+        Assert.Contains("遠隔でONにしない設定", response.Reply);
+    }
+
+    private sealed class RecordingGuardedNotifier : IGuardedActionNotifier
+    {
+        public List<GuardedActionNotice> Notices { get; } = [];
+
+        public Task NotifyAsync(GuardedActionNotice notice, CancellationToken ct = default)
+        {
+            Notices.Add(notice);
+            return Task.CompletedTask;
+        }
     }
 
     [Fact]
@@ -554,14 +641,16 @@ public class MockIntegrationTests
     }
 
     /// <summary>
-    /// The headline safety demo requires at least one Restricted device in the seed set.
+    /// The headline safety demo requires at least one appliance that cannot simply be
+    /// switched on. Guarded is the interesting case now: it is the one that produces a
+    /// hazard question instead of a flat refusal.
     /// </summary>
     [Fact]
-    public void SeedDevices_Contain_A_Restricted_Device()
+    public void SeedDevices_Contain_An_Appliance_That_Needs_A_Hazard_Check()
     {
         Assert.Contains(
             MockDeviceProvider.SeedDevices,
-            d => DeviceSafetyPolicy.Classify(d.DeviceType) == SafetyClass.Restricted);
+            d => DeviceSafetyPolicy.Classify(d.DeviceType) == SafetyClass.Guarded);
     }
 
     [Fact]

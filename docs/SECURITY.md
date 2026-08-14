@@ -93,10 +93,18 @@ Fabric にも Private Link はありますが、**採用していません**。�
 
 ## AI家電操作のガードレール
 
-自然言語による家電操作は `DeviceSafetyPolicy.Validate` によって多層的に制限されています（詳細は `docs/ARCHITECTURE.md` の「安全ガードレールのフロー」参照）。要点:
+自然言語による家電操作は `DeviceSafetyPolicy.Evaluate` によって多層的に制限されています（詳細は `docs/ARCHITECTURE.md` の「安全ガードレールのフロー」参照）。判定結果は「許可／拒否」の2値ではなく `SafetyVerdict`（`Allow` / `ConfirmHazard` / `Deny`）という3値の型で返され、呼び出し側が日本語メッセージを解釈する必要がないようになっています。要点:
 
-- **危険な家電（Heater/Kettle/Microwave/CookingDevice/Plug/MotionSensor/ContactSensor/Unknown = `SafetyClass.Restricted`）は、AIからのTurnOn/Toggle操作を一切許可しない（ただしTurnOff＝消す操作は安全側のため許可される非対称なガードレール）。**
-- 機器ごとの `RemoteControlAllowed` フラグで個別に遠隔操作を無効化できる。
+- **火や熱をあつかう家電（Heater/Kettle/Microwave/CookingDevice/Plug = `SafetyClass.Guarded`）のTurnOn/Toggleは、機器種別に応じたハザード確認（「周りに燃えやすいものはありませんか？」等）に「はい」と答えた場合にのみ実行される。** この関門は `DeviceControlService.ExecuteAsync` に置かれており、会話フローを迂回してAPIを直接呼んでも回避できない。
+- **`Guarded` 機器が遠隔でONになった場合、世帯の全員にLINEで通知される**（`IGuardedActionNotifier`）。通知はガードレールの一部であり、操作した本人だけが知っている状態を作らない。通知の失敗は操作を失敗させない（家電はすでにONになっているため）。
+- **オーナーは機器ごとに「遠隔でONにすることを禁止する」を設定でき、その機器は `SafetyClass.Restricted` となりハザード確認すら提示せず拒否される。** この設定は機器種別の既定分類より優先される（最も慎重な設定が勝つ）。
+- **センサー類・未知の機器（MotionSensor/ContactSensor/Unknown）は既定で `Restricted`。** 許可リスト方式なので、SwitchBotから同期された未知の機種が自動的に操作対象にならない。
+- **TurnOff（消す操作）はどの安全クラスでも常に許可される非対称なガードレール。** 心配した家族が最初に手を伸ばす操作であり、火事の原因にはならないため。
+- 機器ごとの `RemoteControlAllowed` フラグ（既定 `false`）で個別に遠隔操作を無効化できる。同期処理はこのフラグを自動で立てない。
+- LLMが返す確信度 (`confidence`) が `IntentParser.MinimumConfidence`（0.85）未満なら操作を実行しない。
+- 機器名（エイリアス）が一意に特定できない場合は、機器を推測せずに確認を求める。
+- LLMの出力（JSON）が不正な場合、`IntentParser.TryParse` は `null` を返し、`AssistantOrchestrator` は1回だけ修復を試みてそれでも失敗すれば何も実行しない。
+- **ハザード確認の「はい」はLLMの申告では代替できない。** モデルが「利用者は確認済みと言っています」と主張しても、実際の確認ターンを経ていなければ実行されない（プロンプトインジェクション対策）。
 - LLMが返す確信度 (`confidence`) が `IntentParser.MinimumConfidence`（0.85）未満なら操作を実行しない。
 - 機器名（エイリアス）が一意に特定できない場合は、機器を推測せずに確認を求める。
 - LLMの出力（JSON）が不正な場合、`IntentParser.TryParse` は `null` を返し、`AssistantOrchestrator` は1回だけ修復を試みてそれでも失敗すれば何も実行しない。

@@ -300,7 +300,8 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<ILocalDataQuestionService>(),
             sp.GetRequiredService<TimeProvider>(),
             sp.GetRequiredService<IPendingActionStore>(),
-            TimeSpan.FromSeconds(Math.Max(1, fabric.QueryTimeoutSeconds))));
+            TimeSpan.FromSeconds(Math.Max(1, fabric.QueryTimeoutSeconds)),
+            sp.GetRequiredService<IGuardedActionNotifier>()));
 
         services.AddScoped<DeviceSyncService>();
         services.AddScoped<EventStreamPublishService>();
@@ -337,6 +338,7 @@ public static class ServiceCollectionExtensions
             };
         });
         services.AddScoped<ILineRecipientResolver, LineRecipientResolver>();
+        services.AddScoped<IGuardedActionNotifier, LineGuardedActionNotifier>();
         services.AddScoped<WatchAlertService>();
         services.AddScoped<LinePostbackActionService>();
         services.AddScoped<LineLinkCodeService>();

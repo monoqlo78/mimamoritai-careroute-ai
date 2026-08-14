@@ -238,7 +238,7 @@ public class DeviceControlServiceTests
     }
 
     [Fact]
-    public async Task Restricted_Device_Cannot_Be_Turned_On_By_Natural_Language()
+    public async Task Device_Marked_No_Remote_TurnOn_Is_Refused_And_Told_Where_To_Change_It()
     {
         using var db = await new TestDb().SeedAsync(TestDb.Heater());
         var service = Create(db, out _);
@@ -248,10 +248,140 @@ public class DeviceControlServiceTests
             "ストーブつけて", CommandSource.Line, null, null);
 
         Assert.False(outcome.Executed);
-        Assert.Contains("安全のため", outcome.Message);
+        Assert.Contains("遠隔でONにしない設定", outcome.Message);
+        Assert.Contains("設定画面", outcome.Message);
 
         var command = Assert.Single(db.Context.DeviceCommands);
         Assert.Equal(CommandStatus.Rejected, command.Status);
+    }
+
+    /// <summary>
+    /// The gate lives in the service, not in the conversation. Anything reaching this
+    /// method directly - the API, a button, a future integration - is refused unless it
+    /// carries the acknowledgement, so the hazard question cannot be skipped by simply
+    /// never asking it.
+    /// </summary>
+    [Fact]
+    public async Task Guarded_Heater_Is_Refused_When_The_Hazard_Check_Was_Never_Answered()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.GuardedHeater());
+        var service = Create(db, out _);
+
+        var outcome = await service.ExecuteAsync(
+            db.HouseholdId, "heater", DeviceAction.TurnOn, 1.0,
+            "ストーブつけて", CommandSource.Line, null, null);
+
+        Assert.False(outcome.Executed);
+        Assert.Equal(CommandStatus.Rejected, outcome.Status);
+
+        // The refusal has to carry the questions, or the caller cannot ask them.
+        Assert.Contains("燃えやすい", outcome.Message);
+    }
+
+    [Fact]
+    public async Task Guarded_Heater_Turns_On_Once_The_Surroundings_Were_Confirmed()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.GuardedHeater());
+        var service = Create(db, out _);
+
+        var outcome = await service.ExecuteAsync(
+            db.HouseholdId, "heater", DeviceAction.TurnOn, 1.0,
+            "ストーブつけて", CommandSource.Line, null, null,
+            hazardAcknowledged: true);
+
+        Assert.True(outcome.Executed);
+        Assert.Equal(CommandStatus.Succeeded, outcome.Status);
+        Assert.Contains("つけました", outcome.Message);
+    }
+
+    [Fact]
+    public async Task Turning_A_Guarded_Heater_Off_Never_Needs_A_Hazard_Check()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.GuardedHeater());
+        var service = Create(db, out _);
+
+        var outcome = await service.ExecuteAsync(
+            db.HouseholdId, "heater", DeviceAction.TurnOff, 1.0,
+            "ストーブ消して", CommandSource.Line, null, null);
+
+        Assert.Equal(CommandStatus.Succeeded, outcome.Status);
+    }
+
+    [Fact]
+    public async Task Switching_On_A_Guarded_Heater_Tells_The_Whole_Household()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.GuardedHeater());
+        var notifier = new RecordingGuardedNotifier();
+        var service = new DeviceControlService(
+            db.Context, new MockDeviceProvider(), TimeProvider.System, notifier);
+
+        var outcome = await service.ExecuteAsync(
+            db.HouseholdId, "heater", DeviceAction.TurnOn, 1.0,
+            "ストーブつけて", CommandSource.Line, null, null,
+            hazardAcknowledged: true);
+
+        Assert.True(outcome.Executed);
+
+        var notice = Assert.Single(notifier.Notices);
+        Assert.Equal(db.HouseholdId, notice.HouseholdId);
+        Assert.Equal("電気ストーブ", notice.DeviceName);
+        Assert.Equal(CommandSource.Line, notice.Source);
+
+        // The person who acted is told that everyone else was told, because a broadcast
+        // they did not expect is worse than one they did.
+        Assert.Contains("ご家族全員", outcome.Message);
+    }
+
+    [Fact]
+    public async Task Turning_A_Guarded_Heater_Off_Does_Not_Wake_The_Whole_Household()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.GuardedHeater());
+        var notifier = new RecordingGuardedNotifier();
+        var service = new DeviceControlService(
+            db.Context, new MockDeviceProvider(), TimeProvider.System, notifier);
+
+        await service.ExecuteAsync(
+            db.HouseholdId, "heater", DeviceAction.TurnOff, 1.0,
+            "ストーブ消して", CommandSource.Line, null, null);
+
+        Assert.Empty(notifier.Notices);
+    }
+
+    /// <summary>
+    /// The appliance is already on by the time the notifier runs, so a broken notifier
+    /// must never turn a successful switch-on into a reported failure.
+    /// </summary>
+    [Fact]
+    public async Task A_Failing_Broadcast_Does_Not_Fail_The_Command()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.GuardedHeater());
+        var service = new DeviceControlService(
+            db.Context, new MockDeviceProvider(), TimeProvider.System, new ThrowingGuardedNotifier());
+
+        var outcome = await service.ExecuteAsync(
+            db.HouseholdId, "heater", DeviceAction.TurnOn, 1.0,
+            "ストーブつけて", CommandSource.Line, null, null,
+            hazardAcknowledged: true);
+
+        Assert.True(outcome.Executed);
+        Assert.Equal(CommandStatus.Succeeded, outcome.Status);
+    }
+
+    private sealed class RecordingGuardedNotifier : IGuardedActionNotifier
+    {
+        public List<GuardedActionNotice> Notices { get; } = [];
+
+        public Task NotifyAsync(GuardedActionNotice notice, CancellationToken ct = default)
+        {
+            Notices.Add(notice);
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class ThrowingGuardedNotifier : IGuardedActionNotifier
+    {
+        public Task NotifyAsync(GuardedActionNotice notice, CancellationToken ct = default) =>
+            throw new InvalidOperationException("LINE is unreachable.");
     }
 
     [Fact]

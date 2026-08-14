@@ -86,10 +86,11 @@ public class DeviceSafetyPolicyTests
     [InlineData(DeviceType.Light, SafetyClass.Safe)]
     [InlineData(DeviceType.Fan, SafetyClass.Safe)]
     [InlineData(DeviceType.DemoDevice, SafetyClass.Safe)]
-    [InlineData(DeviceType.Heater, SafetyClass.Restricted)]
-    [InlineData(DeviceType.Kettle, SafetyClass.Restricted)]
+    [InlineData(DeviceType.Heater, SafetyClass.Guarded)]
+    [InlineData(DeviceType.Kettle, SafetyClass.Guarded)]
+    [InlineData(DeviceType.Plug, SafetyClass.Guarded)]
     [InlineData(DeviceType.Unknown, SafetyClass.Restricted)]
-    public void Classify_Puts_Heat_Sources_In_Restricted(DeviceType type, SafetyClass expected)
+    public void Classify_Puts_Heat_Sources_Behind_A_Hazard_Check(DeviceType type, SafetyClass expected)
     {
         Assert.Equal(expected, DeviceSafetyPolicy.Classify(type));
     }
@@ -98,7 +99,7 @@ public class DeviceSafetyPolicyTests
     public void GetStatus_Is_Allowed_Even_With_Low_Confidence()
     {
         var device = TestDb.Heater();
-        Assert.Null(DeviceSafetyPolicy.Validate(device, DeviceAction.GetStatus, 0.1));
+        Assert.True(DeviceSafetyPolicy.Evaluate(device, DeviceAction.GetStatus, 0.1).IsAllowed);
     }
 
     [Fact]
@@ -106,7 +107,25 @@ public class DeviceSafetyPolicyTests
     {
         var device = TestDb.Light();
         device.IsEnabled = false;
-        Assert.NotNull(DeviceSafetyPolicy.Validate(device, DeviceAction.TurnOff, 1.0));
+        Assert.Equal(
+            SafetyDecision.Deny,
+            DeviceSafetyPolicy.Evaluate(device, DeviceAction.TurnOff, 1.0).Decision);
+    }
+
+    [Fact]
+    public void A_Guarded_Heater_Is_Confirmable_Rather_Than_Refused()
+    {
+        var device = TestDb.Heater();
+        device.RemoteControlAllowed = true;
+        device.SafetyClass = SafetyClass.Guarded;
+
+        var verdict = DeviceSafetyPolicy.Evaluate(device, DeviceAction.TurnOn, 1.0);
+
+        Assert.Equal(SafetyDecision.ConfirmHazard, verdict.Decision);
+        Assert.NotNull(verdict.Reason);
+
+        // The questions have to be specific enough to make someone picture the room.
+        Assert.Contains(verdict.HazardChecks!, c => c.Contains("燃えやすい"));
     }
 
     [Fact]

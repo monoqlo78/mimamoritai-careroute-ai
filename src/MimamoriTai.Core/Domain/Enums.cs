@@ -23,13 +23,37 @@ public enum DeviceType
 }
 
 /// <summary>
-/// Safety classification used by the natural language control guard rails.
-/// Only <see cref="Safe"/> devices may be switched on through an AI resolved intent.
+/// Safety classification used by the natural language control guard rails. It decides
+/// what happens when something asks to switch a device <em>on</em>; switching off is
+/// never gated by it, because turning an appliance off cannot start a fire.
 /// </summary>
 public enum SafetyClass
 {
+    /// <summary>Turning on is harmless. A lamp or a fan.</summary>
     Safe = 0,
-    Restricted = 1
+
+    /// <summary>
+    /// Turning on remotely is refused outright. This is what the owner selects when they
+    /// want the appliance to be off-only, and it is also where anything we cannot
+    /// classify lands.
+    /// </summary>
+    Restricted = 1,
+
+    /// <summary>
+    /// Turning on is permitted, but only after whoever asked has confirmed the area
+    /// around the appliance is clear, and every success is announced to the whole
+    /// family.
+    ///
+    /// <para>
+    /// This exists because refusing outright was the wrong answer for the person we are
+    /// actually building for. A relative with early dementia who cannot work a heater on
+    /// a cold night is in more danger from the cold than from the heater, and a family
+    /// that cannot help remotely is left with no option but to drive over. The risk is
+    /// real, so it is answered with a hazard check and an audit trail the whole family
+    /// sees - not by pretending the need does not exist.
+    /// </para>
+    /// </summary>
+    Guarded = 2
 }
 
 public enum DeviceProviderKind

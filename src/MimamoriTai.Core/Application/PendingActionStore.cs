@@ -3,13 +3,20 @@ using MimamoriTai.Core.Domain;
 namespace MimamoriTai.Core.Application;
 
 /// <summary>A device action the assistant proposed and is waiting to be confirmed.</summary>
+/// <param name="RequiresHazardAcknowledgement">
+/// True when the confirmation being awaited is the surroundings check for a
+/// <see cref="SafetyClass.Guarded"/> appliance, rather than an ordinary "shall I?".
+/// A yes then carries consent that the area was checked, which is what lets the
+/// control service energise a heater at all.
+/// </param>
 public sealed record PendingDeviceAction(
     Guid HouseholdId,
     string DeviceAlias,
     string DeviceName,
     DeviceAction Action,
     string OriginalText,
-    DateTimeOffset ProposedAtUtc);
+    DateTimeOffset ProposedAtUtc,
+    bool RequiresHazardAcknowledgement = false);
 
 /// <summary>
 /// Holds the one device action per household that the assistant has proposed but not

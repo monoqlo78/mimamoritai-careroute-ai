@@ -95,33 +95,56 @@ flowchart LR
     U["「ストーブつけて」"] --> AI["AI: 意図解析"]
     AI --> C{"確信度 ≥ 0.85?"}
     C -- No --> R1["確認を返す"]
-    C -- Yes --> S{"機器は Safe?"}
+    C -- Yes --> S{"安全クラスは?"}
     S -- "Restricted" --> R2["拒否"]
+    S -- "Guarded" --> Q["周囲を確認する質問を返す"]
     S -- "Safe" --> X["実行"]
+    Q -- "はい" --> X2["実行 + 家族全員に通知"]
+    Q -- "いいえ" --> R3["実行しない"]
     R1 --> L["監査ログ"]
     R2 --> L
+    R3 --> L
     X --> L
+    X2 --> L
 ```
 
-設計の要点は3つです。
+設計の要点は4つです。
 
-**(1) 機器を安全クラスで分ける。**
-照明・扇風機は `Safe`、ヒーター類は `Restricted`。AI がどれだけ自信満々に「ONにしろ」と言っても、ルールベースの最終段（`DeviceSafetyPolicy`）がブロックします。
+**(1) 機器を安全クラスで分ける。ただし「できない」で終わらせない。**
+照明・扇風機は `Safe`。ヒーター類・調理器・素性の分からないプラグは `Guarded`。マッピングに無い機器は `Restricted` です。
 
-実際に本番環境で「ストーブつけて」と入力した結果がこれです。拒否メッセージが返り、右下の電気ストーブは**停止中のまま**です。
+最初の実装では、ヒーター類は `Restricted`、つまり**遠隔からは一切つけられない**にしていました。安全側に倒したつもりでした。でもこれは間違いでした。
 
-![危険機器のON操作を拒否](./images/02-guardrail.png)
+寒い日に、認知症が始まりかけた親がストーブを自分で扱えない。そのとき家族が遠隔で何もできないというのは、**ストーブの事故より寒さの方が危険**という状況を無視しています。「危ないから禁止」は、一見安全に見えて、実際にはリスクを家の中に置き去りにしているだけでした。
 
-**(2) ON と OFF を非対称にする。**
-危険機器の ON は拒否しますが、**OFF は通します**。「消す」は安全性を高める方向の操作だからです。ここを対称にすると「危ないから何も操作できない」になって使い物になりません。
+なので `Guarded` という3つ目の状態を足しました。**「はい、ただし周囲を確認してから」**を表現できる状態です。
 
-同じストーブに「消して」と言うと、今度は受理されます（実行前に確認を挟みます）。
+**(2) 危険な操作は、質問を1回はさむ。**
+`Guarded` の機器を ON にしようとすると、機器の種類に応じた確認が返ります。ストーブなら「周りに燃えやすいもの（洗濯物、新聞紙、布団）はありませんか？」。ここで「はい」と答えて初めて通電します。
+
+重要なのは、**この関門をサービス層（`DeviceControlService`）に置いた**ことです。会話側だけで確認していると、API を直接叩けば質問を飛ばせてしまいます。「質問しないことで迂回できる」設計は、安全機構とは呼べません。
+
+そしてもう一つ。`Guarded` 機器が実際に ON になったら、**家族全員に LINE で通知**します。操作した本人だけが知っている状態を作らないためです。通知は「おまけ」ではなく、許可の条件の一部です。
+
+**(3) 「絶対につけない」は、人間が個別に指定できる。**
+機器の設定画面に「遠隔でONにすることを禁止する」というチェックボックスを置きました。オーナーがこれを入れた機器は `Restricted` に落ち、質問すら出さずに拒否します。
+
+優先順位は「最も慎重な設定が勝つ」。機器タイプの既定値が、人間の明示的な指定を上書きすることはありません。
+
+実際に本番環境で「ストーブつけて」と入力した結果がこれです。
+
+![危険機器のON操作にガードがかかる](./images/02-guardrail.png)
+
+**(4) ON と OFF を非対称にする。**
+`Guarded` でも `Restricted` でも、**OFF は常に通します**。「消す」は安全性を高める方向の操作だからです。ここを対称にすると「危ないから何も操作できない」になって使い物になりません。
+
+同じストーブに「消して」と言うと、確認なしで受理されます。
 
 ![OFFは受理される](./images/04-turn-off-allowed.png)
 
-機器カードにも「安全のため、遠隔では消す操作だけできます」と出しています。**拒否の理由が使う人に見えないと、ただの故障に見える**ためです。
+機器カードにも「遠隔でONにするときは、周囲の安全を確認します」と出しています。**ガードの理由が使う人に見えないと、ただの故障に見える**ためです。
 
-**(3) 拒否も含めて全部記録する。**
+**(5) 拒否も含めて全部記録する。**
 成功・失敗・拒否のすべてを `DeviceCommand` に残します。「AIが何をしようとしたか」が後から追えないと、そもそも安全性を主張できません。
 
 この「AIは会話には使うが、危険判断には使わない」という線引きが、このプロジェクトで一番考えたところです。
@@ -594,7 +617,9 @@ Draco をかければ 2.1MB まで落ちますが、読み込む側に専用の�
 - 稼働証跡（開発機以外からの到達性・TLS・画面）: [docs/EVIDENCE.md](https://github.com/monoqlo78/mimamoritai-careroute-ai/blob/main/docs/EVIDENCE.md)
 - マスコット制作に使った自作 MCP サーバー: https://github.com/monoqlo78/WindowsComputerUseMCP （6章）
 
-> デモ動画は、本番環境（Azure App Service）を実際に操作して画面録画したものです。扇風機をONにするところ、ストーブのONが**確認すら出さずに拒否される**ところ、そのOFFは通るところ、家族がLINEから様子を聞くところ、Fabricへ実データを送るところまでを、編集で切らずにそのまま入れています。
+> デモ動画は、本番環境（Azure App Service）を実際に操作して画面録画したものです。扇風機をONにするところ、ストーブのONが止められるところ、そのOFFは通るところ、家族がLINEから様子を聞くところ、Fabricへ実データを送るところまでを、編集で切らずにそのまま入れています。
+>
+> ひとつ補足があります。この動画は**ストーブを `Restricted`（遠隔ONを一切拒否）にしていた時点**の録画です。3-2 に書いたとおり、その後「寒い日に家族が何もできない方が危ない」と考え直して `Guarded`（周囲を確認する質問をはさんでからON）に変えました。動画では拒否メッセージが返りますが、現在のコードでは確認の質問が返ります。撮り直しは間に合わなかったので、消さずにこう書いておきます。**設計が変わった過程そのものが、この記事で一番書きたかったこと**でもあるので。
 >
 > ナレーションも **Azure AI Speech** で付けました。原稿を Text to Speech（`ja-JP-NanamiNeural`）で読み上げさせ、できあがった音声を**同じ Azure AI Speech の Speech to Text で聞き直して**、原稿どおりに読めているかを機械的に検証しています。自分の耳だけを頼りに「たぶん大丈夫」で出すより、この方が確実でした。音を出せない環境の人のために、字幕だけでも内容が追えるようにしてあります。
 
@@ -609,23 +634,58 @@ Draco をかければ 2.1MB まで落ちますが、読み込む側に専用の�
 安全判定はここに集約されています。AI の出力は「候補」でしかなく、最終判断は必ずこのルールを通ります。
 
 ```csharp
-// 機器の種類から安全クラスを決める。既知の安全な物「以外」はすべて Restricted。
-// 許可リスト方式にしてあるので、新しい機器が増えても既定で危険側に倒れる。
+// 機器の種類から安全クラスを決める。既知の安全な物「以外」は Guarded か Restricted。
+// 許可リスト方式にしてあるので、新しい機器が増えても既定で慎重側に倒れる。
 public static SafetyClass Classify(DeviceType type) => type switch
 {
     DeviceType.Light or DeviceType.Fan or DeviceType.DemoDevice => SafetyClass.Safe,
+    DeviceType.Plug or DeviceType.Heater or DeviceType.Kettle
+        or DeviceType.Microwave or DeviceType.CookingDevice => SafetyClass.Guarded,
     _ => SafetyClass.Restricted
 };
+```
 
-// 危険機器は ON と Toggle を拒否する。TurnOff がこの条件に入っていないのが要点で、
-// 「消す」だけは通る。
-if (device.SafetyClass == SafetyClass.Restricted
-    && action is DeviceAction.TurnOn or DeviceAction.Toggle)
+判定は「許可 / 拒否」の2値ではなく、**3値を返す型**にしました。日本語の文字列を呼び出し側でパターンマッチさせるのをやめ、判断そのものをデータにしています。
+
+```csharp
+public enum SafetyDecision { Allow, ConfirmHazard, Deny }
+
+public sealed record SafetyVerdict(
+    SafetyDecision Decision,
+    string? Reason = null,
+    IReadOnlyList<string>? HazardChecks = null);
+```
+
+```csharp
+// 消す操作は、遠隔操作さえ許可されていれば常に通す。火事にはならないので。
+if (!CanEnergise(action)) return SafetyVerdict.Allowed;
+
+return device.SafetyClass switch
 {
-    return $"{device.DisplayName} は安全のため音声・チャットからの操作を禁止しています。";
-}
+    SafetyClass.Safe => SafetyVerdict.Allowed,
+
+    SafetyClass.Guarded => new SafetyVerdict(
+        SafetyDecision.ConfirmHazard,
+        $"{device.DisplayName} は火や熱をあつかう機器です。周囲の安全を確認してから操作します。",
+        HazardChecks(device.DeviceType)),
+
+    // オーナーが「遠隔でONにしない」を選んだ機器。人間が下した判断なので、
+    // AI もアプリも覆さない。ただし、どこで変えられるかは必ず伝える。
+    _ => SafetyVerdict.Denied(
+        $"{device.DisplayName} は遠隔でONにしない設定になっています。設定画面で変更できます。")
+};
 ```
 
 地味に効いているのが `Classify` の `_ => Restricted` です。**知らない機器は危険とみなす**ので、SwitchBot から新しい機器が同期されてきても、勝手に操作対象になりません。同期処理も `RemoteControlAllowed` を自分で立てないようにしてあり、遠隔操作の許可は人間が明示的に与える必要があります。
+
+そして `ConfirmHazard` を返す判定は、**会話の外側＝サービス層で強制**しています。ここを会話側だけに置くと、API を直接叩けば質問をスキップできてしまいます。
+
+```csharp
+if (verdict.NeedsHazardCheck && !hazardAcknowledged)
+{
+    // 確認が取れていない。ここで止める。
+    return await RejectAsync(...);
+}
+```
 
 行数にすると大したことはありません。ただ、**この十数行を LLM の外側に置いたか、内側で「そうしてね」とお願いしたか**が、このプロジェクトで一番の分岐点だったと思っています。

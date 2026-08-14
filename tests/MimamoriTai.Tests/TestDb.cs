@@ -83,6 +83,24 @@ public sealed class TestDb : IDisposable
         SafetyClass = SafetyClass.Restricted
     };
 
+    /// <summary>
+    /// A heater the owner has left at its default classification: switching it on is
+    /// possible, but only after somebody says the area around it is clear.
+    /// </summary>
+    public static Device GuardedHeater(bool remoteAllowed = true) => new()
+    {
+        // Matches a device the MockDeviceProvider actually knows, so tests can exercise
+        // the whole successful path rather than stopping at the provider.
+        ExternalDeviceId = "demo-living-heater",
+        Name = "電気ストーブ",
+        Alias = "heater",
+        DeviceType = DeviceType.Heater,
+        Room = "リビング",
+        Provider = DeviceProviderKind.Mock,
+        RemoteControlAllowed = remoteAllowed,
+        SafetyClass = SafetyClass.Guarded
+    };
+
     public void Dispose()
     {
         Context.Dispose();

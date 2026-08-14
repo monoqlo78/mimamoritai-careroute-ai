@@ -55,12 +55,12 @@ public class DeviceSettingsServiceTests
         Assert.Equal(SafetyClass.Safe, device.SafetyClass);
 
         // The whole point of the opt-in: the safety policy now lets the device be switched on.
-        Assert.Null(DeviceSafetyPolicy.Validate(device, DeviceAction.TurnOn, confidence: 1.0));
-        Assert.Null(DeviceSafetyPolicy.Validate(device, DeviceAction.TurnOff, confidence: 1.0));
+        Assert.True(DeviceSafetyPolicy.Evaluate(device, DeviceAction.TurnOn, confidence: 1.0).IsAllowed);
+        Assert.True(DeviceSafetyPolicy.Evaluate(device, DeviceAction.TurnOff, confidence: 1.0).IsAllowed);
     }
 
     [Fact]
-    public async Task Granting_RemoteControl_Without_SafeOptIn_Allows_Only_TurnOff()
+    public async Task Granting_RemoteControl_Without_SafeOptIn_Requires_A_Hazard_Check_To_TurnOn()
     {
         using var db = await new TestDb().SeedAsync();
         var (_, deviceId, owner) = await SeedOwnedPlugAsync(db);
@@ -69,11 +69,48 @@ public class DeviceSettingsServiceTests
 
         var device = db.Context.Devices.Single(d => d.Id == deviceId);
         Assert.True(device.RemoteControlAllowed);
+        Assert.Equal(SafetyClass.Guarded, device.SafetyClass);
+
+        // A plug may hide a heater, so switching it on asks what is around it first -
+        // but it is no longer refused outright, because a cold room is its own hazard.
+        var on = DeviceSafetyPolicy.Evaluate(device, DeviceAction.TurnOn, confidence: 1.0);
+        Assert.True(on.NeedsHazardCheck);
+        Assert.NotEmpty(on.HazardChecks!);
+
+        Assert.True(DeviceSafetyPolicy.Evaluate(device, DeviceAction.TurnOff, confidence: 1.0).IsAllowed);
+    }
+
+    [Fact]
+    public async Task Blocking_RemoteTurnOn_Refuses_On_But_Still_Allows_Off()
+    {
+        using var db = await new TestDb().SeedAsync();
+        var (_, deviceId, owner) = await SeedOwnedPlugAsync(db);
+
+        await Service(db, owner).UpdatePermissionsAsync(
+            deviceId, remoteControlAllowed: true, treatAsSafeAppliance: false, blockRemoteTurnOn: true);
+
+        var device = db.Context.Devices.Single(d => d.Id == deviceId);
         Assert.Equal(SafetyClass.Restricted, device.SafetyClass);
 
-        // A plug may hide a heater, so turning it on unattended stays refused.
-        Assert.NotNull(DeviceSafetyPolicy.Validate(device, DeviceAction.TurnOn, confidence: 1.0));
-        Assert.Null(DeviceSafetyPolicy.Validate(device, DeviceAction.TurnOff, confidence: 1.0));
+        Assert.Equal(
+            SafetyDecision.Deny,
+            DeviceSafetyPolicy.Evaluate(device, DeviceAction.TurnOn, confidence: 1.0).Decision);
+
+        // Withdrawing consent is never allowed to trap an appliance in the on state.
+        Assert.True(DeviceSafetyPolicy.Evaluate(device, DeviceAction.TurnOff, confidence: 1.0).IsAllowed);
+    }
+
+    [Fact]
+    public async Task Blocking_RemoteTurnOn_Wins_Over_TreatAsSafe()
+    {
+        using var db = await new TestDb().SeedAsync();
+        var (_, deviceId, owner) = await SeedOwnedPlugAsync(db);
+
+        await Service(db, owner).UpdatePermissionsAsync(
+            deviceId, remoteControlAllowed: true, treatAsSafeAppliance: true, blockRemoteTurnOn: true);
+
+        var device = db.Context.Devices.Single(d => d.Id == deviceId);
+        Assert.Equal(SafetyClass.Restricted, device.SafetyClass);
     }
 
     [Fact]
@@ -88,8 +125,10 @@ public class DeviceSettingsServiceTests
 
         var device = db.Context.Devices.Single(d => d.Id == deviceId);
         Assert.False(device.RemoteControlAllowed);
-        Assert.Equal(SafetyClass.Restricted, device.SafetyClass);
-        Assert.NotNull(DeviceSafetyPolicy.Validate(device, DeviceAction.TurnOff, confidence: 1.0));
+        Assert.Equal(SafetyClass.Guarded, device.SafetyClass);
+        Assert.Equal(
+            SafetyDecision.Deny,
+            DeviceSafetyPolicy.Evaluate(device, DeviceAction.TurnOff, confidence: 1.0).Decision);
     }
 
     [Fact]

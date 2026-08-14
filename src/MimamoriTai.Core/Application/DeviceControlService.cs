@@ -13,7 +13,8 @@ public sealed record DeviceControlOutcome(bool Executed, string Message, Guid? D
 public sealed class DeviceControlService(
     IAppDbContext db,
     IDeviceProvider provider,
-    TimeProvider clock)
+    TimeProvider clock,
+    IGuardedActionNotifier? guardedNotifier = null)
 {
     public async Task<DeviceControlOutcome> ExecuteAsync(
         Guid householdId,
@@ -24,7 +25,8 @@ public sealed class DeviceControlService(
         CommandSource source,
         Guid? requestedByPersonId,
         string? aiResolvedModel,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        bool hazardAcknowledged = false)
     {
         var command = new DeviceCommand
         {
@@ -71,10 +73,21 @@ public sealed class DeviceControlService(
         var device = matches[0];
         command.DeviceId = device.Id;
 
-        var violation = DeviceSafetyPolicy.Validate(device, action, confidence);
-        if (violation is not null)
+        var verdict = DeviceSafetyPolicy.Evaluate(device, action, confidence);
+
+        if (verdict.Decision == SafetyDecision.Deny)
         {
-            return await RejectAsync(command, violation, ct);
+            return await RejectAsync(command, verdict.Reason!, ct);
+        }
+
+        // A hazard check that has not been answered is a refusal here, not a prompt. The
+        // prompt belongs to whoever is talking to the family; this service is also reached
+        // straight from the API, and that path must not be able to skip the question by
+        // simply not asking it.
+        if (verdict.NeedsHazardCheck && !hazardAcknowledged)
+        {
+            var checks = string.Join(" ", verdict.HazardChecks ?? []);
+            return await RejectAsync(command, $"{verdict.Reason} {checks}".Trim(), ct);
         }
 
         if (DeviceSafetyPolicy.IsStateChanging(action))
@@ -163,13 +176,41 @@ public sealed class DeviceControlService(
 
         await db.SaveChangesAsync(ct);
 
+        // Everyone is told that a heating appliance was switched on from away, including
+        // the family members who did not ask for it. Deliberately after the save: the
+        // command is already a fact, so a notifier that cannot reach LINE must not be able
+        // to turn a successful switch-on into a reported failure.
+        var announced = false;
+        if (verdict.NeedsHazardCheck && newState == "on" && guardedNotifier is not null)
+        {
+            try
+            {
+                await guardedNotifier.NotifyAsync(
+                    new GuardedActionNotice(
+                        householdId,
+                        device.DisplayName,
+                        device.DisplayRoom,
+                        source,
+                        command.ExecutedAtUtc.Value),
+                    ct);
+                announced = true;
+            }
+            catch (Exception)
+            {
+                // Swallowed on purpose - see IGuardedActionNotifier.
+            }
+        }
+
         var verb = newState switch
         {
             "on" => "つけました",
             "off" => "消しました",
             _ => "操作しました"
         };
-        return new DeviceControlOutcome(true, $"{device.DisplayName} を{verb}。", device.Id, CommandStatus.Succeeded);
+
+        var suffix = announced ? "ご家族全員にお知らせしました。" : string.Empty;
+        return new DeviceControlOutcome(
+            true, $"{device.DisplayName} を{verb}。{suffix}".TrimEnd(), device.Id, CommandStatus.Succeeded);
     }
 
     /// <summary>

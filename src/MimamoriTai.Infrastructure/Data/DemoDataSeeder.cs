@@ -78,8 +78,9 @@ public static class DemoDataSeeder
         }).ToList();
 
         // The seed list includes a Heater, which DeviceSafetyPolicy.Classify marks as
-        // Restricted. That device exists so the safety guard-rail can be demonstrated:
-        // asking the AI to turn it on must be refused and audited, never executed.
+        // Guarded. That device exists so the safety guard-rail can be demonstrated:
+        // asking the AI to turn it on must first ask about the surroundings, and the
+        // answer to that question - not the AI's confidence - is what energises it.
         db.Devices.AddRange(devices);
 
         db.DeviceEvents.AddRange(GenerateEvents(household.Id, devices, now));
