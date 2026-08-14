@@ -41,6 +41,13 @@ public sealed class FabricSqlConsoleSync(
 {
     private static readonly string[] SqlScopes = ["https://database.windows.net/.default"];
 
+    /// <summary>
+    /// Longest gap that still counts as continuous draw when integrating plug samples.
+    /// Matches <c>PowerUsageService</c> so the console and the family app cannot disagree
+    /// about how much electricity the same hour used.
+    /// </summary>
+    private const int MaxSampleSpanMinutes = 10;
+
     private readonly FabricConsoleSyncOptions _options = options.Value;
 
     public bool IsConfigured => _options.IsConfigured;
@@ -144,7 +151,12 @@ public sealed class FabricSqlConsoleSync(
         DateTime BucketStart,
         int EventCount,
         int OnCount,
-        string Source);
+        string Source,
+        /// <summary>
+        /// Watt-hours drawn in the hour. Null when the device is not metered, which
+        /// the console must render as a gap rather than a measured zero.
+        /// </summary>
+        double? EnergyWh = null);
 
     internal sealed record AiCallRow(
         string Purpose,
@@ -317,30 +329,36 @@ public sealed class FabricSqlConsoleSync(
             })
             .ToListAsync(ct);
 
-        var activityRows = activityRaw
-            .GroupBy(e => new
-            {
-                e.HouseholdId,
-                e.DeviceId,
-                BucketStart = new DateTime(
-                    e.OccurredAtUtc.UtcDateTime.Year,
-                    e.OccurredAtUtc.UtcDateTime.Month,
-                    e.OccurredAtUtc.UtcDateTime.Day,
-                    e.OccurredAtUtc.UtcDateTime.Hour,
-                    0, 0, DateTimeKind.Utc),
-            })
-            .Select(g => new ActivityRow(
-                g.Key.HouseholdId,
-                householdNames.GetValueOrDefault(g.Key.HouseholdId, "(削除済み)"),
-                deviceNames.TryGetValue(g.Key.DeviceId, out var d) ? d.Name : "(unknown)",
-                deviceNames.TryGetValue(g.Key.DeviceId, out var dt) ? dt.DeviceType.ToString() : string.Empty,
-                g.Key.BucketStart,
-                g.Count(),
-                // "the resident was up and about" -- the states the console charts.
-                g.Count(e => e.State == "on" || e.State == "active"),
-                g.Max(e => e.Source).ToString()))
-            .OrderBy(a => a.BucketStart)
-            .ToList();
+        var activityRows = MergeHourlyEnergy(
+            activityRaw
+                .GroupBy(e => new
+                {
+                    e.HouseholdId,
+                    e.DeviceId,
+                    BucketStart = new DateTime(
+                        e.OccurredAtUtc.UtcDateTime.Year,
+                        e.OccurredAtUtc.UtcDateTime.Month,
+                        e.OccurredAtUtc.UtcDateTime.Day,
+                        e.OccurredAtUtc.UtcDateTime.Hour,
+                        0, 0, DateTimeKind.Utc),
+                })
+                .Select(g => (
+                    g.Key.HouseholdId,
+                    g.Key.DeviceId,
+                    Row: new ActivityRow(
+                        g.Key.HouseholdId,
+                        householdNames.GetValueOrDefault(g.Key.HouseholdId, "(削除済み)"),
+                        deviceNames.TryGetValue(g.Key.DeviceId, out var d) ? d.Name : "(unknown)",
+                        deviceNames.TryGetValue(g.Key.DeviceId, out var dt) ? dt.DeviceType.ToString() : string.Empty,
+                        g.Key.BucketStart,
+                        g.Count(),
+                        // "the resident was up and about" -- the states the console charts.
+                        g.Count(e => e.State == "on" || e.State == "active"),
+                        g.Max(e => e.Source).ToString())))
+                .ToList(),
+            await HourlyEnergyAsync(activitySince, ct),
+            householdNames,
+            deviceNames.ToDictionary(kv => kv.Key, kv => (kv.Value.Name, kv.Value.DeviceType.ToString())));
 
         // No time window on purpose: callCount is an all-time total, so the console's
         // "OrcaRouter calls" number only ever moves forward.
@@ -369,6 +387,106 @@ public sealed class FabricSqlConsoleSync(
             .ToList();
 
         return new Snapshot(now, householdRows, alertRows, activityRows, aiCalls);
+    }
+
+    /// <summary>
+    /// Integrates the metered plugs' real power into watt-hours per (household, device, hour).
+    ///
+    /// The plug reports instantaneous watts, so energy is the area under a zero-order hold
+    /// between samples. A gap longer than <see cref="MaxSampleSpanMinutes"/> is treated as
+    /// missing data rather than a long steady draw: the poller stopping is not evidence the
+    /// kettle stayed on, and inventing that area is how an outage turns into a fake spike.
+    /// Spans that straddle an hour boundary are split so each hour is charged only its share.
+    /// </summary>
+    private async Task<Dictionary<(Guid Household, Guid Device, DateTime Hour), double>> HourlyEnergyAsync(
+        DateTimeOffset since,
+        CancellationToken ct)
+    {
+        var readings = await db.PlugMiniReadings
+            .Where(r => r.OccurredAtUtc >= since && r.DailyEnergyWh != null)
+            .OrderBy(r => r.OccurredAtUtc)
+            .Select(r => new { r.HouseholdId, r.DeviceId, r.OccurredAtUtc, Watts = r.DailyEnergyWh!.Value })
+            .ToListAsync(ct);
+
+        var energy = new Dictionary<(Guid, Guid, DateTime), double>();
+        var maxSpan = TimeSpan.FromMinutes(MaxSampleSpanMinutes);
+
+        foreach (var device in readings.GroupBy(r => (r.HouseholdId, r.DeviceId)))
+        {
+            var samples = device.OrderBy(r => r.OccurredAtUtc).ToList();
+            for (var i = 0; i < samples.Count - 1; i++)
+            {
+                var watts = samples[i].Watts;
+                if (watts <= 0)
+                {
+                    continue;
+                }
+
+                var start = samples[i].OccurredAtUtc.UtcDateTime;
+                var end = samples[i + 1].OccurredAtUtc.UtcDateTime;
+                if (end - start > maxSpan)
+                {
+                    end = start + maxSpan;
+                }
+
+                while (start < end)
+                {
+                    var hour = new DateTime(start.Year, start.Month, start.Day, start.Hour, 0, 0, DateTimeKind.Utc);
+                    var sliceEnd = hour.AddHours(1) < end ? hour.AddHours(1) : end;
+                    var key = (device.Key.HouseholdId, device.Key.DeviceId, hour);
+                    energy[key] = energy.GetValueOrDefault(key) + (watts * (sliceEnd - start).TotalHours);
+                    start = sliceEnd;
+                }
+            }
+        }
+
+        return energy;
+    }
+
+    /// <summary>
+    /// Joins the event-derived buckets with the metered hours.
+    ///
+    /// An always-on appliance emits no events, so hours that only have a power reading
+    /// are emitted as their own zero-event rows. Without that the electricity chart would
+    /// silently skip exactly the quiet stretches an operator most wants to see.
+    /// </summary>
+    private static List<ActivityRow> MergeHourlyEnergy(
+        List<(Guid HouseholdId, Guid DeviceId, ActivityRow Row)> buckets,
+        Dictionary<(Guid Household, Guid Device, DateTime Hour), double> energy,
+        Dictionary<Guid, string> householdNames,
+        Dictionary<Guid, (string Name, string Type)> devices)
+    {
+        var rows = new List<ActivityRow>(buckets.Count + energy.Count);
+        var claimed = new HashSet<(Guid, Guid, DateTime)>();
+
+        foreach (var (householdId, deviceId, row) in buckets)
+        {
+            var key = (householdId, deviceId, row.BucketStart);
+            claimed.Add(key);
+            rows.Add(energy.TryGetValue(key, out var wh) ? row with { EnergyWh = Math.Round(wh, 3) } : row);
+        }
+
+        foreach (var (key, wh) in energy)
+        {
+            if (claimed.Contains(key))
+            {
+                continue;
+            }
+
+            var device = devices.TryGetValue(key.Device, out var d) ? d : ("(unknown)", string.Empty);
+            rows.Add(new ActivityRow(
+                key.Household,
+                householdNames.GetValueOrDefault(key.Household, "(削除済み)"),
+                device.Item1,
+                device.Item2,
+                key.Hour,
+                0,
+                0,
+                nameof(EventSource.SwitchBotPoll),
+                Math.Round(wh, 3)));
+        }
+
+        return rows.OrderBy(a => a.BucketStart).ToList();
     }
 
     private static async Task<Dictionary<Guid, int>> CountByHouseholdAsync(
@@ -415,19 +533,36 @@ public sealed class FabricSqlConsoleSync(
         return await command.ExecuteNonQueryAsync(ct);
     }
 
-    private static async Task<bool> HasPowerColumnsAsync(SqlConnection connection, CancellationToken ct)
+    private static async Task<bool> HasColumnsAsync(
+        SqlConnection connection,
+        string table,
+        string[] columns,
+        CancellationToken ct)
     {
         await using var command = connection.CreateCommand();
-        command.CommandText = """
+        var names = string.Join(", ", columns.Select((_, i) => $"@c{i}"));
+        command.CommandText = $"""
             SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'HouseholdSnapshots'
-              AND COLUMN_NAME IN ('powerTodayWh', 'powerBaselineWh', 'powerTrend');
+            WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = @table
+              AND COLUMN_NAME IN ({names});
             """;
         command.CommandTimeout = 60;
+        command.Parameters.AddWithValue("@table", table);
+        for (var i = 0; i < columns.Length; i++)
+        {
+            command.Parameters.AddWithValue($"@c{i}", columns[i]);
+        }
 
         var found = await command.ExecuteScalarAsync(ct);
-        return found is int count && count == 3;
+        return found is int count && count == columns.Length;
     }
+
+    private static Task<bool> HasPowerColumnsAsync(SqlConnection connection, CancellationToken ct) =>
+        HasColumnsAsync(
+            connection,
+            "HouseholdSnapshots",
+            ["powerTodayWh", "powerBaselineWh", "powerTrend"],
+            ct);
 
     private async Task<int> WriteHouseholdsAsync(SqlConnection connection, Snapshot snapshot, CancellationToken ct)
     {
@@ -436,6 +571,13 @@ public sealed class FabricSqlConsoleSync(
         // picked up the new model yet still gets every other operational figure
         // instead of losing the whole household sync to an invalid-column error.
         var hasPower = await HasPowerColumnsAsync(connection, ct);
+        if (!hasPower)
+        {
+            // Worth saying out loud: the console will silently look like the power
+            // work was never done, and the fix is a Rayfin model apply, not a code change.
+            logger.LogWarning(
+                "dbo.HouseholdSnapshots has no power columns; skipping electricity use. Run `npm run rayfin:db` in fabric-app.");
+        }
 
         var sql = hasPower
             ? """
@@ -579,13 +721,35 @@ public sealed class FabricSqlConsoleSync(
                 (@id, @householdId, @householdName, @deviceName, @deviceType, @bucketStart, @eventCount, @onCount, @source);
             """;
 
+        const string SqlWithEnergy = """
+            MERGE dbo.ActivityBuckets AS t
+            USING (SELECT @id AS id) AS s ON t.id = s.id
+            WHEN MATCHED THEN UPDATE SET
+                householdId = @householdId, householdName = @householdName, deviceName = @deviceName,
+                deviceType = @deviceType, bucketStart = @bucketStart, eventCount = @eventCount,
+                onCount = @onCount, source = @source, energyWh = @energyWh
+            WHEN NOT MATCHED THEN INSERT
+                (id, householdId, householdName, deviceName, deviceType, bucketStart, eventCount, onCount, source, energyWh)
+            VALUES
+                (@id, @householdId, @householdName, @deviceName, @deviceType, @bucketStart, @eventCount, @onCount, @source, @energyWh);
+            """;
+
+        // Same reasoning as the household power columns: a workspace still on the older
+        // Rayfin model keeps receiving activity instead of failing the whole write.
+        var hasEnergy = await HasColumnsAsync(connection, "ActivityBuckets", ["energyWh"], ct);
+        if (!hasEnergy)
+        {
+            logger.LogWarning(
+                "Fabric console table dbo.ActivityBuckets has no energyWh column, so hourly electricity will not appear in the console. Run 'npm run rayfin:db' in fabric-app to apply the current model.");
+        }
+
         var written = 0;
 
         foreach (var b in snapshot.Activity)
         {
             var key = $"activity-bucket:{b.HouseholdId}|{b.DeviceName}|{b.BucketStart:o}";
 
-            await ExecuteAsync(connection, Sql, p =>
+            await ExecuteAsync(connection, hasEnergy ? SqlWithEnergy : Sql, p =>
             {
                 p.AddWithValue("@id", DeterministicId(key));
                 p.AddWithValue("@householdId", b.HouseholdId.ToString());
@@ -596,6 +760,15 @@ public sealed class FabricSqlConsoleSync(
                 p.AddWithValue("@eventCount", Num(b.EventCount));
                 p.AddWithValue("@onCount", Num(b.OnCount));
                 p.AddWithValue("@source", Text(b.Source));
+
+                if (hasEnergy)
+                {
+                    // Empty, not "0": an unmetered hour is unknown, and the console
+                    // draws a gap for it instead of a floor.
+                    p.AddWithValue(
+                        "@energyWh",
+                        b.EnergyWh is { } wh ? wh.ToString("0.###", CultureInfo.InvariantCulture) : string.Empty);
+                }
             }, ct);
 
             written++;

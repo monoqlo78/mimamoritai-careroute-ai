@@ -223,6 +223,123 @@ export function hourlyRhythm(buckets: ActivityRow[], utcOffsetHours = 9): Heatma
   return cells;
 }
 
+export interface EnergyPoint {
+  /** Local (JST) midnight of the day, expressed as a UTC instant for labelling. */
+  date: Date;
+  label: string;
+  wh: number;
+  /** False for a day the meter never reported, which is drawn as a gap. */
+  measured: boolean;
+}
+
+/**
+ * Daily electricity totals, bucketed by the household's local day.
+ *
+ * Deliberately local rather than UTC: a family reads "yesterday" as their own
+ * calendar day, and a chart whose days end at 09:00 JST would disagree with the
+ * answer the assistant gives them for the same question.
+ *
+ * Days with no reading are kept in the series but flagged unmeasured, so a poller
+ * outage shows as a hole instead of a day the household used no power at all.
+ */
+export function dailyEnergy(
+  buckets: ActivityRow[],
+  maxDays = 30,
+  utcOffsetHours = 9
+): EnergyPoint[] {
+  const offsetMs = utcOffsetHours * 3_600_000;
+  const byDay = new Map<number, number>();
+  let min = Infinity;
+  let max = -Infinity;
+
+  for (const bucket of buckets) {
+    const wh = toEnergy(bucket.energyWh);
+    if (wh === null) continue;
+
+    const start = toDate(bucket.bucketStart);
+    if (Number.isNaN(start.getTime())) continue;
+
+    const local = new Date(start.getTime() + offsetMs);
+    const key = Date.UTC(
+      local.getUTCFullYear(),
+      local.getUTCMonth(),
+      local.getUTCDate()
+    );
+    min = Math.min(min, key);
+    max = Math.max(max, key);
+    byDay.set(key, (byDay.get(key) ?? 0) + wh);
+  }
+
+  if (!Number.isFinite(min)) return [];
+
+  const from = Math.max(min, max - (maxDays - 1) * 86_400_000);
+  const points: EnergyPoint[] = [];
+
+  for (let key = from; key <= max; key += 86_400_000) {
+    const date = new Date(key);
+    const wh = byDay.get(key);
+    points.push({
+      date,
+      label: `${date.getUTCMonth() + 1}/${date.getUTCDate()}`,
+      wh: wh ?? 0,
+      measured: wh !== undefined,
+    });
+  }
+
+  return points;
+}
+
+export interface EnergyHour {
+  hour: number;
+  /** Mean watt-hours for this hour across the days that actually reported. */
+  avgWh: number;
+  days: number;
+}
+
+/**
+ * 24-slot profile of when the electricity is actually used, in local time.
+ *
+ * Averaged per reporting day rather than summed, so a window that happens to hold
+ * more mornings than evenings does not read as "this family uses more power before
+ * noon". The shape is the point: it is what makes an unusual night visible.
+ */
+export function hourlyEnergy(
+  buckets: ActivityRow[],
+  utcOffsetHours = 9
+): EnergyHour[] {
+  const offsetMs = utcOffsetHours * 3_600_000;
+  const totals = Array.from({ length: 24 }, () => 0);
+  const days = Array.from({ length: 24 }, () => new Set<number>());
+
+  for (const bucket of buckets) {
+    const wh = toEnergy(bucket.energyWh);
+    if (wh === null) continue;
+
+    const start = toDate(bucket.bucketStart);
+    if (Number.isNaN(start.getTime())) continue;
+
+    const local = new Date(start.getTime() + offsetMs);
+    const hour = local.getUTCHours();
+    totals[hour] += wh;
+    days[hour].add(
+      Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate())
+    );
+  }
+
+  return totals.map((total, hour) => ({
+    hour,
+    days: days[hour].size,
+    avgWh: days[hour].size === 0 ? 0 : total / days[hour].size,
+  }));
+}
+
+/** Empty means "not metered", which is not the same as zero and must not become one. */
+function toEnergy(value: string | undefined): number | null {
+  if (value === undefined || value === null || value.trim() === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 export interface DeviceSlice {
   name: string;
   type: string;

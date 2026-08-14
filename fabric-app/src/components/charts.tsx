@@ -2,11 +2,145 @@ import type {
   ActivityPoint,
   DayBucket,
   DeviceSlice,
+  EnergyHour,
+  EnergyPoint,
   HeatmapCell,
   HouseholdBar,
   ModelBar,
   RiskSlice,
 } from '@/services/analytics';
+
+/** Wh under 1000 stays Wh: a family reads "780Wh" faster than "0.78kWh". */
+export function formatWh(wh: number): string {
+  return wh >= 1000
+    ? `${(wh / 1000).toFixed(2)}kWh`
+    : `${wh >= 10 ? Math.round(wh) : wh.toFixed(1)}Wh`;
+}
+
+/**
+ * Daily electricity bars.
+ *
+ * Bars rather than a line because each day is a discrete total, and because a
+ * missing day has to be visibly absent -- a line would interpolate straight
+ * through an outage and invent consumption that was never measured.
+ */
+export function EnergyTrend({ points }: { points: EnergyPoint[] }) {
+  if (points.length === 0) {
+    return <p className="text-sm text-gray-400">電力量のデータがまだありません。</p>;
+  }
+
+  const measured = points.filter((point) => point.measured);
+  const max = Math.max(1, ...measured.map((point) => point.wh));
+  const avg =
+    measured.length === 0
+      ? 0
+      : measured.reduce((sum, point) => sum + point.wh, 0) / measured.length;
+  const labelEvery = Math.max(1, Math.ceil(points.length / 10));
+
+  return (
+    <div>
+      <div className="relative flex h-36 items-stretch gap-[3px]">
+        {avg > 0 && (
+          <div
+            className="pointer-events-none absolute inset-x-0 border-t border-dashed border-amber-400/70"
+            style={{ bottom: `${(avg / max) * 100}%` }}
+          >
+            <span className="absolute right-0 -top-4 text-[10px] font-medium text-amber-600">
+              平均 {formatWh(avg)}
+            </span>
+          </div>
+        )}
+        {points.map((point) => {
+          const ratio = point.measured ? point.wh / max : 0;
+          return (
+            <div
+              key={point.date.toISOString()}
+              className="flex h-full flex-1 flex-col justify-end"
+            >
+              <div
+                className="w-full rounded-t-[3px] transition-[height] duration-700"
+                style={{
+                  height: point.measured
+                    ? `${Math.max(ratio * 100, point.wh > 0 ? 6 : 2)}%`
+                    : '100%',
+                  background: point.measured
+                    ? `linear-gradient(180deg, hsl(${38 - ratio * 22} 95% ${70 - ratio * 22}%), hsl(${38 - ratio * 22} 90% ${56 - ratio * 14}%))`
+                    : 'repeating-linear-gradient(135deg, #f1f5f9 0 4px, #ffffff 4px 8px)',
+                }}
+                title={
+                  point.measured
+                    ? `${point.label}: ${formatWh(point.wh)}`
+                    : `${point.label}: 計測なし`
+                }
+              />
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-1.5 flex gap-[3px] text-[10px] text-gray-400">
+        {points.map((point, index) => (
+          <span key={point.date.toISOString()} className="flex-1 text-center">
+            {index % labelEvery === 0 || index === points.length - 1
+              ? point.label
+              : ''}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 24-slot profile of average hourly consumption, in JST.
+ *
+ * Shown next to the activity rhythm on purpose: the two disagreeing -- power drawn
+ * in an hour nobody switched anything -- is the signal an operator is looking for.
+ */
+export function EnergyProfile({ hours }: { hours: EnergyHour[] }) {
+  const max = Math.max(...hours.map((hour) => hour.avgWh));
+
+  if (max <= 0) {
+    return <p className="text-sm text-gray-400">電力量のデータがまだありません。</p>;
+  }
+
+  const peak = hours.reduce((best, hour) => (hour.avgWh > best.avgWh ? hour : best), hours[0]);
+
+  return (
+    <div>
+      <div className="flex h-28 items-stretch gap-[3px]">
+        {hours.map((hour) => {
+          const ratio = hour.avgWh / max;
+          return (
+            <div key={hour.hour} className="flex h-full flex-1 flex-col justify-end">
+              <div
+                className="w-full rounded-t-[3px] transition-[height] duration-700"
+                style={{
+                  height: `${Math.max(ratio * 100, hour.avgWh > 0 ? 8 : 3)}%`,
+                  background:
+                    hour.avgWh === 0
+                      ? '#f1f5f9'
+                      : `linear-gradient(180deg, hsl(${40 - ratio * 30} 95% ${72 - ratio * 24}%), hsl(${40 - ratio * 30} 90% ${58 - ratio * 16}%))`,
+                }}
+                title={`${hour.hour}時台: 平均 ${formatWh(hour.avgWh)}（${hour.days}日ぶん）`}
+              />
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-1.5 flex justify-between text-[10px] text-gray-400">
+        <span>0時</span>
+        <span>6時</span>
+        <span>12時</span>
+        <span>18時</span>
+        <span>23時</span>
+      </div>
+      <p className="mt-2 text-xs text-gray-500">
+        よく電気を使う時間帯は <span className="font-semibold text-amber-600">{peak.hour}時台</span>
+        （平均 {formatWh(peak.avgWh)}）です。
+      </p>
+    </div>
+  );
+}
 
 /** Stacked daily bars: total height = alerts sent, red segment = delivery failures. */
 export function AlertTimeline({ buckets }: { buckets: DayBucket[] }) {

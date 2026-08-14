@@ -91,6 +91,39 @@ public sealed class LocalDataQuestionServiceTests
         Assert.Contains("少ない", answer.Answer);
     }
 
+    /// <summary>
+    /// A single day of history is not enough to say what "usual" is, but it is more
+    /// than enough to answer with. Telling a worried family "there isn't enough data"
+    /// while holding yesterday's figure is the wrong trade every time.
+    /// </summary>
+    [Fact]
+    public async Task Power_Question_Still_Compares_When_There_Is_Only_One_Past_Day()
+    {
+        var device = Plug("リビングの電気");
+        using var db = await new TestDb().SeedAsync(device);
+        var now = new DateTimeOffset(2026, 1, 8, 3, 0, 0, TimeSpan.Zero);
+
+        // Yesterday only: too thin for a baseline, so the fallback wording applies.
+        for (var i = 0; i < 12; i++)
+        {
+            await AddReadingAsync(db, device, now.AddDays(-1).AddMinutes(-60 + (i * 5)), 100);
+        }
+
+        await AddReadingAsync(db, device, now.AddDays(-1).AddMinutes(0), 0);
+
+        for (var i = 0; i < 12; i++)
+        {
+            await AddReadingAsync(db, device, now.AddMinutes(-60 + (i * 5)), 10);
+        }
+
+        var answer = await Service(db, now).AnswerAsync(db.HouseholdId, "電力使用量は？");
+
+        Assert.DoesNotContain("実績がまだ足りません", answer.Answer);
+        Assert.Contains("昨日は約", answer.Answer);
+        Assert.Contains("平均は約", answer.Answer);
+        Assert.Contains("少なめ", answer.Answer);
+    }
+
     [Fact]
     public async Task Power_Question_Says_So_Plainly_When_Nothing_Has_Been_Measured()
     {

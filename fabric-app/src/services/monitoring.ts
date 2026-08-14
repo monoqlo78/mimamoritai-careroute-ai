@@ -61,6 +61,12 @@ export interface ActivityRow {
   eventCount: string;
   onCount: string;
   source: string;
+  /**
+   * Watt-hours drawn during the hour. Optional and possibly empty: a workspace on an
+   * older model, or an unmetered device, has no reading, and that is a gap in the chart
+   * rather than a measured zero.
+   */
+  energyWh?: string;
 }
 
 /**
@@ -126,6 +132,7 @@ const ACTIVITY_FIELDS = [
   'eventCount',
   'onCount',
   'source',
+  'energyWh',
 ] as const;
 
 const AI_FIELDS = [
@@ -249,6 +256,9 @@ const SAMPLE_ACTIVITY: ActivityRow[] = (() => {
         eventCount: String(count),
         onCount: String(Math.ceil(count / 2)),
         source: 'Sample',
+        // Roughly proportional to how busy the hour is, so the sample charts have the
+        // same shape as the activity ones without pretending to be a real meter.
+        energyWh: (count * 18 + hour * 2).toFixed(1),
       });
     }
   }

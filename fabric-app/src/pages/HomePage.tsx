@@ -5,6 +5,9 @@ import {
   AlertTimeline,
   DeliveryGauge,
   DeviceBreakdown,
+  EnergyProfile,
+  EnergyTrend,
+  formatWh,
   HouseholdBars,
   RhythmHeatmap,
   RiskDonut,
@@ -16,8 +19,10 @@ import {
   activitySummary,
   alertsByDay,
   dailyActivity,
+  dailyEnergy,
   deliveryStats,
   deviceBreakdown,
+  hourlyEnergy,
   hourlyRhythm,
   householdBars,
   pipelineStats,
@@ -52,6 +57,7 @@ export function HomePage() {
   const [hasLoaded, setHasLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [origin, setOrigin] = useState<DataOrigin>('fabric');
+  const [energyDays, setEnergyDays] = useState(7);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -100,6 +106,9 @@ export function HomePage() {
   const rhythm = hourlyRhythm(activity);
   const devices = deviceBreakdown(activity);
   const activityTotals = activitySummary(activity);
+  const energyDaily = dailyEnergy(activity, energyDays);
+  const energyHours = hourlyEnergy(activity);
+  const energyTotal = energyDaily.reduce((sum, point) => sum + point.wh, 0);
   const aiModels = routerModels(aiCalls);
   const aiSummary = routerSummary(aiCalls);
 
@@ -295,6 +304,71 @@ export function HomePage() {
                 </div>
               </div>
             </>
+          )}
+        </section>
+
+        <section className="mt-6 rounded-lg border border-gray-200 bg-white p-6">
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">
+                電気の使用量（SwitchBot プラグ実測）
+              </h2>
+              <p className="mt-1 text-xs text-gray-500">
+                プラグが報告する実電力（W）を1時間ごとに積分した電力量です。
+                電源の ON/OFF ではなく「どれだけ使ったか」で暮らしの変化を捉えます。
+              </p>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-gray-500">
+                期間合計{' '}
+                <span className="font-semibold text-amber-600">
+                  {formatWh(energyTotal)}
+                </span>
+              </span>
+              <div className="flex rounded-md border border-gray-200 p-0.5">
+                {[7, 30].map((days) => (
+                  <button
+                    key={days}
+                    type="button"
+                    onClick={() => setEnergyDays(days)}
+                    className={`rounded px-3 py-1 text-xs font-medium transition ${
+                      energyDays === days
+                        ? 'bg-amber-500 text-white'
+                        : 'text-gray-500 hover:text-gray-800'
+                    }`}
+                  >
+                    {days === 7 ? '1週間' : '1カ月'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {energyDaily.length === 0 ? (
+            <p className="text-sm text-gray-400">
+              電力量がまだ取り込まれていません。SwitchBot プラグミニを接続した世帯があると表示されます。
+            </p>
+          ) : (
+            <div className="grid gap-6 lg:grid-cols-2">
+              <div>
+                <h3 className="text-sm font-semibold text-gray-800">
+                  日別の使用量（{energyDays === 7 ? '直近1週間' : '直近1カ月'}）
+                </h3>
+                <p className="mb-3 text-xs text-gray-500">
+                  破線は期間平均。斜線のバーは計測できなかった日です。
+                </p>
+                <EnergyTrend points={energyDaily} />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-gray-800">
+                  時間帯別の傾向（JST）
+                </h3>
+                <p className="mb-3 text-xs text-gray-500">
+                  計測できた日の平均。生活リズムと見比べてください。
+                </p>
+                <EnergyProfile hours={energyHours} />
+              </div>
+            </div>
           )}
         </section>
 

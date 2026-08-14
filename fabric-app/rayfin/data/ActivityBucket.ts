@@ -37,4 +37,15 @@ export class ActivityBucket {
 
   /** Ingestion origin: "Seed" | "SwitchBotPoll" | "AppCommand" | "Simulator". */
   @text({ max: 40 }) source!: string;
+
+  /**
+   * Watt-hours drawn during this hour, integrated from the plug's measured real
+   * power. Empty when the household has no metered plug, which is different from
+   * a measured zero and must not be charted as one.
+   *
+   * Kept on this table rather than a new one because the hour is already the grain
+   * the console reasons about, and a family's electricity rhythm only means
+   * anything next to the activity it sits beside.
+   */
+  @text({ max: 20 }) energyWh!: string;
 }

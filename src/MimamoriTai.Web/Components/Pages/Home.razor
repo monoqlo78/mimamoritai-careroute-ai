@@ -219,6 +219,18 @@ else
                         <span class="text">@line.Content</span>
                     </div>
                 }
+                @if (_thinking)
+                {
+                    @* 答えが出るまで数秒かかることがある。無音のまま待たせると、
+                       押せていないのかと思って何度も押してしまう。 *@
+                    <div class="chat-line ai thinking" role="status" aria-live="polite">
+                        <span class="author">見守りAI</span>
+                        <span class="text">
+                            <span class="thinking-dots" aria-hidden="true"><span></span><span></span><span></span></span>
+                            <span class="thinking-label">考えています…</span>
+                        </span>
+                    </div>
+                }
             </div>
             <div class="chat-input">
                 <input @bind="_input" @bind:event="oninput" @onkeydown="OnKeyDown"
@@ -470,6 +482,12 @@ else
     private string _lineInput = string.Empty;
     private Guid? _lineSpeaker;
     private bool _busy;
+
+    /// <summary>
+    /// Narrower than <see cref="_busy"/> on purpose: only a question in flight shows the
+    /// waiting indicator. A device button press should not make the assistant look busy.
+    /// </summary>
+    private bool _thinking;
     private string? _notice;
     private string _noticeKind = "ok";
     private IReadOnlyList<HouseholdSummary> _households = [];
@@ -867,6 +885,7 @@ else
         }
 
         _busy = true;
+        _thinking = true;
         var text = message.Trim();
         clearInput();
 
@@ -882,6 +901,9 @@ else
             var response = await Orchestrator.HandleAsync(
                 new AssistantRequest(_model.HouseholdId, personId, text, source));
 
+            // 答えを載せる前に消す。片付けを finally に任せると、返事とインジケーターが
+            // 一瞬並んで表示される。
+            _thinking = false;
             _chatLog.Add(new FeedItem(DateTimeOffset.UtcNow, "見守りAI", response.Reply, true));
 
             // 返事が出た瞬間にミマモの口を動かす。文字だけだと、誰が答えたのかが
@@ -891,6 +913,7 @@ else
         }
         finally
         {
+            _thinking = false;
             _busy = false;
         }
     }
