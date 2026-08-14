@@ -149,9 +149,10 @@ const NODES: FlowNode[] = [
     y: 0.78,
     title: 'Eventhouse',
     subtitle: 'KQL / MimamoriEventhouse',
-    // DeviceEvents + SwitchBotPlugReadings. A row count would have to come from
-    // Eventhouse itself, which this console never reads, so state the shape
-    // instead of guessing a number.
+    // DeviceEvents + SwitchBotPlugReadings -- the same readings the console shows,
+    // arriving by the other route. A row count would have to come from Eventhouse
+    // itself, which this console never queries, so state the shape instead of
+    // guessing a number.
     metric: () => '2 テーブル',
     accent: 'fabric',
   },
@@ -265,7 +266,8 @@ const EDGES: FlowEdge[] = [
     from: 'eventhouse',
     to: 'dataagent',
     // The Eventhouse is read, just not by this console. Leaving that unsaid is
-    // what made the streaming branch look like a redundant copy of the sync.
+    // what made the streaming branch look like a redundant copy of the sync --
+    // it carries the same readings, it is simply read by someone else.
     label: 'KQL 照会',
     weight: (s) => 3 + Math.min(10, s.aiCalls / 6),
     color: [0.98, 0.44, 0.58],

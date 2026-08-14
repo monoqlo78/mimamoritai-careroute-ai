@@ -288,15 +288,40 @@ public static partial class WebhookEndpoints
 
         app.MapPost("/webhooks/switchbot", async (
             HttpRequest httpRequest,
+            SwitchBotWebhookIngestService ingest,
             ILoggerFactory loggerFactory,
             CancellationToken ct) =>
         {
-            // Placeholder endpoint. The payload contract is mapped once the physical
-            // devices arrive and the official SwitchBot webhook specification is verified.
             var logger = loggerFactory.CreateLogger("SwitchBotWebhook");
             using var reader = new StreamReader(httpRequest.Body);
-            _ = await reader.ReadToEndAsync(ct);
-            logger.LogInformation("Received a SwitchBot webhook callback. Payload mapping is not implemented yet.");
+            var body = await reader.ReadToEndAsync(ct);
+
+            SwitchBotWebhookResult result;
+            try
+            {
+                result = await ingest.IngestAsync(body, ct);
+            }
+            catch (Exception ex)
+            {
+                // SwitchBot retries on a non-2xx and disables a URL that keeps failing.
+                // Losing one callback is better than losing the subscription, so swallow
+                // and let the poller cover the gap.
+                logger.LogError(ex, "Failed to ingest a SwitchBot webhook callback.");
+                return Results.Ok();
+            }
+
+            if (!result.Recognised)
+            {
+                // Normal: the webhook is account-wide and carries devices nobody here owns.
+                logger.LogDebug("Ignored a SwitchBot webhook callback for an unknown device.");
+            }
+            else
+            {
+                logger.LogInformation(
+                    "Ingested a SwitchBot webhook callback. StateChange={State} Reading={Reading}",
+                    result.StateChange is not null, result.Reading is not null);
+            }
+
             return Results.Ok();
         }).WithName("SwitchBotWebhook").DisableAntiforgery();
 

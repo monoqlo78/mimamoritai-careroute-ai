@@ -306,6 +306,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<EventStreamPublishService>();
         services.AddScoped<PlugMiniReadingPublishService>();
         services.AddScoped<SwitchBotPollingCycleService>();
+        services.AddScoped<SwitchBotWebhookIngestService>();
         services.AddScoped<DeviceInsightService>();
         services.AddScoped<DeviceInsightQuestionService>();
 

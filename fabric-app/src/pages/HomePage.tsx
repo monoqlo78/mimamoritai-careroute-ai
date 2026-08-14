@@ -266,9 +266,10 @@ export function HomePage() {
                 データはこう流れています
               </h2>
               <p className="text-xs text-gray-500">
-                センサーから家族への通知まで。Fabric へは2経路あり、この画面に出ているのは
-                Azure SQL からの集計同期（15分ごと）だけです。Eventstream の生イベントは
-                Eventhouse に入り、AI の質問応答が読みます。数字はすべて下の表と同じ実データです。
+                センサーから家族への通知まで。Fabric へは Eventstream と取り込みバッチの2経路があり、
+                運ばれる中身は同じ計測値です。この画面が読んでいるのは Azure SQL からの集計同期（15分ごと）、
+                Eventhouse を読むのは AI の質問応答で、同じ中身を別の経路・別の読み手が見ています。
+                数字はすべて下の表と同じ実データです。
               </p>
             </div>
             <div className="text-right text-xs text-gray-500">
