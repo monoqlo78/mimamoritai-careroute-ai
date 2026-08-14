@@ -140,6 +140,42 @@ public class AdminConsoleTests
     }
 
     [Fact]
+    public async Task LoadAsync_Uses_Plug_Mini_Readings_As_Last_Activity()
+    {
+        var plug = new Device
+        {
+            ExternalDeviceId = "plug-mini",
+            Name = "プラグミニ",
+            Alias = "plug-mini",
+            DeviceType = DeviceType.Plug,
+            Room = "リビング",
+            Provider = DeviceProviderKind.SwitchBot,
+            RemoteControlAllowed = false,
+            SafetyClass = SafetyClass.Guarded,
+        };
+        using var testDb = await new TestDb().SeedAsync(plug);
+        var readingAt = new DateTimeOffset(2026, 1, 15, 11, 55, 0, TimeSpan.Zero);
+        testDb.Context.PlugMiniReadings.Add(new PlugMiniReading
+        {
+            HouseholdId = testDb.HouseholdId,
+            DeviceId = plug.Id,
+            DailyEnergyWh = 3.2,
+            OccurredAtUtc = readingAt,
+            ReceivedAtUtc = readingAt,
+        });
+        await testDb.Context.SaveChangesAsync();
+
+        var admin = FakeCurrentUserAccessor.User(Guid.NewGuid(), "運用者", idp: "line", subject: "U123");
+        var console = Console(testDb, Access(admin, new AdminOptions { Subjects = { "line:U123" } }, ConfiguredAuth()));
+
+        var model = await console.LoadAsync();
+
+        Assert.NotNull(model);
+        var row = Assert.Single(model.Households);
+        Assert.Equal(readingAt, row.LastEventUtc);
+    }
+
+    [Fact]
     public async Task LoadAsync_ExcludesAlertsOutsideTheWindow()
     {
         using var testDb = new TestDb();

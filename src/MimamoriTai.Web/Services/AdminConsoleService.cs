@@ -118,9 +118,14 @@ public sealed class AdminConsoleService(
             .Select(g => new { HouseholdId = g.Key, Count = g.Count() })
             .ToDictionaryAsync(x => x.HouseholdId, x => x.Count, ct);
 
-        var lastEvents = await db.DeviceEvents
+        var lastDeviceEvents = await db.DeviceEvents
             .GroupBy(e => e.HouseholdId)
             .Select(g => new { HouseholdId = g.Key, Last = g.Max(e => e.OccurredAtUtc) })
+            .ToDictionaryAsync(x => x.HouseholdId, x => x.Last, ct);
+
+        var lastPlugReadings = await db.PlugMiniReadings
+            .GroupBy(r => r.HouseholdId)
+            .Select(g => new { HouseholdId = g.Key, Last = g.Max(r => r.OccurredAtUtc) })
             .ToDictionaryAsync(x => x.HouseholdId, x => x.Last, ct);
 
         // Encrypted token/secret columns are intentionally not projected.
@@ -180,7 +185,13 @@ public sealed class AdminConsoleService(
             connections.TryGetValue(household.Id, out var connection);
             alertStats.TryGetValue(household.Id, out var alerts);
             latestRiskLevels.TryGetValue(household.Id, out var risk);
-            lastEvents.TryGetValue(household.Id, out var lastEvent);
+            var lastDeviceEvent = lastDeviceEvents.TryGetValue(household.Id, out var deviceEventAt)
+                ? deviceEventAt
+                : (DateTimeOffset?)null;
+            var lastPlugReading = lastPlugReadings.TryGetValue(household.Id, out var plugReadingAt)
+                ? plugReadingAt
+                : (DateTimeOffset?)null;
+            var lastEvent = Max(lastDeviceEvent, lastPlugReading);
 
             rows.Add(new AdminHouseholdRow(
                 Id: household.Id,
@@ -189,7 +200,7 @@ public sealed class AdminConsoleService(
                 MemberCount: memberCounts.GetValueOrDefault(household.Id),
                 ResidentCount: residentCounts.GetValueOrDefault(household.Id),
                 DeviceCount: deviceCounts.GetValueOrDefault(household.Id),
-                LastEventUtc: lastEvents.ContainsKey(household.Id) ? lastEvent : null,
+                LastEventUtc: lastEvent,
                 SwitchBotStatus: connection?.Status,
                 SwitchBotLastSyncUtc: connection?.LastSyncAtUtc,
                 SwitchBotError: connection?.LastErrorMessage,
@@ -284,4 +295,7 @@ public sealed class AdminConsoleService(
         row.FailedAlertsInWindow > 0
         || row.SwitchBotStatus == SwitchBotConnectionStatus.Error
         || (row.DataSourceMode == DataSourceMode.Production && row.ActiveLineRecipients == 0);
+
+    private static DateTimeOffset? Max(DateTimeOffset? left, DateTimeOffset? right) =>
+        left is null ? right : right is null ? left : left > right ? left : right;
 }

@@ -129,6 +129,39 @@ public class FabricConsoleSyncTests
     }
 
     [Fact]
+    public async Task Household_Rollup_Uses_Plug_Mini_Readings_As_Last_Activity()
+    {
+        var plug = new Device
+        {
+            ExternalDeviceId = "plug-mini",
+            Name = "プラグミニ",
+            Alias = "plug-mini",
+            DeviceType = DeviceType.Plug,
+            Room = "リビング",
+            Provider = DeviceProviderKind.SwitchBot,
+            RemoteControlAllowed = false,
+            SafetyClass = SafetyClass.Guarded,
+        };
+        using var db = await new TestDb().SeedAsync(plug);
+
+        var readingAt = Now.AddMinutes(-5);
+        db.Context.PlugMiniReadings.Add(new PlugMiniReading
+        {
+            HouseholdId = db.HouseholdId,
+            DeviceId = plug.Id,
+            DailyEnergyWh = 3.2,
+            OccurredAtUtc = readingAt,
+            ReceivedAtUtc = readingAt,
+        });
+        await db.Context.SaveChangesAsync();
+
+        var snapshot = await CreateSync(db).BuildSnapshotAsync(CancellationToken.None);
+
+        var household = Assert.Single(snapshot.Households);
+        Assert.Equal(readingAt, household.LastEventUtc);
+    }
+
+    [Fact]
     public async Task Production_Household_With_No_Reachable_Recipient_Needs_Attention()
     {
         var sample = new FabricSqlConsoleSync.HouseholdRow(

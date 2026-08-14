@@ -195,9 +195,14 @@ public sealed class FabricSqlConsoleSync(
         var recipientCounts = await CountByHouseholdAsync(
             db.LineRecipients.Where(r => r.IsActive).Select(r => r.HouseholdId), ct);
 
-        var lastEvents = await db.DeviceEvents
+        var lastDeviceEvents = await db.DeviceEvents
             .GroupBy(e => e.HouseholdId)
             .Select(g => new { HouseholdId = g.Key, Last = g.Max(e => e.OccurredAtUtc) })
+            .ToDictionaryAsync(x => x.HouseholdId, x => (DateTimeOffset?)x.Last, ct);
+
+        var lastPlugReadings = await db.PlugMiniReadings
+            .GroupBy(r => r.HouseholdId)
+            .Select(g => new { HouseholdId = g.Key, Last = g.Max(r => r.OccurredAtUtc) })
             .ToDictionaryAsync(x => x.HouseholdId, x => (DateTimeOffset?)x.Last, ct);
 
         // Only the status/error fields; the Encrypted* columns are never selected.
@@ -259,7 +264,7 @@ public sealed class FabricSqlConsoleSync(
                 memberCounts.GetValueOrDefault(h.Id),
                 residentCounts.GetValueOrDefault(h.Id),
                 deviceCounts.GetValueOrDefault(h.Id),
-                lastEvents.GetValueOrDefault(h.Id),
+                Max(lastDeviceEvents.GetValueOrDefault(h.Id), lastPlugReadings.GetValueOrDefault(h.Id)),
                 switchBotByHousehold.TryGetValue(h.Id, out var sb) ? sb.Status : null,
                 switchBotByHousehold.TryGetValue(h.Id, out var sbe) ? sbe.LastErrorMessage : null,
                 recipientCounts.GetValueOrDefault(h.Id),
@@ -496,6 +501,9 @@ public sealed class FabricSqlConsoleSync(
             .GroupBy(id => id)
             .Select(g => new { HouseholdId = g.Key, Count = g.Count() })
             .ToDictionaryAsync(x => x.HouseholdId, x => x.Count, ct);
+
+    private static DateTimeOffset? Max(DateTimeOffset? left, DateTimeOffset? right) =>
+        left is null ? right : right is null ? left : left > right ? left : right;
 
     // --------------------------------------------------------------- write side
 

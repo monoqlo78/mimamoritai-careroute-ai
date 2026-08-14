@@ -9,7 +9,12 @@ SELECT
     ISNULL(mem.Cnt, 0)  AS MemberCount,
     ISNULL(res.Cnt, 0)  AS ResidentCount,
     ISNULL(dev.Cnt, 0)  AS DeviceCount,
-    ev.LastEventUtc     AS LastEventUtc,
+    CASE
+        WHEN ev.LastEventUtc IS NULL THEN pr.LastPlugReadingUtc
+        WHEN pr.LastPlugReadingUtc IS NULL THEN ev.LastEventUtc
+        WHEN ev.LastEventUtc >= pr.LastPlugReadingUtc THEN ev.LastEventUtc
+        ELSE pr.LastPlugReadingUtc
+    END                 AS LastEventUtc,
     sb.Status           AS SwitchBotStatus,
     sb.LastErrorMessage AS SwitchBotError,
     ISNULL(lr.Cnt, 0)   AS ActiveLineRecipients,
@@ -25,6 +30,8 @@ LEFT JOIN (SELECT HouseholdId, COUNT(*) Cnt FROM mimamori.Devices GROUP BY House
     ON dev.HouseholdId = h.Id
 LEFT JOIN (SELECT HouseholdId, MAX(OccurredAtUtc) LastEventUtc FROM mimamori.DeviceEvents GROUP BY HouseholdId) ev
     ON ev.HouseholdId = h.Id
+LEFT JOIN (SELECT HouseholdId, MAX(OccurredAtUtc) LastPlugReadingUtc FROM mimamori.PlugMiniReadings GROUP BY HouseholdId) pr
+    ON pr.HouseholdId = h.Id
 -- Encrypted token/secret columns are deliberately not selected.
 LEFT JOIN (SELECT HouseholdId, Status, LastErrorMessage FROM mimamori.SwitchBotConnections) sb
     ON sb.HouseholdId = h.Id
