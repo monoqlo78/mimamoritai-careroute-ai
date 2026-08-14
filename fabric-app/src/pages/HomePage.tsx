@@ -203,8 +203,9 @@ export function HomePage() {
                 データはこう流れています
               </h2>
               <p className="text-xs text-gray-500">
-                センサーから家族への通知まで、そして Fabric に取り込まれて
-                この画面に届くまで。数字はすべて下の表と同じ実データです。
+                センサーから家族への通知まで。Fabric へは2経路あり、生イベントは
+                リアルタイムに Eventhouse へ、集計は15分ごとにこの画面へ届きます。
+                数字はすべて下の表と同じ実データです。
               </p>
             </div>
             <div className="text-right text-xs text-gray-500">

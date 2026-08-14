@@ -107,9 +107,8 @@ const NODES: FlowNode[] = [
   },
   {
     id: 'orca',
-    // Pushed to the far left so the four Fabric-coloured cards to the right form
-    // one unbroken block. The AI path is a branch off the app, not part of the
-    // analytics chain, and sitting inside that chain made it read as one.
+    // Far left: the AI path is a branch off the app, not a link in the analytics
+    // chain, and standing inside that chain made it read as one.
     x: 0.085,
     y: 0.78,
     title: 'OrcaRouter',
@@ -129,22 +128,35 @@ const NODES: FlowNode[] = [
   },
   {
     id: 'eventstream',
-    // Directly under the app, which is where this hop actually happens, and
-    // immediately left of the console-sync card so every Fabric-coloured node
-    // sits in one run. Parked on the far left it read as a stray input rather
-    // than the head of the analytics path.
-    x: 0.3,
+    // Under the app because that is genuinely where the hop starts: SwitchBot's
+    // consumer devices have no direct Azure path, so the poller is the only
+    // possible producer.
+    x: 0.253,
     y: 0.78,
     title: 'Eventstream',
-    subtitle: 'Eventhouse / Lakehouse',
-    // A count of forwarded events would have to come from Eventhouse, which this
-    // console never reads, so state the topology instead of guessing a number.
-    metric: () => '宛先 2',
+    subtitle: 'カスタムエンドポイント',
+    // Event Hub is the primary sink and direct Eventhouse ingestion the fallback
+    // (FallbackEventStreamPublisher), so name the cadence, not a destination
+    // count -- the destination is now its own card, and the cadence is the whole
+    // reason this branch exists next to the 15-minute console sync.
+    metric: () => 'リアルタイム',
+    accent: 'fabric',
+  },
+  {
+    id: 'eventhouse',
+    x: 0.421,
+    y: 0.78,
+    title: 'Eventhouse',
+    subtitle: 'KQL / MimamoriEventhouse',
+    // DeviceEvents + SwitchBotPlugReadings. A row count would have to come from
+    // Eventhouse itself, which this console never reads, so state the shape
+    // instead of guessing a number.
+    metric: () => '2 テーブル',
     accent: 'fabric',
   },
   {
     id: 'sync',
-    x: 0.515,
+    x: 0.589,
     y: 0.78,
     title: 'コンソール同期',
     // The C# background service in the web app, not the ps1 used to bootstrap
@@ -155,7 +167,7 @@ const NODES: FlowNode[] = [
   },
   {
     id: 'fabric',
-    x: 0.725,
+    x: 0.757,
     y: 0.78,
     title: 'Fabric SQL Database',
     subtitle: 'Rayfin プロビジョニング',
@@ -221,6 +233,18 @@ const EDGES: FlowEdge[] = [
     // events leave the app as they are polled, before any aggregation.
     label: 'イベント転送',
     weight: (s) => 4 + s.devices + Math.min(12, s.activityEvents / 20),
+    color: [0.2, 0.83, 0.6],
+  },
+  {
+    from: 'eventstream',
+    to: 'eventhouse',
+    // Where the real-time branch actually lands. Drawn because without it the
+    // stream read as a dead end, and a dead end invites the fair question of
+    // why it exists next to the console sync at all.
+    // Short on purpose: this label sits in the gutter between two adjacent cards,
+    // which are drawn over the SVG, so anything longer disappears behind them.
+    label: '取り込み',
+    weight: (s) => 4 + Math.min(12, s.activityEvents / 20),
     color: [0.2, 0.83, 0.6],
   },
   {
@@ -598,7 +622,11 @@ export function DataFlowCanvas({ stats }: { stats: PipelineStats }) {
         {NODES.map((node) => (
           <div
             key={node.id}
-            className={`absolute w-[148px] -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-slate-900/85 px-3 py-2 shadow-lg backdrop-blur-sm ${ACCENT_CLASS[node.accent]}`}
+            // 132px, not the 148px this used to be: the lower row now carries six
+            // cards across the same span, and at the 900px floor that leaves only
+            // 151px per column. Narrower keeps a real gutter instead of letting
+            // neighbours touch on a small laptop.
+            className={`absolute w-[132px] -translate-x-1/2 -translate-y-1/2 rounded-lg border bg-slate-900/85 px-3 py-2 shadow-lg backdrop-blur-sm ${ACCENT_CLASS[node.accent]}`}
             style={{ left: `${node.x * 100}%`, top: `${node.y * 100}%` }}
           >
             <div className="flex items-center gap-1.5">
