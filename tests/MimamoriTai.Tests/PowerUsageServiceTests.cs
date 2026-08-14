@@ -478,4 +478,112 @@ public class PowerUsageServiceTests
         Assert.Null(sample.VoltageV);
         Assert.Null(sample.CurrentMa);
     }
+
+    /// <summary>
+    /// SwitchBot's cloud replays the last status a plug sent it, so a plug that has gone
+    /// quiet still produces a row every five minutes. Charting those repeats as samples
+    /// draws a steady line across hours nobody measured, which is exactly how a plug that
+    /// dropped off the network comes to look like a calm evening.
+    /// </summary>
+    [Fact]
+    public async Task Telemetry_Drops_Polls_That_Only_Repeated_The_Last_Status()
+    {
+        var light = TestDb.Light();
+        using var db = await new TestDb().SeedAsync(light);
+
+        // One real observation, then two hours of polls replaying it, then a new one.
+        for (var i = 0; i < 24; i++)
+        {
+            db.Context.PlugMiniReadings.Add(new PlugMiniReading
+            {
+                HouseholdId = db.HouseholdId,
+                DeviceId = light.Id,
+                OccurredAtUtc = NowUtc.AddHours(-3).AddMinutes(i * 5),
+                DailyEnergyWh = 0,
+                VoltageV = 103.4,
+                CurrentMa = 140
+            });
+        }
+
+        db.Context.PlugMiniReadings.Add(new PlugMiniReading
+        {
+            HouseholdId = db.HouseholdId,
+            DeviceId = light.Id,
+            OccurredAtUtc = NowUtc.AddMinutes(-5),
+            DailyEnergyWh = 12.2,
+            VoltageV = 103.9,
+            CurrentMa = 148
+        });
+        await db.Context.SaveChangesAsync();
+
+        var samples = await Service(db).GetTelemetryAsync(db.HouseholdId, light.Id);
+
+        // The first of the repeated run survives -- it was a real reading -- and the gap
+        // it leaves behind is what tells the chart nothing was observed for two hours.
+        Assert.Equal([0d, 12.2d], samples.Select(s => s.Watts));
+        Assert.Equal(NowUtc.AddHours(-3), samples[0].At);
+    }
+
+    /// <summary>
+    /// The counterpart: a live plug's mains voltage drifts continuously, so readings that
+    /// differ at all are separate observations and every one of them must survive.
+    /// </summary>
+    [Fact]
+    public async Task Telemetry_Keeps_Readings_That_Differ_By_A_Tenth_Of_A_Volt()
+    {
+        var light = TestDb.Light();
+        using var db = await new TestDb().SeedAsync(light);
+
+        foreach (var (minutesAgo, volts) in new[] { (15, 103.9), (10, 104.0), (5, 103.9) })
+        {
+            db.Context.PlugMiniReadings.Add(new PlugMiniReading
+            {
+                HouseholdId = db.HouseholdId,
+                DeviceId = light.Id,
+                OccurredAtUtc = NowUtc.AddMinutes(-minutesAgo),
+                DailyEnergyWh = 12,
+                VoltageV = volts,
+                CurrentMa = 140
+            });
+        }
+
+        await db.Context.SaveChangesAsync();
+
+        var samples = await Service(db).GetTelemetryAsync(db.HouseholdId, light.Id);
+
+        Assert.Equal([103.9, 104.0, 103.9], samples.Select(s => s.VoltageV));
+    }
+
+    /// <summary>
+    /// Across a household the rows interleave by time, so neighbouring rows belong to
+    /// different plugs. Comparing them would discard one plug's reading because another
+    /// plug happened to report the same numbers.
+    /// </summary>
+    [Fact]
+    public async Task Telemetry_Does_Not_Collapse_Repeats_Across_Different_Devices()
+    {
+        var light = TestDb.Light();
+        var kettle = TestDb.Light("kitchen-kettle", "ケトル");
+        kettle.ExternalDeviceId = "demo-kettle";
+        using var db = await new TestDb().SeedAsync(light, kettle);
+
+        foreach (var (minutesAgo, device) in new[] { (15, light), (10, kettle), (5, light) })
+        {
+            db.Context.PlugMiniReadings.Add(new PlugMiniReading
+            {
+                HouseholdId = db.HouseholdId,
+                DeviceId = device.Id,
+                OccurredAtUtc = NowUtc.AddMinutes(-minutesAgo),
+                DailyEnergyWh = 0,
+                VoltageV = 103.4,
+                CurrentMa = 140
+            });
+        }
+
+        await db.Context.SaveChangesAsync();
+
+        var samples = await Service(db).GetTelemetryAsync(db.HouseholdId);
+
+        Assert.Equal(3, samples.Count);
+    }
 }

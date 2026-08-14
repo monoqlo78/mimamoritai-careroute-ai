@@ -129,6 +129,23 @@ public sealed class LocalDataQuestionService(IAppDbContext db, TimeProvider cloc
     /// on/off event count. Voltage, current and the daily energy total are recorded on
     /// every poll, so "電力使用量は？" has a real answer available -- reporting "記録が
     /// ありません" while those rows exist is simply wrong.
+    ///
+    /// Two things this has to be careful about, both learned from production readings.
+    ///
+    /// The draw quoted is the plug's own measured real power, never voltage times
+    /// current. On a live socket those disagree wildly: a reading of 103.4V and 140mA
+    /// computes to 14.5VA while the plug itself reported 0W of real power, and quoting
+    /// the former told a family their lamp was drawing 14.5W when nothing was on.
+    ///
+    /// And a row existing does not mean the plug reported anything. SwitchBot's cloud
+    /// serves the last status it received, so when a plug stops reporting -- it dropped
+    /// off Wi-Fi, or the cloud went quiet -- every poll keeps returning the same numbers
+    /// and we keep storing them. Production has run ten hours that way, with voltage
+    /// frozen to the same 103.4V across 123 polls, which mains voltage never does. A
+    /// watching-over app that presents that as "the reading at 21:12" is not merely
+    /// imprecise; it hides exactly the case a family needs to hear about, because a
+    /// silent plug and a quiet evening look identical. So the time quoted is when these
+    /// values were first seen, not when we last asked, and a long-frozen reading says so.
     /// </summary>
     private async Task<string> PowerFactsAsync(Guid householdId, CancellationToken ct)
     {
@@ -142,7 +159,6 @@ public sealed class LocalDataQuestionService(IAppDbContext db, TimeProvider cloc
                 r.OccurredAtUtc,
                 r.VoltageV,
                 r.CurrentMa,
-                r.ApproxWatts,
                 r.DailyEnergyWh,
                 r.UsageMinutesToday,
                 Name = r.Device!.DisplayNameOverride ?? r.Device.Alias ?? r.Device.Name
@@ -158,9 +174,11 @@ public sealed class LocalDataQuestionService(IAppDbContext db, TimeProvider cloc
 
         var parts = new List<string>();
 
-        if (latest.ApproxWatts is { } w)
+        // SwitchBot's `weight`, which is instantaneous real watts despite the property
+        // name. See the remarks above for why the voltage*current figure is not used.
+        if (latest.DailyEnergyWh is { } w)
         {
-            parts.Add($"消費電力は約{w:0.#}W");
+            parts.Add($"消費電力は{w:0.#}W");
         }
 
         if (latest.VoltageV is { } v && latest.CurrentMa is { } ma)
@@ -168,27 +186,87 @@ public sealed class LocalDataQuestionService(IAppDbContext db, TimeProvider cloc
             parts.Add($"電圧{v:0.#}V・電流{ma:0}mA");
         }
 
-        // Deliberately not SwitchBot's `weight` counter read as a daily total: that
-        // field is instantaneous watts, so the figure below is integrated from the
-        // measured draw instead -- the same arithmetic the SwitchBot app shows.
-        var usage = await PowerUsage.GetAsync(householdId, ct: ct);
-        if (usage.TodayWh > 0)
-        {
-            parts.Add($"今日の使用電力量は約{PowerUsageService.Format(usage.TodayWh)}");
-        }
-
         if (latest.UsageMinutesToday is { } minutes)
         {
-            parts.Add($"今日の通電時間は{minutes}分");
+            parts.Add($"その時点の通電時間は{minutes}分");
         }
 
-        var measuredAt = HouseholdTime.LocalTime(latest.OccurredAtUtc);
-        var samples = await db.PlugMiniReadings
+        var reportedAtUtc = await ReportedAtUtcAsync(householdId, latest.OccurredAtUtc, ct);
+        var measuredAt = HouseholdTime.LocalTime(reportedAtUtc);
+        var polls = await db.PlugMiniReadings
             .CountAsync(r => r.HouseholdId == householdId && r.OccurredAtUtc >= since, ct);
 
+        var stale = latest.OccurredAtUtc - reportedAtUtc >= StaleAfter
+            ? $"ただし、この値は{measuredAt:HH\\:mm}から一度も変わっていません。"
+              + "プラグからの新しい報告が届いていない可能性があるため、今の様子としては読まないでください。"
+            : string.Empty;
+
+        // Today's total is integrated across the whole day's samples, so it belongs in
+        // its own clause rather than inside the "as of HH:mm" reading above.
+        var usage = await PowerUsage.GetAsync(householdId, ct: ct);
+        var todayEnergy = usage.TodayWh > 0
+            ? $"今日ここまでの使用電力量は約{PowerUsageService.Format(usage.TodayWh)}です。"
+            : string.Empty;
+
         return $"{latest.Name}の{measuredAt:HH\\:mm}時点の測定値では、{string.Join("、", parts)}です"
-            + $"（今日の測定回数は{samples}回）。{DescribeTrend(usage, HouseholdTime.LocalDate(clock.GetUtcNow()))}"
+            + $"（今日の取得回数は{polls}回）。{stale}{todayEnergy}"
+            + $"{DescribeTrend(usage, HouseholdTime.LocalDate(clock.GetUtcNow()))}"
             + $"{await PowerChangeFactsAsync(householdId, since, ct)}{inventory}";
+    }
+
+    /// <summary>
+    /// How long every reported field may stay byte-identical before the reading is
+    /// treated as a repeat of a stale cache rather than a fresh measurement.
+    ///
+    /// Six poll cycles. Mains voltage drifts continuously, so half an hour of an
+    /// unchanging figure to a tenth of a volt is not a steady house -- it is silence.
+    /// Short enough to catch a plug that has fallen off the network within one answer,
+    /// long enough that ordinary jitter or a couple of skipped polls never trips it.
+    /// </summary>
+    private static readonly TimeSpan StaleAfter = TimeSpan.FromMinutes(30);
+
+    /// <summary>
+    /// When the plug last actually told us something new: the oldest poll in the
+    /// unbroken run of readings identical to the newest one.
+    ///
+    /// We have no device-side timestamp to use -- SwitchBot returns a status with no
+    /// indication of when it was taken -- so the first time we saw these values is the
+    /// closest honest estimate of when they were true.
+    /// </summary>
+    private async Task<DateTimeOffset> ReportedAtUtcAsync(
+        Guid householdId, DateTimeOffset latestAtUtc, CancellationToken ct)
+    {
+        // Bounded so a plug that has been silent for weeks cannot pull the whole table.
+        var floor = latestAtUtc - TimeSpan.FromDays(2);
+
+        var rows = await db.PlugMiniReadings
+            .Where(r => r.HouseholdId == householdId
+                && r.OccurredAtUtc <= latestAtUtc && r.OccurredAtUtc >= floor)
+            .OrderByDescending(r => r.OccurredAtUtc)
+            .Select(r => new { r.OccurredAtUtc, r.VoltageV, r.CurrentMa, r.DailyEnergyWh, r.UsageMinutesToday })
+            .ToListAsync(ct);
+
+        if (rows.Count == 0)
+        {
+            return latestAtUtc;
+        }
+
+        var newest = rows[0];
+        var reportedAt = newest.OccurredAtUtc;
+
+        foreach (var row in rows.Skip(1))
+        {
+            if (row.VoltageV != newest.VoltageV || row.CurrentMa != newest.CurrentMa
+                || row.DailyEnergyWh != newest.DailyEnergyWh
+                || row.UsageMinutesToday != newest.UsageMinutesToday)
+            {
+                break;
+            }
+
+            reportedAt = row.OccurredAtUtc;
+        }
+
+        return reportedAt;
     }
 
     /// <summary>

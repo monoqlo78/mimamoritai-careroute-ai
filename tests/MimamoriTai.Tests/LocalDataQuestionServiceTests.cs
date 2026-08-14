@@ -236,4 +236,118 @@ public sealed class LocalDataQuestionServiceTests
 
         Assert.Contains("大きな変化は記録されていません", overview.Answer);
     }
+
+    /// <summary>
+    /// Adds a reading whose real power and voltage/current disagree, which is the normal
+    /// case on a live plug: the two only coincide on a purely resistive load.
+    /// </summary>
+    private static async Task AddRawReadingAsync(
+        TestDb db, Device device, DateTimeOffset at,
+        double realWatts, double voltage, double milliamps, int usageMinutes)
+    {
+        db.Context.PlugMiniReadings.Add(new PlugMiniReading
+        {
+            HouseholdId = db.HouseholdId,
+            DeviceId = device.Id,
+            VoltageV = voltage,
+            CurrentMa = milliamps,
+            ApproxWatts = voltage * milliamps / 1000.0,
+            DailyEnergyWh = realWatts,
+            UsageMinutesToday = usageMinutes,
+            OccurredAtUtc = at,
+            ReceivedAtUtc = at
+        });
+
+        await db.Context.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// The reported draw must be the plug's own measurement, not voltage times current.
+    /// Taken from a real reading: 103.4V and 140mA computes to 14.5VA while the plug
+    /// reported 0W, and quoting the former told a family a lamp was on when it was off.
+    /// </summary>
+    [Fact]
+    public async Task Power_Question_Quotes_Real_Power_Not_Volts_Times_Amps()
+    {
+        var device = Plug("リビングの電気");
+        using var db = await new TestDb().SeedAsync(device);
+        var now = new DateTimeOffset(2026, 1, 1, 3, 0, 0, TimeSpan.Zero);
+        await AddRawReadingAsync(db, device, now.AddMinutes(-5), 0, 103.4, 140, 120);
+
+        var answer = await Service(db, now).AnswerAsync(db.HouseholdId, "電力使用量は？");
+
+        Assert.Contains("消費電力は0W", answer.Answer);
+        Assert.DoesNotContain("14.5", answer.Answer);
+    }
+
+    /// <summary>
+    /// A plug that stopped reporting looks exactly like a plug reporting an unchanging
+    /// house, because SwitchBot's cloud keeps serving the last status it received. The
+    /// answer has to name the moment those values were first seen and warn, or a family
+    /// reads a ten-hour-old number as the state of the room right now.
+    /// </summary>
+    [Fact]
+    public async Task Power_Question_Warns_When_The_Plug_Has_Stopped_Reporting()
+    {
+        var device = Plug("リビングの電気");
+        using var db = await new TestDb().SeedAsync(device);
+        var now = new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
+
+        // Nine JST-morning hours of polls all returning the identical cached status.
+        for (var i = 0; i < 108; i++)
+        {
+            await AddRawReadingAsync(
+                db, device, now.AddHours(-9).AddMinutes(i * 5), 0, 103.4, 140, 120);
+        }
+
+        var answer = await Service(db, now).AnswerAsync(db.HouseholdId, "電力使用量は？");
+
+        Assert.Contains("一度も変わっていません", answer.Answer);
+        Assert.Contains("今の様子としては読まないでください", answer.Answer);
+
+        // The time quoted is when the values were first seen (12:00 JST), not the last
+        // poll nine hours later, which is the misreading the warning exists to prevent.
+        Assert.Contains("12:00時点", answer.Answer);
+        Assert.DoesNotContain("21:00時点", answer.Answer);
+    }
+
+    /// <summary>
+    /// The counterpart: a plug that is genuinely reporting must not be described as
+    /// stale, or the warning becomes noise a family learns to ignore.
+    /// </summary>
+    [Fact]
+    public async Task Power_Question_Stays_Quiet_While_The_Plug_Is_Still_Reporting()
+    {
+        var device = Plug("リビングの電気");
+        using var db = await new TestDb().SeedAsync(device);
+        var now = new DateTimeOffset(2026, 1, 1, 3, 0, 0, TimeSpan.Zero);
+
+        // Mains voltage drifting from poll to poll, which is what a live plug looks like.
+        await AddRawReadingAsync(db, device, now.AddMinutes(-15), 12.0, 103.9, 130, 118);
+        await AddRawReadingAsync(db, device, now.AddMinutes(-10), 12.4, 104.2, 132, 119);
+        await AddRawReadingAsync(db, device, now.AddMinutes(-5), 12.2, 103.7, 131, 120);
+
+        var answer = await Service(db, now).AnswerAsync(db.HouseholdId, "電力使用量は？");
+
+        Assert.DoesNotContain("一度も変わっていません", answer.Answer);
+        Assert.Contains("消費電力は12.2W", answer.Answer);
+    }
+
+    /// <summary>
+    /// The usage counter is only meaningful attached to the moment it was reported, so
+    /// it must never be presented as a bare "today" figure.
+    /// </summary>
+    [Fact]
+    public async Task Power_Question_Ties_The_Usage_Counter_To_The_Moment_It_Was_Read()
+    {
+        var device = Plug("リビングの電気");
+        using var db = await new TestDb().SeedAsync(device);
+        var now = new DateTimeOffset(2026, 1, 1, 3, 0, 0, TimeSpan.Zero);
+        await AddRawReadingAsync(db, device, now.AddMinutes(-5), 12.2, 103.7, 131, 120);
+
+        var answer = await Service(db, now).AnswerAsync(db.HouseholdId, "電力使用量は？");
+
+        Assert.Contains("その時点の通電時間は120分", answer.Answer);
+        Assert.DoesNotContain("今日の通電時間", answer.Answer);
+    }
 }

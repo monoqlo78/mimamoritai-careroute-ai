@@ -301,6 +301,10 @@ public sealed class PowerUsageService(IAppDbContext db, TimeProvider clock)
     /// power and overstates a reactive load enormously (see the class remarks). The watts
     /// here are the plug's own real-power figure, carried by the misnamed
     /// <c>DailyEnergyWh</c>.
+    ///
+    /// When a single device is asked for, polls that repeated the previous values are
+    /// dropped -- see <see cref="Observations"/> for why a stored row is not a
+    /// measurement.
     /// </summary>
     /// <param name="hours">Window length; clamped to <see cref="TelemetryHours"/>.</param>
     public async Task<IReadOnlyList<PlugSample>> GetTelemetryAsync(
@@ -318,7 +322,50 @@ public sealed class PowerUsageService(IAppDbContext db, TimeProvider clock)
                 r.OccurredAtUtc, r.DailyEnergyWh, r.VoltageV, r.CurrentMa))
             .ToListAsync(ct);
 
-        return rows;
+        return deviceId is null ? rows : Observations(rows);
+    }
+
+    /// <summary>
+    /// Drops polls that carried nothing new, keeping only the first appearance of each
+    /// set of values.
+    ///
+    /// A stored row is not a measurement. SwitchBot's cloud replays the last status it
+    /// received from the plug, so when a plug goes quiet we keep collecting rows that
+    /// repeat it: production has run ten hours that way, 123 polls all reporting the same
+    /// 103.4V. Charting those as samples draws a confident flat line across a stretch
+    /// where nothing was actually observed -- the one shape a family must not be shown,
+    /// because a plug that fell off the network becomes indistinguishable from a calm
+    /// evening at home.
+    ///
+    /// Keeping only the first of each run leaves a gap instead, which the chart already
+    /// knows how to draw as a break in the line. Being told nothing is known is recoverable;
+    /// being told the wrong thing confidently is not.
+    ///
+    /// A genuinely steady appliance is not silenced by this: mains voltage drifts by a
+    /// tenth of a volt continuously, so real consecutive readings practically never match
+    /// on every field at once. That drift is what separates a live plug from a replayed one.
+    ///
+    /// Only applied per device. Across a household the rows interleave by time, so
+    /// neighbouring rows belong to different plugs and comparing them means nothing.
+    /// </summary>
+    private static List<PlugSample> Observations(IReadOnlyList<PlugSample> rows)
+    {
+        var kept = new List<PlugSample>(rows.Count);
+
+        foreach (var row in rows)
+        {
+            var previous = kept.Count > 0 ? kept[^1] : null;
+
+            if (previous is null
+                || previous.Watts != row.Watts
+                || previous.VoltageV != row.VoltageV
+                || previous.CurrentMa != row.CurrentMa)
+            {
+                kept.Add(row);
+            }
+        }
+
+        return kept;
     }
 
     /// <summary>
