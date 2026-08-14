@@ -141,7 +141,7 @@ const NODES: FlowNode[] = [
     id: 'sync',
     x: 0.515,
     y: 0.78,
-    title: '同期ジョブ',
+    title: 'コンソール同期',
     // The C# background service in the web app, not the ps1 used to bootstrap
     // the Fabric SQL side once.
     subtitle: 'FabricConsoleSync / 15分ごと',

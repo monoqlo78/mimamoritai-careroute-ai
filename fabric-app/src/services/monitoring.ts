@@ -24,6 +24,19 @@ export interface HouseholdRow {
   latestRiskLevel: string;
   needsAttention: boolean;
   capturedAt: Date;
+
+  /**
+   * Watt-hours used so far today, as a decimal string. Optional because rows
+   * captured before the console started carrying power have no value, and a
+   * paused capacity must not make the page throw.
+   */
+  powerTodayWh?: string;
+
+  /** The usual figure by this hour: median of the last fourteen days. */
+  powerBaselineWh?: string;
+
+  /** "Higher" | "Lower" | "Typical" | "Unknown". */
+  powerTrend?: string;
 }
 
 export interface AlertRow {
@@ -86,6 +99,9 @@ const HOUSEHOLD_FIELDS = [
   'latestRiskLevel',
   'needsAttention',
   'capturedAt',
+  'powerTodayWh',
+  'powerBaselineWh',
+  'powerTrend',
 ] as const;
 
 const ALERT_FIELDS = [
@@ -146,6 +162,9 @@ const SAMPLE_HOUSEHOLDS: HouseholdRow[] = [
     latestRiskLevel: 'Low',
     needsAttention: false,
     capturedAt: new Date(),
+    powerTodayWh: '412',
+    powerBaselineWh: '398',
+    powerTrend: 'Typical',
   },
   {
     id: '00000000-0000-0000-0000-000000000002',
@@ -164,6 +183,10 @@ const SAMPLE_HOUSEHOLDS: HouseholdRow[] = [
     latestRiskLevel: 'High',
     needsAttention: true,
     capturedAt: new Date(),
+    // The shape that matters operationally: a home well below its own habit.
+    powerTodayWh: '86',
+    powerBaselineWh: '540',
+    powerTrend: 'Lower',
   },
 ];
 

@@ -47,6 +47,25 @@ export class HouseholdSnapshot {
   /** True when an operator has to act: see AdminConsoleService.NeedsAttention. */
   @boolean() needsAttention!: boolean;
 
+  /**
+   * Watt-hours used so far today across the household's metering plugs, as a
+   * decimal string. Empty when nothing meters power.
+   *
+   * Integrated from instantaneous real watts rather than read off a running
+   * total: SwitchBot's `weight` field is the draw at that moment despite its
+   * name in our schema. See PowerUsageService for the full reasoning.
+   */
+  @text({ max: 20 }) powerTodayWh!: string;
+
+  /** The median of the last fourteen days by this hour, i.e. "usual". */
+  @text({ max: 20 }) powerBaselineWh!: string;
+
+  /**
+   * "Higher" | "Lower" | "Typical" | "Unknown". The figure operators act on:
+   * watt-hours alone say nothing without knowing this home's own habit.
+   */
+  @text({ max: 10 }) powerTrend!: string;
+
   /** When the Blazor app produced this snapshot. */
   @date() capturedAt!: Date;
 }

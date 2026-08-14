@@ -29,6 +29,10 @@ export const SNAPSHOT_HOUSEHOLDS: HouseholdRow[] = [
     latestRiskLevel: "",
     needsAttention: true,
     capturedAt: new Date("2026-08-11T21:58:17.295Z"),
+    // Matches the measured Eventhouse figures for this household.
+    powerTodayWh: "0.7",
+    powerBaselineWh: "1.87",
+    powerTrend: "Lower",
   },
   {
     id: "d6236dd2-c706-4fb6-8384-3fb74af31df2",
@@ -47,6 +51,9 @@ export const SNAPSHOT_HOUSEHOLDS: HouseholdRow[] = [
     latestRiskLevel: "",
     needsAttention: true,
     capturedAt: new Date("2026-08-11T21:58:17.295Z"),
+    powerTodayWh: "412",
+    powerBaselineWh: "398",
+    powerTrend: "Typical",
   },
 ];
 

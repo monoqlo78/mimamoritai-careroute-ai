@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using MimamoriTai.Core.Abstractions;
+using MimamoriTai.Core.Application;
 using MimamoriTai.Core.Domain;
 
 namespace MimamoriTai.Infrastructure.Fabric;
@@ -117,7 +118,12 @@ public sealed class FabricSqlConsoleSync(
         int ActiveLineRecipients,
         int AlertsInWindow,
         int FailedAlertsInWindow,
-        RiskLevel? LatestRiskLevel);
+        RiskLevel? LatestRiskLevel,
+        // Defaulted so the many call sites that only care about the operational
+        // counters do not have to state a power figure they have no view of.
+        double PowerTodayWh = 0,
+        double? PowerBaselineWh = null,
+        PowerUsageTrend PowerTrend = PowerUsageTrend.Unknown);
 
     internal sealed record AlertRow(
         Guid AlertId,
@@ -224,6 +230,15 @@ public sealed class FabricSqlConsoleSync(
             }
         }
 
+        // Electricity is the one signal here that comes from measurement rather than
+        // counting, so it is computed per household with the same service the family
+        // app uses -- an operator and a family must never see different numbers.
+        var power = new Dictionary<Guid, PowerUsageSummary>();
+        foreach (var h in households)
+        {
+            power[h.Id] = await new PowerUsageService(db, clock).GetAsync(h.Id, ct: ct);
+        }
+
         var householdRows = households
             .Select(h => new HouseholdRow(
                 h.Id,
@@ -238,7 +253,10 @@ public sealed class FabricSqlConsoleSync(
                 recipientCounts.GetValueOrDefault(h.Id),
                 alertCounts.TryGetValue(h.Id, out var ac) ? ac.Total : 0,
                 alertCounts.TryGetValue(h.Id, out var af) ? af.Failed : 0,
-                latestRiskLevels.TryGetValue(h.Id, out var risk) ? risk : null))
+                latestRiskLevels.TryGetValue(h.Id, out var risk) ? risk : null,
+                power[h.Id].TodayWh,
+                power[h.Id].Headline.Baseline,
+                power[h.Id].Headline.Trend))
             .ToList();
 
         // WatchAlert.Message is intentionally not selected: it is family-facing prose
@@ -397,9 +415,53 @@ public sealed class FabricSqlConsoleSync(
         return await command.ExecuteNonQueryAsync(ct);
     }
 
+    private static async Task<bool> HasPowerColumnsAsync(SqlConnection connection, CancellationToken ct)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'HouseholdSnapshots'
+              AND COLUMN_NAME IN ('powerTodayWh', 'powerBaselineWh', 'powerTrend');
+            """;
+        command.CommandTimeout = 60;
+
+        var found = await command.ExecuteScalarAsync(ct);
+        return found is int count && count == 3;
+    }
+
     private async Task<int> WriteHouseholdsAsync(SqlConnection connection, Snapshot snapshot, CancellationToken ct)
     {
-        const string Sql = """
+        // The power columns were added to the Rayfin model after the table already
+        // existed in Fabric. Probing once per run means a workspace that has not
+        // picked up the new model yet still gets every other operational figure
+        // instead of losing the whole household sync to an invalid-column error.
+        var hasPower = await HasPowerColumnsAsync(connection, ct);
+
+        var sql = hasPower
+            ? """
+            MERGE dbo.HouseholdSnapshots AS t
+            USING (SELECT @id AS id) AS s ON t.id = s.id
+            WHEN MATCHED THEN UPDATE SET
+                householdId = @householdId, name = @name, dataSourceMode = @dataSourceMode,
+                memberCount = @memberCount, residentCount = @residentCount, deviceCount = @deviceCount,
+                lastEventUtc = @lastEventUtc, switchBotStatus = @switchBotStatus, switchBotError = @switchBotError,
+                activeLineRecipients = @activeLineRecipients, alertsInWindow = @alertsInWindow,
+                failedAlertsInWindow = @failedAlertsInWindow, latestRiskLevel = @latestRiskLevel,
+                needsAttention = @needsAttention, capturedAt = @capturedAt,
+                powerTodayWh = @powerTodayWh, powerBaselineWh = @powerBaselineWh,
+                powerTrend = @powerTrend
+            WHEN NOT MATCHED THEN INSERT
+                (id, householdId, name, dataSourceMode, memberCount, residentCount, deviceCount,
+                 lastEventUtc, switchBotStatus, switchBotError, activeLineRecipients, alertsInWindow,
+                 failedAlertsInWindow, latestRiskLevel, needsAttention, capturedAt,
+                 powerTodayWh, powerBaselineWh, powerTrend)
+            VALUES
+                (@id, @householdId, @name, @dataSourceMode, @memberCount, @residentCount, @deviceCount,
+                 @lastEventUtc, @switchBotStatus, @switchBotError, @activeLineRecipients, @alertsInWindow,
+                 @failedAlertsInWindow, @latestRiskLevel, @needsAttention, @capturedAt,
+                 @powerTodayWh, @powerBaselineWh, @powerTrend);
+            """
+            : """
             MERGE dbo.HouseholdSnapshots AS t
             USING (SELECT @id AS id) AS s ON t.id = s.id
             WHEN MATCHED THEN UPDATE SET
@@ -423,7 +485,7 @@ public sealed class FabricSqlConsoleSync(
 
         foreach (var h in snapshot.Households)
         {
-            await ExecuteAsync(connection, Sql, p =>
+            await ExecuteAsync(connection, sql, p =>
             {
                 p.AddWithValue("@id", DeterministicId($"household-snapshot:{h.HouseholdId}"));
                 p.AddWithValue("@householdId", h.HouseholdId.ToString());
@@ -441,6 +503,13 @@ public sealed class FabricSqlConsoleSync(
                 p.AddWithValue("@latestRiskLevel", h.LatestRiskLevel?.ToString() ?? string.Empty);
                 p.AddWithValue("@needsAttention", NeedsAttention(h));
                 p.AddWithValue("@capturedAt", snapshot.CapturedAt.UtcDateTime);
+
+                // Sent as text like every other measure on this table, so the console
+                // renders it without a schema migration on the Fabric side.
+                p.AddWithValue("@powerTodayWh", h.PowerTodayWh.ToString("0.##", CultureInfo.InvariantCulture));
+                p.AddWithValue("@powerBaselineWh",
+                    h.PowerBaselineWh?.ToString("0.##", CultureInfo.InvariantCulture) ?? string.Empty);
+                p.AddWithValue("@powerTrend", h.PowerTrend.ToString());
             }, ct);
 
             written++;

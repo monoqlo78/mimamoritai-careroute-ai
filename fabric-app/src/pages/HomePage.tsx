@@ -341,6 +341,7 @@ export function HomePage() {
                     <Th>SwitchBot</Th>
                     <Th>LINE</Th>
                     <Th>通知/失敗</Th>
+                    <Th>使用電力量</Th>
                     <Th>リスク</Th>
                   </tr>
                 </thead>
@@ -384,6 +385,12 @@ export function HomePage() {
                         >
                           {row.failedAlertsInWindow}
                         </span>
+                      </Td>
+                      <Td>
+                        {powerToday(row.powerTodayWh)}
+                        <div className={`text-[11px] ${powerTrendClass(row.powerTrend)}`}>
+                          {powerTrendLabel(row.powerTrend, row.powerBaselineWh)}
+                        </div>
                       </Td>
                       <Td>{riskLabel(row.latestRiskLevel)}</Td>
                     </tr>
@@ -516,6 +523,49 @@ function formatTime2(date: Date | null): string {
 function formatDate(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/**
+ * Watt-hours consumed so far today. Shown in kWh once it passes a thousand so a
+ * busy home does not turn into an unreadable five-digit number.
+ */
+function powerToday(value: string | undefined): string {
+  const wh = Number(value ?? '');
+  if (!value || Number.isNaN(wh)) return '—';
+  return wh >= 1000 ? `${(wh / 1000).toFixed(2)} kWh` : `${wh.toFixed(wh < 10 ? 1 : 0)} Wh`;
+}
+
+/**
+ * The comparison is what an operator acts on: an unusually quiet home matters
+ * far more than the absolute figure, which varies wildly between households.
+ */
+function powerTrendLabel(trend: string | undefined, baseline: string | undefined): string {
+  const usual = Number(baseline ?? '');
+  const suffix = baseline && !Number.isNaN(usual) ? `（いつも約${usual.toFixed(0)}Wh）` : '';
+
+  switch (trend) {
+    case 'Higher':
+      return `いつもより多め${suffix}`;
+    case 'Lower':
+      return `いつもより少なめ${suffix}`;
+    case 'Typical':
+      return `ほぼいつもどおり${suffix}`;
+    default:
+      return '比較データ収集中';
+  }
+}
+
+function powerTrendClass(trend: string | undefined): string {
+  switch (trend) {
+    case 'Higher':
+      return 'text-amber-600';
+    case 'Lower':
+      return 'text-red-600';
+    case 'Typical':
+      return 'text-emerald-600';
+    default:
+      return 'text-gray-400';
+  }
 }
 
 function switchBotLabel(status: string): string {
