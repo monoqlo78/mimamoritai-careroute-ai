@@ -17,7 +17,7 @@ MimamoriTai.Web  ──depends on──>  MimamoriTai.Infrastructure  ──depe
   - `Devices/`: `ISwitchBotClient` の実装 `SwitchBotClient`、`IDeviceProvider` の実装 `SwitchBotDeviceProvider` と `MockDeviceProvider`、`IDeviceProviderFactory` の実装 `DeviceProviderFactory`、両者を束ねて `IDataSourceContext.Mode` に応じて実体を選択する `DataSourceAwareDeviceProvider`（`IDeviceProvider` として登録される実体はこれ）。
   - `Auth/`: `ICurrentUserAccessor` の既定実装 `DevCurrentUserAccessor`（固定デモユーザーを返す。詳細は下記）。
   - `Ai/`: `IAiRouterClient` の実装 `OrcaRouterClient` と `MockAiRouterClient`。
-  - `Fabric/`: `IFabricDataAgentClient` の実装として `MockFabricDataAgentClient`（未設定時、常に `IsConfigured = false`）と `FabricDataAgentMcpClient`（実MCPクライアント。JSON-RPC 2.0でFabric Data AgentのMCPエンドポイントに `initialize` → `notifications/initialized` → `tools/list` → `tools/call` の順で問い合わせ、`application/json`/SSE(`text/event-stream`)どちらのレスポンスも解釈する。認証は`Azure.Identity`の`TokenCredential`を`EventhouseStreamPublisher`と共用）。`IEventStreamPublisher` の実装 `EventhouseStreamPublisher`（Fabric Eventhouseへのストリーミング取り込み）と `MockEventStreamPublisher`。
+  - `Fabric/`: `IFabricDataAgentClient` の実装として `MockFabricDataAgentClient`（未設定時、常に `IsConfigured = false`）と `FabricDataAgentMcpClient`（実MCPクライアント。JSON-RPC 2.0でFabric Data AgentのMCPエンドポイントに `initialize` → `notifications/initialized` → `tools/list` → `tools/call` の順で問い合わせ、`application/json`/SSE(`text/event-stream`)どちらのレスポンスも解釈する。認証は`Azure.Identity`の`TokenCredential`を`EventhouseStreamPublisher`と共用）。`IEventStreamPublisher` の実装 `EventHubEventStreamPublisher`（Eventstream の Event Hub カスタムエンドポイントへ送る主経路）、`EventhouseStreamPublisher`（Eventhouseへの直接ストリーミング取り込み。上の失敗時のフォールバック）、両者を束ねる `FallbackEventStreamPublisher`、および `MockEventStreamPublisher`。
   - `Line/`: `ILineMessagingClient` の実装 `LineMessagingClient` と `MockLineMessagingClient`、および共有の `LineSignature`（HMAC検証）。
   - `ServiceCollectionExtensions.cs`: **すべての実装／モックの選択ロジックがここに集約されている**唯一の場所。
 
@@ -38,7 +38,7 @@ MimamoriTai.Web  ──depends on──>  MimamoriTai.Infrastructure  ──depe
 | `IDeviceProvider` | `MockDeviceProvider`（`SwitchBotOptions.IsConfigured` が false の時に登録） | `SwitchBotDeviceProvider`（`SwitchBotOptions.IsConfigured` が true の時のみ登録） |
 | `IAiRouterClient` | `MockAiRouterClient` | `OrcaRouterClient`（`OrcaRouterOptions.IsConfigured` が true の時のみ登録） |
 | `IFabricDataAgentClient` | `MockFabricDataAgentClient`（`FabricOptions.IsConfigured` が false の時に登録） | `FabricDataAgentMcpClient`（`FabricOptions.IsConfigured` が true の時のみ登録。MCP/JSON-RPC経由でFabric Data Agentに接続） |
-| `IEventStreamPublisher` | `MockEventStreamPublisher`（`EventhouseOptions.IsConfigured` が false の時に登録） | `EventhouseStreamPublisher`（`EventhouseOptions.IsConfigured` が true の時のみ登録） |
+| `IEventStreamPublisher` | `MockEventStreamPublisher`（`EventStream`・`Eventhouse` どちらも未設定の時に登録） | 両方設定済みなら `FallbackEventStreamPublisher`（主経路 `EventHubEventStreamPublisher` → 失敗時のみ `EventhouseStreamPublisher`）。片方だけならその実装単体 |
 | `IPlugMiniReadingStreamPublisher` | `MockPlugMiniReadingStreamPublisher`（`EventhouseOptions.IsConfigured` が false の時に登録） | `EventhousePlugMiniReadingStreamPublisher`（`EventhouseOptions.IsConfigured` が true の時のみ登録。`DeviceEvents` とは別テーブル `SwitchBotPlugReadings` へ送信、詳細は `docs/FABRIC_SETUP.md`） |
 | `ICredentialProtector` | 常に `DataProtectionCredentialProtector`（ASP.NET Core Data Protectionのラッパー。開発環境は既定のローカルキーリング、非開発環境は `DataProtection:KeyDirectory` 未設定だと起動時に例外で即座に失敗する） | — |
 | `ILineMessagingClient` | `MockLineMessagingClient` | `LineMessagingClient`（`LineOptions.IsConfigured` が true の時のみ登録） |
@@ -58,13 +58,15 @@ SwitchBot実機のデータは、Azure SQL（`mimamori.DeviceEvents`、**正の�
 
 ```
 SwitchBot Cloud →(5分ポーリング)→ Web App → Azure SQL (mimamori.DeviceEvents, 正)
-                                          └→ Fabric Eventhouse (KQL, リアルタイム分析)
+                                          └→ Eventstream → Fabric Eventhouse (KQL)
+                                          └────（失敗時のフォールバック）────┘
 ```
 
 - **これはポーリングであり、push通知ではありません。** `SwitchBotPollingBackgroundService` が既定5分間隔でSwitchBotのステータスAPIを呼び出し、前回の状態から変化があった場合のみ `DeviceEvent` を記録します。
 - Azure SQLへの保存が完了した後、同じバッチを1回のHTTP呼び出しで Fabric Eventhouse の `DeviceEvents` テーブルへストリーミング取り込み（`v1/rest/ingest/{database}/{table}?streamFormat=json&mappingName={mapping}`）します。認証は **`Azure.Identity` の `DefaultAzureCredential` によるパスワードレス**（Web Appのシステム割り当てマネージドIDに `ingestors` ロールを付与済み）。
 - Fabricへの送信に失敗してもポーリングループ自体は中断・失敗しません（警告ログのみ）。Azure SQLが常に正となります。
-- Eventstream **`MimamoriDeviceStream`**（CustomEndpoint → Eventhouse）も同じワークスペースに構築済みですが、現状のコードからは利用していません。将来、サードパーティのWebhook型push通知を受け取るための「表玄関」として温存しています。
+- `DeviceEvents` の主経路は Eventstream **`MimamoriDeviceStream`**（Event Hub CustomEndpoint → Eventhouse）です。`FallbackEventStreamPublisher` が、この経路に失敗したときだけ Eventhouse への直接RESTに切り替えます（`EventHubEventStreamPublisher` → `EventhouseStreamPublisher`）。Eventstream の宛先が Paused になっても取りこぼさないための冗長化で、**着地先はどちらも同じ Eventhouse** です。`SwitchBotPlugReadings` はホップを増やさず直接RESTのみです。
+- **この Eventhouse を運用コンソールは読みません。** コンソールが読むのは `FabricConsoleSync` が書く Fabric SQL Database だけで（Rayfin の GraphQL 経由）、Eventhouse を読むのは Fabric Data Agent です。つまり Eventstream 経路と `FabricConsoleSync` は、同じデータの本番／予備ではなく、**運ぶ中身も宛先も読み手も違う並列の2経路**です。
 - 手動での動作確認用に `POST /api/stream/publish?take=N`（既定50件）を用意しており、直近のDeviceEventを再度Fabricへ送信して疎通を確認できます。ダッシュボードの「Fabricへ送信」ボタンからも同じ経路を呼び出せます。
 
 ### 設定 (`Eventhouse:*`)
