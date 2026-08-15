@@ -77,14 +77,23 @@ public sealed class LocalDataQuestionService(IAppDbContext db, TimeProvider cloc
                 return Answer("昨日のデータが見つかりませんでした。");
             }
 
-            var diff = today.DeviceUsageCount - yesterday.DeviceUsageCount;
-            var trend = diff switch
+            // Compared by electricity and by the shape of the day, not by a count of
+            // polled state changes: "昨日より2回少ない" reads as a decline in someone's
+            // health when it may only mean a plug reported less often.
+            var usage = await PowerUsage.GetAsync(householdId, ct: ct);
+            var rhythm = (yesterday.FirstActivityTime, today.FirstActivityTime) switch
             {
-                > 0 => $"昨日より{diff}回多く",
-                < 0 => $"昨日より{-diff}回少なく",
-                _ => "昨日と同じ回数"
+                ({ } was, { } now) => $"家電が動きはじめた時間は、昨日が{was:HH\\:mm}頃、今日は{now:HH\\:mm}頃です。",
+                (null, { } now) => $"今日は{now:HH\\:mm}頃から家電が動いています（昨日は記録がありません）。",
+                ({ } was, null) => $"昨日は{was:HH\\:mm}頃から動いていましたが、今日はまだ記録がありません。",
+                _ => "家電が動きはじめた時間は、昨日も今日も記録がありません。"
             };
-            return Answer($"今日は{today.DeviceUsageCount}回、{trend}家電を利用しています（昨日は{yesterday.DeviceUsageCount}回）。");
+
+            var energy = usage.YesterdayWh is { } yWh
+                ? $"使用電力量は、昨日が約{PowerUsageService.Format(yWh)}、今日はここまでで約{PowerUsageService.Format(usage.TodayWh)}です。"
+                : $"今日ここまでの使用電力量は約{PowerUsageService.Format(usage.TodayWh)}です。";
+
+            return Answer($"{rhythm}{energy}{await PowerStateFactsAsync(householdId, ct)}");
         }
 
         // Default: the "今日のお母さんどう？" style overview.
@@ -94,8 +103,19 @@ public sealed class LocalDataQuestionService(IAppDbContext db, TimeProvider cloc
             .Select(p => p.DisplayName)
             .FirstOrDefaultAsync(ct) ?? "ご本人";
 
+        // Deliberately no usage count in the headline.
+        //
+        // "家電を6回利用しています" was what the assistant kept saying, and it is close to
+        // meaningless: the figure counts state changes we happened to poll, so a quiet day
+        // with a chatty plug outscores a busy day with a steady one. Worse, it invites the
+        // model to reason with it -- the reply that prompted this rewrite managed
+        // "家電も2台を6回使われています", which is not a sentence about anybody's wellbeing.
+        // What the family is owed is the shape of the day (when things started, when they
+        // last moved) and what the electricity says, so that is what the facts lead with.
         var head = today.FirstActivityTime is { } start
-            ? $"{resident}は今朝{start:HH\\:mm}頃から活動を始め、これまでに家電を{today.DeviceUsageCount}回利用しています。"
+            ? today.LastActivityTime is { } last && last != start
+                ? $"{resident}は今朝{start:HH\\:mm}頃から家電が動きはじめ、直近で動いたのは{last:HH\\:mm}頃です。"
+                : $"{resident}は今朝{start:HH\\:mm}頃から家電が動きはじめています。"
             : $"{resident}は本日まだ家電の利用が記録されていません。";
 
         // The measured figures ride along with every overview, not only with questions
@@ -107,7 +127,87 @@ public sealed class LocalDataQuestionService(IAppDbContext db, TimeProvider cloc
         // day's energy are in front of the reader however the question was phrased -- and
         // it also puts the freshness warning there, which matters most in exactly the
         // vague "how are things?" question that would otherwise never trigger it.
-        return Answer($"{head} {risk.Reason}。{await PowerFactsAsync(householdId, ct)}");
+        return Answer($"{head} {risk.Reason}。{await PowerStateFactsAsync(householdId, ct)}"
+            + $"{await PowerFactsAsync(householdId, ct)}");
+    }
+
+    /// <summary>
+    /// Which appliances are on right now, and since when.
+    ///
+    /// This is the fact the old overview was missing, and its absence is why the
+    /// assistant fell back on repeating a usage count: "6回" was the only concrete
+    /// number in front of the model. A count of polls is an artefact of how often we
+    /// ask SwitchBot, not a description of anybody's day -- the family wants to know
+    /// that the television is on and the heater is off.
+    /// </summary>
+    private async Task<string> PowerStateFactsAsync(Guid householdId, CancellationToken ct)
+    {
+        var devices = await db.Devices
+            .Where(d => d.HouseholdId == householdId && d.IsActive)
+            .Select(d => new
+            {
+                d.Id,
+                Name = d.DisplayNameOverride ?? d.Alias ?? d.Name
+            })
+            .ToListAsync(ct);
+
+        if (devices.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var ids = devices.Select(d => d.Id).ToList();
+
+        // One row per device: the most recent on/off it reported. Read in a single
+        // query because a house can hold a dozen plugs and this runs on every question.
+        var states = await db.DeviceEvents
+            .Where(e => ids.Contains(e.DeviceId) && e.EventType == "PowerState")
+            .GroupBy(e => e.DeviceId)
+            .Select(g => g.OrderByDescending(e => e.OccurredAtUtc)
+                .Select(e => new { e.DeviceId, e.State, e.OccurredAtUtc })
+                .First())
+            .ToListAsync(ct);
+
+        var on = new List<string>();
+        var off = new List<string>();
+
+        foreach (var device in devices)
+        {
+            var state = states.FirstOrDefault(s => s.DeviceId == device.Id);
+            if (state is null)
+            {
+                continue;
+            }
+
+            var since = HouseholdTime.LocalTime(state.OccurredAtUtc);
+
+            if (state.State is "on" or "active")
+            {
+                on.Add($"{device.Name}（{since:HH\\:mm}頃から）");
+            }
+            else
+            {
+                off.Add(device.Name);
+            }
+        }
+
+        if (on.Count == 0 && off.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var parts = new List<string>();
+
+        parts.Add(on.Count > 0
+            ? $"いま電源が入っているのは{string.Join("、", on)}です"
+            : "いま電源が入っている家電はありません");
+
+        if (off.Count > 0)
+        {
+            parts.Add($"電源が切れているのは{string.Join("、", off)}です");
+        }
+
+        return string.Join("。", parts) + "。";
     }
 
     /// <summary>

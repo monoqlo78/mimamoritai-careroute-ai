@@ -375,4 +375,112 @@ public sealed class LocalDataQuestionServiceTests
         Assert.Contains("その時点の通電時間は120分", answer.Answer);
         Assert.DoesNotContain("今日の通電時間", answer.Answer);
     }
+
+    /// <summary>
+    /// The overview and comparison branches read their day-by-day history through
+    /// <c>ActivityService</c>, which windows on the wall clock rather than on the
+    /// injected one. Anchoring these tests to the real local day is therefore what makes
+    /// them exercise the code path at all: a fixed calendar date falls outside the
+    /// fourteen-day window and every question collapses to "記録がありません".
+    /// </summary>
+    private static DateTimeOffset MiddayToday() =>
+        HouseholdTime.StartOfLocalDayUtc(HouseholdTime.LocalDate(DateTimeOffset.UtcNow)).AddHours(15);
+
+    private static async Task AddPowerStateAsync(TestDb db, Device device, DateTimeOffset at, string state)
+    {
+        db.Context.DeviceEvents.Add(new DeviceEvent
+        {
+            HouseholdId = db.HouseholdId,
+            DeviceId = device.Id,
+            EventType = "PowerState",
+            State = state,
+            Source = EventSource.Seed,
+            OccurredAtUtc = at
+        });
+
+        await db.Context.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// The overview must not lead with a usage count. That figure counts the state
+    /// changes we happened to poll, so it says more about SwitchBot's reporting than
+    /// about anybody's day -- and because it used to be the only concrete number in the
+    /// facts, the summarising model reached for it and produced "家電も2台を6回使われて
+    /// います", a sentence about nothing.
+    /// </summary>
+    [Fact]
+    public async Task Overview_Leads_With_The_Shape_Of_The_Day_Not_A_Usage_Count()
+    {
+        var device = Plug("テレビ");
+        using var db = await new TestDb().SeedAsync(device);
+        var now = MiddayToday();
+        await AddPowerStateAsync(db, device, now.AddHours(-5), "on");
+        await AddReadingAsync(db, device, now.AddMinutes(-5), 99.0);
+
+        var answer = await Service(db, now).AnswerAsync(db.HouseholdId, "今日のお母さんどう？");
+
+        Assert.True(answer.Success);
+        Assert.DoesNotContain("回利用", answer.Answer);
+        Assert.DoesNotContain("回使", answer.Answer);
+    }
+
+    /// <summary>
+    /// What replaces the count: which appliance is actually drawing power right now.
+    /// A family wants to hear that the television is on, not that a counter moved.
+    /// </summary>
+    [Fact]
+    public async Task Overview_Says_Which_Appliances_Are_Switched_On()
+    {
+        var television = Plug("テレビ");
+        var heater = Plug("ヒーター");
+        using var db = await new TestDb().SeedAsync(television, heater);
+        var now = MiddayToday();
+        await AddPowerStateAsync(db, television, now.AddHours(-5), "on");
+        await AddPowerStateAsync(db, heater, now.AddHours(-4), "off");
+
+        var answer = await Service(db, now).AnswerAsync(db.HouseholdId, "今日のお母さんどう？");
+
+        Assert.Contains("いま電源が入っているのはテレビ", answer.Answer);
+        Assert.Contains("電源が切れているのはヒーター", answer.Answer);
+    }
+
+    /// <summary>
+    /// Dropping the count from the overview must not lose the ability to answer for it.
+    /// Asked directly, the number is the honest response.
+    /// </summary>
+    [Fact]
+    public async Task Usage_Count_Is_Still_Answered_When_It_Is_What_Was_Asked()
+    {
+        var device = Plug("テレビ");
+        using var db = await new TestDb().SeedAsync(device);
+        var now = MiddayToday();
+        await AddPowerStateAsync(db, device, now.AddHours(-5), "on");
+
+        var answer = await Service(db, now).AnswerAsync(db.HouseholdId, "今日は家電を何回使った？");
+
+        Assert.Contains("回利用しています", answer.Answer);
+    }
+
+    /// <summary>
+    /// "昨日と比べてどう？" is a question about the person, and a difference in poll
+    /// counts is not an answer to it. The comparison is made on electricity and on when
+    /// the day started instead.
+    /// </summary>
+    [Fact]
+    public async Task Comparison_With_Yesterday_Uses_Energy_And_Rhythm_Not_Counts()
+    {
+        var device = Plug("テレビ");
+        using var db = await new TestDb().SeedAsync(device);
+        var now = MiddayToday();
+        await AddPowerStateAsync(db, device, now.AddDays(-1).AddHours(-4), "on");
+        await AddPowerStateAsync(db, device, now.AddHours(-4), "on");
+        await AddReadingAsync(db, device, now.AddDays(-1).AddHours(-3), 80.0);
+        await AddReadingAsync(db, device, now.AddMinutes(-5), 99.0);
+
+        var answer = await Service(db, now).AnswerAsync(db.HouseholdId, "昨日と比べてどう？");
+
+        Assert.Contains("使用電力量", answer.Answer);
+        Assert.DoesNotContain("回利用", answer.Answer);
+    }
 }
+

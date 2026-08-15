@@ -104,6 +104,10 @@ public sealed class AssistantOrchestrator(
 
         ルール:
         - 与えられた「データ」に書かれている事実だけを使い、数値や時刻を創作しないこと。
+        - 状況は「どの家電の電源が入っている／切れているか」と「電力の使いかたが普段と比べて
+          どうか」の2点で説明すること。これがご家族の知りたいことである。
+        - 家電の利用「回数」は答えに含めないこと。回数は機器に問い合わせた回数に左右される
+          数字で、暮らしぶりを表さない。ご家族が回数そのものを尋ねた場合のみ答えてよい。
         - 家電の「台数」は、データに台数が明記されている場合のみ答えること。利用回数など別の
           数値から台数を推測してはならない。明記が無ければ台数には触れないこと。
         - データに数値が書かれている場合は「記録がありません」と答えてはならない。
@@ -424,6 +428,25 @@ public sealed class AssistantOrchestrator(
     }
 
     /// <summary>
+    /// Wrapped around the family's question before it reaches the Fabric Data Agent.
+    ///
+    /// The data agent is a datasource, not the voice of the product. Left to itself it
+    /// writes its own family-facing summary -- and because a usage count is the easiest
+    /// figure in the warehouse to reach for, that summary kept coming back as "家電を◯回
+    /// 利用しています", which then survived into the reply. So it is asked for the
+    /// measurements only; the wording, the judgement and the reassurance are decided here,
+    /// from the same facts, by the model behind OrcaRouter.
+    /// </summary>
+    private const string FactsOnlyPreamble = """
+        以下の質問に対して、集計されたファクト（数値・時刻・状態）だけを簡潔に列挙してください。
+        家族向けの要約文、感想、助言、呼びかけは書かないでください。
+        電源のON/OFFの状態と、電力量（Wh）およびその平常時との差が分かる場合は必ず含めてください。
+        家電の利用回数は、質問が回数そのものを尋ねている場合を除き、含めないでください。
+
+        質問:
+        """;
+
+    /// <summary>
     /// Consults the Fabric Data Agent without letting it take the answer down with it.
     ///
     /// By the time this runs the local database has already produced a complete answer,
@@ -443,7 +466,7 @@ public sealed class AssistantOrchestrator(
 
         try
         {
-            return await fabric.AskAsync(question, budget.Token);
+            return await fabric.AskAsync($"{FactsOnlyPreamble}\n{question}", budget.Token);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
