@@ -52,6 +52,14 @@
             <span>@Points.Min(p => p.At).ToString("M/d HH:mm")</span>
             <span>@Points.Max(p => p.At).ToString("M/d HH:mm")</span>
         </p>
+
+        @* 点がまばらだと「壊れている」と読まれてしまうので、線が読めなくても数字だけは
+           必ず残す。いちばん高いとき・低いとき・いくつ測れたかの3つで、線の形を見なくても
+           その24時間に何があったかが分かる。 *@
+        @if (!string.IsNullOrWhiteSpace(Summary))
+        {
+            <p class="spark-line-summary">@Summary</p>
+        }
     }
 </figure>
 
@@ -69,6 +77,9 @@
     [Parameter] public int Decimals { get; set; } = 1;
 
     [Parameter] public string AriaLabel { get; set; } = "推移グラフ";
+
+    /// <summary>Plain-language figures under the plot, for when the line is too sparse to read.</summary>
+    [Parameter] public string? Summary { get; set; }
 
     [Parameter] public string? Class { get; set; }
 

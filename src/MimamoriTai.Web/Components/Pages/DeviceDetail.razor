@@ -9,6 +9,7 @@
 @inject DeviceControlService Control
 @inject DeviceSettingsService Settings
 @inject PowerUsageService PowerUsage
+@inject ActivityService Activity
 @inject IJSRuntime JS
 @implements IAsyncDisposable
 
@@ -188,7 +189,7 @@ else
 
     <div class="today-summary">
         <div class="summary-item">
-            <span>今日の使用回数</span>
+            <span>今日 電源が入った回数</span>
             <strong>@_model.TodayUsageCount 回</strong>
         </div>
         <div class="summary-item">
@@ -259,6 +260,10 @@ else
                 {
                     @($"最終計測 {HouseholdTime.LocalTime(_power.MeasuredAtUtc!.Value):HH\\:mm}")
                 }
+                else if (DayProfileTotal() > 0)
+                {
+                    @("日ごとの集計は準備中")
+                }
                 else
                 {
                     @("計測値なし")
@@ -269,8 +274,19 @@ else
             @if (!_power.HasData)
             {
                 @* Only Plug Mini class devices meter power, so this is the normal state
-                   for a light or an air conditioner rather than an error. *@
-                <p class="empty-state">この機器は電力を計測していません</p>
+                   for a light or an air conditioner rather than an error. When the hourly
+                   profile does have watt-hours, saying "not metered" here would flatly
+                   contradict the chart below it, so point at that chart instead. *@
+                @if (DayProfileTotal() > 0)
+                {
+                    <p class="empty-state">
+                        1日ごとの電力量はまだ数えられていません。下の「この24時間の電気の使いかた」をご覧ください。
+                    </p>
+                }
+                else
+                {
+                    <p class="empty-state">この機器は電力を計測していません</p>
+                }
             }
             else
             {
@@ -309,6 +325,32 @@ else
         </div>
     </details>
 
+    <details class="detail-panel" open>
+        <summary>
+            <span>この24時間の電気の使いかた</span>
+            <span class="summary-meta">合計 @DayProfileTotal().ToString("0.#") Wh</span>
+        </summary>
+        <div class="detail-content">
+            @* 電力・電圧・電流の生の推移は、プラグが同じ値を返し続けた回は観測として数え
+               られないため点がまばらになる。時間ごとに束ねたこの棒なら、観測が少ない時間
+               も「その時間は電気を使っていない」として同じ幅で並ぶので、家族が読める。 *@
+            @if (_dayProfile is null || _dayProfile.TotalWh <= 0)
+            {
+                <p class="empty-state">この24時間は、この家電の電気が記録されていません</p>
+            }
+            else
+            {
+                <DayProfileChart Hours="_dayProfile.Hours" StartHour="_dayProfileStartHour"
+                                 CurrentHour="CurrentLocalHour()" ShowLegend="false"
+                                 AriaLabel="@($"{_model.Name}のこの24時間の電気の使いかた")" />
+
+                <p class="chart-note">
+                    1本が1時間ぶんの電気の量（Wh）です。うすい帯は0時から6時のあいだを表します。
+                </p>
+            }
+        </div>
+    </details>
+
     @if (_telemetry.Count > 0)
     {
         <details class="detail-panel">
@@ -323,16 +365,19 @@ else
                    axis. Each keeps its own scale and says what that scale is. *@
                 <SparkLine Points="Series(s => s.Watts)" Caption="消費電力"
                            Current="@Latest(s => s.Watts, "W", 1)" Unit="W" Decimals="1"
+                           Summary="@SeriesSummary(s => s.Watts, "W", 1)"
                            AriaLabel="@SeriesAriaLabel("消費電力", s => s.Watts, "ワット")"
                            Class="device-spark" />
 
                 <SparkLine Points="Series(s => s.CurrentMa)" Caption="電流"
                            Current="@Latest(s => s.CurrentMa, "mA", 0)" Unit="mA" Decimals="0"
+                           Summary="@SeriesSummary(s => s.CurrentMa, "mA", 0)"
                            AriaLabel="@SeriesAriaLabel("電流", s => s.CurrentMa, "ミリアンペア")"
                            Class="device-spark" />
 
                 <SparkLine Points="Series(s => s.VoltageV)" Caption="電圧"
                            Current="@Latest(s => s.VoltageV, "V", 1)" Unit="V" Decimals="1"
+                           Summary="@SeriesSummary(s => s.VoltageV, "V", 1)"
                            AriaLabel="@SeriesAriaLabel("電圧", s => s.VoltageV, "ボルト")"
                            Class="device-spark" />
 
@@ -342,6 +387,8 @@ else
                 <p class="chart-note">
                     消費電力と電流は家電の使われ方、電圧は電力会社から届いている電気の状態を表します。
                     電圧はほとんど変わらないのが正常です。
+                    プラグが前と同じ値を送ってきた回は、測り直せたとは限らないので点にしていません。
+                    そのため点はとびとびになります。
                 </p>
             </div>
         </details>
@@ -349,7 +396,7 @@ else
 
     <details class="detail-panel" open>
         <summary>
-            <span>直近@(_model.PeriodDays)日間の使用回数</span>
+            <span>直近@(_model.PeriodDays)日間に電源が入った回数</span>
             <span class="summary-meta">1日あたり平均 @_model.AveragePerDay.ToString("0.#") 回</span>
         </summary>
         <div class="detail-content">
@@ -384,6 +431,8 @@ else
     private DeviceDetailModel? _model;
     private PowerUsageSummary _power = PowerUsageSummary.Empty;
     private IReadOnlyList<PlugSample> _telemetry = [];
+    private DeviceHourlyEnergy? _dayProfile;
+    private int _dayProfileStartHour;
     private FabricAnswer? _insight;
     private bool _insightLoading;
     private bool _notFoundOrDenied;
@@ -421,11 +470,11 @@ else
     private string UsageBarsAriaLabel()    {
         if (_model is null || _model.DailyBreakdown.Count == 0)
         {
-            return "使用回数の記録はまだありません";
+            return "電源が入った回数の記録はまだありません";
         }
 
         var parts = _model.DailyBreakdown.Select(d => $"{d.Date:M月d日} {d.OnCount}回");
-        return $"日ごとの使用回数：{string.Join("、", parts)}";
+        return $"日ごとに電源が入った回数：{string.Join("、", parts)}";
     }
 
     /// <summary>
@@ -491,6 +540,34 @@ else
         return $"{name}の推移：最小 {min:0.#}{unit}、最大 {max:0.#}{unit}、最新 {now:0.#}{unit}";
     }
 
+    /// <summary>
+    /// The same figures in words under the plot.
+    ///
+    /// A plug that repeats its last status leaves only a handful of observations in a
+    /// day, and a chart with four ticks on it reads as a broken sensor rather than as a
+    /// quiet appliance. The numbers are what the family actually came for, so they are
+    /// stated outright instead of being left to be read off a line that may not be there.
+    /// </summary>
+    private string SeriesSummary(Func<PlugSample, double?> pick, string unit, int decimals)
+    {
+        var points = Series(pick);
+        if (points.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var format = $"F{decimals}";
+        var min = points.Min(p => p.Value).ToString(format);
+        var max = points.Max(p => p.Value).ToString(format);
+
+        return $"いちばん高いとき {max}{unit} ・ いちばん低いとき {min}{unit} ・ 記録できた回数 {points.Count}回";
+    }
+
+    /// <summary>Watt-hours this appliance drew across the rolling 24-hour window.</summary>
+    private double DayProfileTotal() => _dayProfile?.TotalWh ?? 0;
+
+    private static int CurrentLocalHour() => HouseholdTime.ToLocal(DateTimeOffset.UtcNow).Hour;
+
     private static string TrendWord(PowerUsageTrend trend) => trend switch
     {
         PowerUsageTrend.Higher => "いつもより多め",
@@ -550,6 +627,19 @@ else
         _telemetry = _model is null
             ? []
             : await PowerUsage.GetTelemetryAsync(_model.HouseholdId, DeviceId);
+
+        // The household profile is reused rather than a per-device query added: the
+        // dashboard already builds this, and the split per appliance comes with it.
+        if (_model is null)
+        {
+            _dayProfile = null;
+        }
+        else
+        {
+            var profile = await Activity.GetHourlyEnergyAsync(_model.HouseholdId, 14);
+            _dayProfileStartHour = profile.StartHour;
+            _dayProfile = profile.TodayByDevice.FirstOrDefault(d => d.DeviceId == DeviceId);
+        }
 
         if (!includeInsight)
         {

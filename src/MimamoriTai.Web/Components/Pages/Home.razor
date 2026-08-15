@@ -829,6 +829,16 @@ else
             await ReloadAsync(householdId);
             await PersistSelectedHouseholdAsync(householdId);
         }
+        catch (InvalidOperationException ex)
+        {
+            // Connecting real hardware needs a signed-in owner, and an anonymous visitor
+            // clicking this button used to take the whole circuit down with it — the page
+            // froze rather than saying what was missing. Say it instead.
+            _notice = ex.Message.Contains("signed-in", StringComparison.OrdinalIgnoreCase)
+                ? "実機につなぐには、まずサインインしてください。"
+                : $"実機につなげませんでした：{ex.Message}";
+            _noticeKind = "warn";
+        }
         finally
         {
             _busy = false;

@@ -838,6 +838,14 @@ a.ghost.small { min-height: 32px; padding: 4px 10px; font-size: 12px; }
     font-size: 10px;
 }
 .spark-line .empty-state { margin: 0; }
+/* 点がまばらでも数字は必ず読めるように、線の下に本文と同じ濃さで置く。 */
+.spark-line-summary {
+    margin: 4px 0 0;
+    padding-left: 50px;
+    color: var(--cp-text);
+    font-size: 11px;
+    line-height: 1.6;
+}
 .chart-note {
     margin: 10px 0 0;
     color: var(--cp-text-muted);
