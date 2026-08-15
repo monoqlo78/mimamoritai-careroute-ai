@@ -1,10 +1,93 @@
 using Azure.Core;
+using Azure.Identity;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using MimamoriTai.Core.Domain;
+using MimamoriTai.Infrastructure;
 using MimamoriTai.Infrastructure.Fabric;
 
 namespace MimamoriTai.Tests;
+
+/// <summary>
+/// The console sync must sign in to Fabric SQL as the App Service managed identity, which
+/// is a Fabric workspace Admin. It briefly did not: the app registers its shared
+/// <see cref="TokenCredential"/> with <c>TryAddSingleton</c>, the Fabric Data Agent got
+/// there first with a service-principal credential (its query API cannot take a managed
+/// identity), and the sync silently inherited it. Fabric SQL then rejected every cycle
+/// with "Validation of user's permissions failed. Verify the user has the Read item
+/// permission", because a service principal needs a tenant-wide switch we do not own.
+/// </summary>
+public class FabricConsoleSyncCredentialTests
+{
+    private static ServiceProvider Compose() =>
+        new ServiceCollection()
+            .AddLogging()
+            .AddMimamoriTaiInfrastructure(new ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["ConnectionStrings:AppDb"] = "DataSource=:memory:",
+
+                    // Fabric configured with a service principal: this is what used to
+                    // win the TryAddSingleton race and take the sync down with it.
+                    ["Fabric:Enabled"] = "true",
+                    ["Fabric:WorkspaceId"] = "11111111-1111-1111-1111-111111111111",
+                    ["Fabric:DataAgentId"] = "22222222-2222-2222-2222-222222222222",
+                    ["Fabric:McpUrl"] = "https://api.fabric.microsoft.com/v1/mcp/agent",
+                    ["Fabric:TenantId"] = "33333333-3333-3333-3333-333333333333",
+                    ["Fabric:ClientId"] = "44444444-4444-4444-4444-444444444444",
+                    ["Fabric:ClientSecret"] = "not-a-real-secret",
+
+                    ["FabricConsoleSync:Enabled"] = "true",
+                    ["FabricConsoleSync:ServerFqdn"] = "example.database.fabric.microsoft.com",
+                    ["FabricConsoleSync:Database"] = "console",
+                })
+                .Build())
+            .BuildServiceProvider();
+
+    [Fact]
+    public void Console_Sync_Does_Not_Borrow_The_Data_Agent_Service_Principal()
+    {
+        using var provider = Compose();
+
+        var shared = provider.GetRequiredService<TokenCredential>();
+        var sync = provider.GetRequiredService<FabricConsoleSyncCredential>();
+
+        Assert.IsType<ClientSecretCredential>(shared);
+        Assert.IsType<DefaultAzureCredential>(sync.Credential);
+        Assert.NotSame(shared, sync.Credential);
+    }
+
+    [Fact]
+    public void A_Failed_Login_Names_The_Principal_Without_Leaking_The_Token()
+    {
+        // "Login failed for user '<token-identified principal>'" is the whole message Fabric
+        // gives back, which is useless for deciding who to grant access to. The claims below
+        // are identifiers rather than credentials, so they can safely reach a log.
+        var payload = """{"oid":"54af8a95-f1bd-4a59-96b2-e51ab7506c5e","appid":"6385e9c6","app_displayname":"app-mimamoritai-hack"}""";
+        var jwt = $"header.{Base64Url(payload)}.signature";
+
+        var described = FabricSqlConsoleSync.DescribeToken(jwt);
+
+        Assert.Contains("app-mimamoritai-hack", described);
+        Assert.Contains("54af8a95-f1bd-4a59-96b2-e51ab7506c5e", described);
+        Assert.DoesNotContain("signature", described);
+    }
+
+    [Fact]
+    public void An_Unreadable_Token_Does_Not_Take_The_Sync_Down()
+    {
+        // The diagnostic runs while handling a failure; throwing from it would replace a
+        // clear "login failed" with a confusing FormatException.
+        Assert.Equal("an unrecognised token", FabricSqlConsoleSync.DescribeToken("not-a-jwt"));
+        Assert.Equal("an unreadable token", FabricSqlConsoleSync.DescribeToken("a.!!!.c"));
+    }
+
+    private static string Base64Url(string value) =>
+        Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(value))
+            .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+}
 
 /// <summary>
 /// Covers the read half of the Fabric console sync: the aggregation that replaced the
@@ -20,7 +103,7 @@ public class FabricConsoleSyncTests
 
     private static FabricSqlConsoleSync CreateSync(TestDb db, FabricConsoleSyncOptions? options = null) =>
         new(db.Context,
-            new StubCredential(),
+            new FabricConsoleSyncCredential(new StubCredential()),
             Options.Create(options ?? new FabricConsoleSyncOptions
             {
                 Enabled = true,
@@ -267,7 +350,54 @@ public class FabricConsoleSyncTests
         Assert.Equal(4, bucket.EventCount);
         Assert.Equal(3, bucket.OnCount);
         Assert.Equal(0, bucket.BucketStart.Minute);
+        Assert.Equal(light.Id, bucket.DeviceId);
         Assert.Equal(light.Name, bucket.DeviceName);
+    }
+
+    [Fact]
+    public async Task Activity_Includes_Metered_Plug_Hours_Even_When_No_State_Event_Fired()
+    {
+        var plug = new Device
+        {
+            ExternalDeviceId = "plug-mini",
+            Name = "プラグミニ 92",
+            Alias = "plug-mini",
+            DeviceType = DeviceType.Plug,
+            Room = "リビング",
+            Provider = DeviceProviderKind.SwitchBot,
+            RemoteControlAllowed = false,
+            SafetyClass = SafetyClass.Guarded,
+        };
+        using var db = await new TestDb().SeedAsync(plug);
+
+        var first = Now.AddHours(-2).AddMinutes(5);
+        db.Context.PlugMiniReadings.AddRange(
+            new PlugMiniReading
+            {
+                HouseholdId = db.HouseholdId,
+                DeviceId = plug.Id,
+                DailyEnergyWh = 60,
+                OccurredAtUtc = first,
+                ReceivedAtUtc = first,
+            },
+            new PlugMiniReading
+            {
+                HouseholdId = db.HouseholdId,
+                DeviceId = plug.Id,
+                DailyEnergyWh = 60,
+                OccurredAtUtc = first.AddMinutes(5),
+                ReceivedAtUtc = first.AddMinutes(5),
+            });
+        await db.Context.SaveChangesAsync();
+
+        var snapshot = await CreateSync(db).BuildSnapshotAsync(CancellationToken.None);
+
+        var bucket = Assert.Single(snapshot.Activity);
+        Assert.Equal(0, bucket.EventCount);
+        Assert.Equal(plug.Id, bucket.DeviceId);
+        Assert.Equal(plug.Name, bucket.DeviceName);
+        Assert.Equal(new DateTime(first.UtcDateTime.Year, first.UtcDateTime.Month, first.UtcDateTime.Day, first.UtcDateTime.Hour, 0, 0, DateTimeKind.Utc), bucket.BucketStart);
+        Assert.Equal(5, bucket.EnergyWh!.Value, 3);
     }
 
     [Fact]

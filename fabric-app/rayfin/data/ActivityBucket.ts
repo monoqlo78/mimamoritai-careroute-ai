@@ -20,6 +20,9 @@ export class ActivityBucket {
 
   @text({ max: 200 }) householdName!: string;
 
+  /** Device.Id in the 見守り隊 application database; stable across display-name changes. */
+  @text({ max: 40 }) deviceId!: string;
+
   /** Device display name, e.g. "リビング照明". Not a resident identifier. */
   @text({ max: 200 }) deviceName!: string;
 

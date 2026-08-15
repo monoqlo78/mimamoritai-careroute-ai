@@ -18,6 +18,62 @@ public class ActivityServiceTests
         };
     }
 
+    private static PlugMiniReading Reading(DateOnly date, int hour, int minute, double watts)
+    {
+        var localMidnightUtc = HouseholdTime.StartOfLocalDayUtc(date);
+        return new PlugMiniReading
+        {
+            ApproxWatts = watts,
+            OccurredAtUtc = localMidnightUtc.AddHours(hour).AddMinutes(minute)
+        };
+    }
+
+    [Fact]
+    public void A_Steady_Appliance_Is_Visible_Even_Though_It_Raises_No_Events()
+    {
+        // The regression this exists to stop: a television left on at a constant draw is
+        // never a "significant change", so the poller writes no watt-bearing event for it
+        // after the first one. Reading the day back from events alone therefore showed an
+        // almost empty chart for a house that was demonstrably occupied -- the電力 was
+        // being recorded all along, in the measurement table, and simply never read.
+        var today = new DateOnly(2026, 8, 15);
+        var readings = new List<PlugMiniReading>();
+        for (var minute = 0; minute <= 60; minute += 5)
+        {
+            readings.Add(Reading(today, 9, minute, 99));
+        }
+
+        var profile = ActivityService.BuildHourlyProfile(today, [], readings);
+
+        // 09時 through 10時 at 99W is one hour of it, charged to the hour it happened in.
+        Assert.Equal(99, profile.Today.Sum(), 1);
+        Assert.Equal(11, profile.StartHour);
+        Assert.Equal(99, profile.Today[22], 1);
+        Assert.Equal(99, profile.TodayByDevice.Single().TotalWh, 1);
+    }
+
+    [Fact]
+    public void The_Day_Opens_And_Closes_On_The_Measured_Draw()
+    {
+        // Same story for the two times the family is actually shown. With only events to
+        // go on these came back null and the bars sat at 0:00; the measurements know
+        // exactly when the draw rose and when it went quiet.
+        var today = new DateOnly(2026, 8, 15);
+
+        var activity = ActivityService.Summarize(today, [],
+        [
+            Reading(today, 7, 0, 0.2),
+            Reading(today, 7, 5, 99),
+            Reading(today, 7, 10, 99),
+            Reading(today, 21, 0, 99),
+            Reading(today, 21, 5, 0.2)
+        ]);
+
+        Assert.Equal(new TimeOnly(7, 5), activity.FirstPowerMoveTime);
+        Assert.Equal(new TimeOnly(21, 5), activity.SettledTime);
+        Assert.True(activity.EnergyWh > 0);
+    }
+
     [Fact]
     public void Standby_Draw_Is_Not_The_Start_Of_The_Day()
     {
@@ -37,6 +93,104 @@ public class ActivityServiceTests
         Assert.Null(summary.FirstActivityTime);
         Assert.Null(summary.LastActivityTime);
         Assert.Equal(0, summary.ActiveMinutes);
+    }
+
+    [Fact]
+    public void A_Plug_Left_In_The_Wall_Still_Reports_The_Day_From_The_Draw()
+    {
+        // How a Plug Mini is actually lived with: it goes in the socket once and stays
+        // there. The socket never switches again, so every subsequent use of the kettle
+        // or the heater reaches us only as the draw moving. Counting on-transitions
+        // alone scored this day zero and the family was shown "まだ本日の活動記録が
+        // ありません" beside a morning of real activity.
+        var date = new DateOnly(2026, 8, 14);
+        var summary = ActivityService.Summarize(date,
+        [
+            PowerSwing(date, 7, 10, "increased", 830),
+            PowerSwing(date, 7, 25, "decreased", 33),
+            PowerSwing(date, 18, 40, "increased", 1100),
+            PowerSwing(date, 20, 5, "decreased", 33)
+        ]);
+
+        Assert.Equal(2, summary.DeviceUsageCount);
+        Assert.Equal(new TimeOnly(7, 10), summary.FirstActivityTime);
+        Assert.Equal(new TimeOnly(20, 5), summary.LastActivityTime);
+    }
+
+    [Fact]
+    public void A_Flat_Draw_All_Day_Is_Still_No_Activity()
+    {
+        // The counterpart, and the reason the family is told anything at all: a socket
+        // that is energised but whose draw never moves means nobody used the appliance.
+        // This must stay distinguishable from the case above, or the alert is worthless.
+        var date = new DateOnly(2026, 8, 14);
+        var summary = ActivityService.Summarize(date,
+        [
+            Event(date, 0, 5, "on", 0.4),
+            Event(date, 12, 0, "on", 0.4)
+        ]);
+
+        Assert.Equal(0, summary.DeviceUsageCount);
+        Assert.Null(summary.FirstActivityTime);
+    }
+
+    [Fact]
+    public void Energy_Is_The_Draw_Held_Until_The_Next_Reading()
+    {
+        // 60W held for 10 minutes is 10Wh. The last reading of the day has nothing after
+        // it to bound it, so it contributes nothing rather than being extrapolated.
+        var date = new DateOnly(2026, 8, 14);
+        var deviceId = Guid.NewGuid();
+
+        var a = Event(date, 9, 0, "on", 60.0);
+        var b = Event(date, 9, 10, "on", 0.0);
+        var c = Event(date, 9, 20, "off", 0.0);
+        a.DeviceId = b.DeviceId = c.DeviceId = deviceId;
+
+        Assert.Equal(10.0, ActivityService.EnergyWh([a, b, c]), 2);
+    }
+
+    [Fact]
+    public void Energy_Does_Not_Extrapolate_Across_A_Long_Silence()
+    {
+        // A plug that drops off the network at 09:00 and reappears at 18:00 must not be
+        // credited with nine hours of its last known load; that would invent a day of
+        // activity out of a network outage.
+        var date = new DateOnly(2026, 8, 14);
+        var deviceId = Guid.NewGuid();
+
+        var a = Event(date, 9, 0, "on", 60.0);
+        var b = Event(date, 18, 0, "on", 60.0);
+        a.DeviceId = b.DeviceId = deviceId;
+
+        var expected = 60.0 * ActivityService.MaxIntegrationGap.TotalHours;
+        Assert.Equal(expected, ActivityService.EnergyWh([a, b]), 2);
+    }
+
+    [Fact]
+    public void Flat_Standby_Draw_Still_Registers_As_Energy_But_Not_As_Activity()
+    {
+        // The two figures answer different questions and must not be conflated: the plug
+        // really did consume electricity, and nobody really did use the appliance.
+        var date = new DateOnly(2026, 8, 14);
+        var deviceId = Guid.NewGuid();
+
+        var a = Event(date, 0, 0, "on", 0.4);
+        var b = Event(date, 0, 15, "on", 0.4);
+        a.DeviceId = b.DeviceId = deviceId;
+
+        var summary = ActivityService.Summarize(date, [a, b]);
+
+        Assert.Equal(0, summary.DeviceUsageCount);
+        Assert.True(summary.EnergyWh > 0);
+    }
+
+    private static DeviceEvent PowerSwing(DateOnly date, int hour, int minute, string state, double watts)
+    {
+        var e = Event(date, hour, minute, state, watts);
+        e.EventType = "PowerChange";
+        e.Unit = "W";
+        return e;
     }
 
     [Fact]
@@ -111,6 +265,144 @@ public class ActivityServiceTests
         Assert.Equal(2, summary.NightActivityCount);
         Assert.Equal(4, summary.DeviceUsageCount);
     }
+
+    [Fact]
+    public void Hourly_Energy_Splits_A_Reading_Across_The_Hours_It_Spans()
+    {
+        // 06:50 -> 07:20 at 60W is 10 minutes of the six o'clock hour and 20 of the seven,
+        // not half an hour dumped on whichever hour happened to be first.
+        var date = new DateOnly(2026, 8, 14);
+        var hours = ActivityService.HourlyEnergyWh(
+        [
+            Event(date, 6, 50, "on", 60),
+            Event(date, 7, 20, "on", 60)
+        ]);
+
+        Assert.Equal(10, hours[6], 2);
+        Assert.Equal(20, hours[7], 2);
+        Assert.Equal(0, hours[8], 2);
+    }
+
+    [Fact]
+    public void Hourly_Energy_Adds_Up_To_The_Daily_Total()
+    {
+        var date = new DateOnly(2026, 8, 14);
+        DeviceEvent[] events =
+        [
+            Event(date, 6, 50, "on", 60),
+            Event(date, 7, 10, "on", 120),
+            Event(date, 7, 30, "off", 0)
+        ];
+
+        Assert.Equal(ActivityService.EnergyWh(events),
+            Math.Round(ActivityService.HourlyEnergyWh(events).Sum(), 2), 2);
+    }
+
+    [Fact]
+    public void Hourly_Energy_Is_Split_Per_Device()
+    {
+        var date = new DateOnly(2026, 8, 14);
+        var kitchen = Guid.NewGuid();
+        var bedroom = Guid.NewGuid();
+
+        var a1 = Event(date, 7, 0, "on", 60); a1.DeviceId = kitchen;
+        var a2 = Event(date, 7, 30, "off", 0); a2.DeviceId = kitchen;
+        var b1 = Event(date, 20, 0, "on", 30); b1.DeviceId = bedroom;
+        var b2 = Event(date, 20, 30, "off", 0); b2.DeviceId = bedroom;
+
+        var byDevice = ActivityService.HourlyEnergyByDevice([a1, a2, b1, b2]);
+
+        Assert.Equal(2, byDevice.Count);
+        Assert.Equal(kitchen, byDevice[0].DeviceId);
+        Assert.Equal(30, byDevice[0].TotalWh, 2);
+        Assert.Equal(15, byDevice[1].TotalWh, 2);
+        Assert.Equal(30, byDevice[0].Hours[7], 2);
+    }
+
+    [Fact]
+    public void The_Usual_Profile_Excludes_Today_And_Silent_Days()
+    {
+        // Averaging today into its own comparison line would make the line chase the bars
+        // and never disagree; averaging in a day the poller missed would drag the whole
+        // rhythm toward zero and make every real day look unusually busy.
+        var today = new DateOnly(2026, 8, 14);
+        var yesterday = today.AddDays(-1);
+        var silent = today.AddDays(-2);
+
+        var profile = ActivityService.BuildHourlyProfile(today,
+        [
+            Event(silent, 7, 0, "off", 0),
+            Event(silent, 7, 30, "off", 0),
+            Event(yesterday, 7, 0, "on", 60),
+            Event(yesterday, 7, 30, "off", 0),
+            Event(today, 7, 0, "on", 600),
+            Event(today, 7, 30, "off", 0)
+        ]);
+
+        Assert.Equal(1, profile.UsualDayCount);
+
+        // The window ends at the newest reading (07:30 rounded up to 08:00), so today's
+        // seven o'clock hour is the rightmost bar rather than index 7.
+        Assert.Equal(8, profile.StartHour);
+        Assert.Equal(30, profile.Usual[23], 2);
+        Assert.Equal(300, profile.Today[23], 2);
+    }
+
+    [Fact]
+    public void The_Newest_Reading_Sits_At_The_Right_Hand_Edge()
+    {
+        // A fixed 0時-24時 axis spends most of the day drawing hours that have not happened
+        // yet and squeezes the part the family cares about into a sliver on the left.
+        var today = new DateOnly(2026, 8, 14);
+
+        var profile = ActivityService.BuildHourlyProfile(today,
+        [
+            Event(today.AddDays(-1), 20, 0, "on", 60),
+            Event(today.AddDays(-1), 20, 30, "off", 0),
+            Event(today, 9, 0, "on", 120),
+            Event(today, 9, 30, "off", 0)
+        ]);
+
+        // Newest reading 09:30 -> window 10:00 yesterday .. 10:00 today.
+        Assert.Equal(10, profile.StartHour);
+        Assert.Equal(60, profile.Today[23], 2);       // today 09:00, the rightmost bar
+        Assert.Equal(30, profile.Today[10], 2);       // yesterday 20:00, ten bars in
+        Assert.Equal(0, profile.Today[0], 2);
+    }
+
+    [Fact]
+    public void The_Day_Starts_And_Settles_With_The_Power_Not_The_Socket()
+    {
+        // The plug is never unplugged, so "when did the socket switch" answers nothing.
+        // What moves is the draw behind it: the kettle at 06:40, the last of it at 21:10.
+        var date = new DateOnly(2026, 8, 14);
+        var summary = ActivityService.Summarize(date,
+        [
+            Event(date, 3, 0, "on", 0.4),
+            Event(date, 6, 40, "on", 900),
+            Event(date, 7, 0, "on", 0.4),
+            Event(date, 21, 10, "on", 300),
+            Event(date, 22, 0, "on", 0.4)
+        ]);
+
+        Assert.Equal(new TimeOnly(6, 40), summary.FirstPowerMoveTime);
+        Assert.Equal(new TimeOnly(22, 0), summary.SettledTime);
+    }
+
+    [Fact]
+    public void Standby_Jitter_Is_Not_A_Movement()
+    {
+        var date = new DateOnly(2026, 8, 14);
+        var summary = ActivityService.Summarize(date,
+        [
+            Event(date, 3, 0, "on", 0.3),
+            Event(date, 9, 0, "on", 0.5),
+            Event(date, 15, 0, "on", 0.4)
+        ]);
+
+        Assert.Null(summary.FirstPowerMoveTime);
+        Assert.Null(summary.SettledTime);
+    }
 }
 
 public class RiskAssessmentServiceTests
@@ -152,6 +444,90 @@ public class RiskAssessmentServiceTests
         var result = RiskAssessmentService.Evaluate(noActivity, Baseline(today), new TimeOnly(6, 0));
 
         Assert.Equal(RiskLevel.Low, result.Level);
+    }
+
+    [Fact]
+    public void An_Early_Riser_Is_Chased_Long_Before_The_Ten_Oclock_Backstop()
+    {
+        var today = new DateOnly(2026, 8, 8);
+        var upAtSix = Enumerable.Range(1, 7).Select(i => Day(today.AddDays(-i), 10, hour: 6)).ToList();
+        var noActivity = new DailyActivity(today, null, null, 0, 0, 0);
+
+        var result = RiskAssessmentService.Evaluate(noActivity, upAtSix, new TimeOnly(8, 30));
+
+        Assert.Equal(RiskLevel.High, result.Level);
+        Assert.Contains("08:00", result.Reason);
+    }
+
+    [Fact]
+    public void A_Late_Riser_Is_Not_Chased_For_Keeping_Their_Own_Hours()
+    {
+        var today = new DateOnly(2026, 8, 8);
+        var upAtNine = Enumerable.Range(1, 7).Select(i => Day(today.AddDays(-i), 10, hour: 9)).ToList();
+        var noActivity = new DailyActivity(today, null, null, 0, 0, 0);
+
+        // Their habit plus grace lands after the backstop, so the backstop still rules.
+        Assert.Equal(RiskLevel.Low, RiskAssessmentService.Evaluate(noActivity, upAtNine, new TimeOnly(9, 30)).Level);
+        Assert.Equal(RiskLevel.High, RiskAssessmentService.Evaluate(noActivity, upAtNine, new TimeOnly(10, 0)).Level);
+    }
+
+    [Fact]
+    public void A_Habit_Before_Dawn_Never_Pulls_The_Alarm_Into_The_Night()
+    {
+        var today = new DateOnly(2026, 8, 8);
+        var upAtThree = Enumerable.Range(1, 7).Select(i => Day(today.AddDays(-i), 10, hour: 3)).ToList();
+        var noActivity = new DailyActivity(today, null, null, 0, 0, 0);
+
+        var result = RiskAssessmentService.Evaluate(noActivity, upAtThree, new TimeOnly(6, 0));
+
+        Assert.Equal(RiskLevel.Low, result.Level);
+    }
+
+    [Fact]
+    public void Too_Little_History_Falls_Back_To_The_Fixed_Hour()
+    {
+        var today = new DateOnly(2026, 8, 8);
+        var twoDays = new[] { Day(today.AddDays(-1), 10, hour: 6), Day(today.AddDays(-2), 10, hour: 6) };
+        var noActivity = new DailyActivity(today, null, null, 0, 0, 0);
+
+        Assert.Equal(RiskLevel.Low, RiskAssessmentService.Evaluate(noActivity, twoDays, new TimeOnly(9, 0)).Level);
+    }
+
+    [Fact]
+    public void A_Still_House_At_Night_Is_Someone_Asleep_Not_An_Emergency()
+    {
+        var today = new DateOnly(2026, 8, 8);
+        var flat = new[] { new FlatPowerDevice("テレビ", TimeSpan.FromHours(3), 3) };
+
+        var result = RiskAssessmentService.Evaluate(
+            Day(today, 6), Baseline(today), new TimeOnly(2, 0), null, flat);
+
+        Assert.Equal(RiskLevel.Low, result.Level);
+    }
+
+    [Fact]
+    public void A_Still_House_At_Dawn_Is_Not_Reported_Because_The_Window_Was_Asleep()
+    {
+        var today = new DateOnly(2026, 8, 8);
+        var flat = new[] { new FlatPowerDevice("テレビ", TimeSpan.FromHours(3), 3) };
+
+        var result = RiskAssessmentService.Evaluate(
+            Day(today, 6), Baseline(today), new TimeOnly(6, 30), null, flat);
+
+        Assert.Equal(RiskLevel.Low, result.Level);
+    }
+
+    [Fact]
+    public void A_Still_House_Through_The_Waking_Day_Is_Reported()
+    {
+        var today = new DateOnly(2026, 8, 8);
+        var flat = new[] { new FlatPowerDevice("テレビ", TimeSpan.FromHours(3), 3) };
+
+        var result = RiskAssessmentService.Evaluate(
+            Day(today, 6), Baseline(today), new TimeOnly(14, 0), null, flat);
+
+        Assert.Equal(RiskLevel.Medium, result.Level);
+        Assert.Contains("変わっていません", result.Reason);
     }
 
     [Fact]
@@ -318,3 +694,130 @@ public class HouseholdTimeTests
         Assert.Equal(new DateOnly(2026, 8, 9), HouseholdTime.LocalDate(utc));
     }
 }
+
+/// <summary>
+/// The database side of the flat-power rule: which devices are watched, and whether a
+/// window of readings really was still. Covers the switch from opt-in to watched-by-
+/// default, which is the difference between the family hearing about a silent afternoon
+/// and hearing nothing at all.
+/// </summary>
+public class FlatPowerDetectionTests
+{
+    private static readonly DateTimeOffset Now = new(2026, 8, 8, 5, 0, 0, TimeSpan.Zero);
+
+    private static PlugMiniReading Reading(TestDb db, Guid deviceId, TimeSpan ago, double watts) => new()
+    {
+        HouseholdId = db.HouseholdId,
+        DeviceId = deviceId,
+        ApproxWatts = watts,
+        OccurredAtUtc = Now - ago
+    };
+
+    /// <summary>A device whose family asked to hear when its draw stops moving.</summary>
+    private static Device Watched()
+    {
+        var light = TestDb.Light();
+        light.FlatPowerAlertHours = RiskAssessmentService.DefaultFlatPowerAlertHours;
+        return light;
+    }
+
+    private static RiskAssessmentService Service(TestDb db) =>
+        new(db.Context, new FakeTimeProvider(Now));
+
+    [Fact]
+    public async Task A_Device_Nobody_Configured_Is_Left_Alone()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light());
+        var device = db.Context.Devices.Single();
+        Assert.Null(device.FlatPowerAlertHours);
+
+        db.Context.PlugMiniReadings.AddRange(
+            Reading(db, device.Id, TimeSpan.FromHours(3), 40),
+            Reading(db, device.Id, TimeSpan.FromHours(1), 40));
+        await db.Context.SaveChangesAsync();
+
+        // Watching every device by default was measured against a week of real readings
+        // and rejected: an always-on lamp is flat nearly every afternoon.
+        Assert.Empty(await Service(db).LoadFlatPowerAsync(db.HouseholdId));
+    }
+
+    [Fact]
+    public async Task A_Device_The_Family_Asked_About_Is_Reported_When_Still()
+    {
+        var light = TestDb.Light();
+        light.FlatPowerAlertHours = RiskAssessmentService.DefaultFlatPowerAlertHours;
+        using var db = await new TestDb().SeedAsync(light);
+        var device = db.Context.Devices.Single();
+
+        db.Context.PlugMiniReadings.AddRange(
+            Reading(db, device.Id, TimeSpan.FromHours(3), 40),
+            Reading(db, device.Id, TimeSpan.FromHours(1), 40));
+        await db.Context.SaveChangesAsync();
+
+        var flat = await Service(db).LoadFlatPowerAsync(db.HouseholdId);
+
+        Assert.Equal(RiskAssessmentService.DefaultFlatPowerAlertHours, Assert.Single(flat).ThresholdHours);
+    }
+
+    [Fact]
+    public async Task A_Device_Set_To_Zero_Hours_Is_Left_Alone()
+    {
+        var light = TestDb.Light();
+        light.FlatPowerAlertHours = 0;
+        using var db = await new TestDb().SeedAsync(light);
+        var device = db.Context.Devices.Single();
+
+        db.Context.PlugMiniReadings.AddRange(
+            Reading(db, device.Id, TimeSpan.FromHours(3), 40),
+            Reading(db, device.Id, TimeSpan.FromHours(1), 40));
+        await db.Context.SaveChangesAsync();
+
+        Assert.Empty(await Service(db).LoadFlatPowerAsync(db.HouseholdId));
+    }
+
+    [Fact]
+    public async Task A_Draw_That_Moved_Is_Not_Flat()
+    {
+        using var db = await new TestDb().SeedAsync(Watched());
+        var device = db.Context.Devices.Single();
+
+        db.Context.PlugMiniReadings.AddRange(
+            Reading(db, device.Id, TimeSpan.FromHours(3), 0.2),
+            Reading(db, device.Id, TimeSpan.FromHours(1), 60));
+        await db.Context.SaveChangesAsync();
+
+        Assert.Empty(await Service(db).LoadFlatPowerAsync(db.HouseholdId));
+    }
+
+    [Fact]
+    public async Task A_Plug_That_Only_Just_Came_Online_Is_Not_Called_Still()
+    {
+        using var db = await new TestDb().SeedAsync(Watched());
+        var device = db.Context.Devices.Single();
+
+        // Both readings are recent: we simply were not watching for the rest of it.
+        db.Context.PlugMiniReadings.AddRange(
+            Reading(db, device.Id, TimeSpan.FromMinutes(20), 40),
+            Reading(db, device.Id, TimeSpan.FromMinutes(5), 40));
+        await db.Context.SaveChangesAsync();
+
+        Assert.Empty(await Service(db).LoadFlatPowerAsync(db.HouseholdId));
+    }
+
+    [Fact]
+    public async Task A_Disabled_Device_Is_Not_Watched()
+    {
+        var light = Watched();
+        light.IsEnabled = false;
+        using var db = await new TestDb().SeedAsync(light);
+        var device = db.Context.Devices.Single();
+
+        db.Context.PlugMiniReadings.AddRange(
+            Reading(db, device.Id, TimeSpan.FromHours(3), 40),
+            Reading(db, device.Id, TimeSpan.FromHours(1), 40));
+        await db.Context.SaveChangesAsync();
+
+        Assert.Empty(await Service(db).LoadFlatPowerAsync(db.HouseholdId));
+    }
+}
+

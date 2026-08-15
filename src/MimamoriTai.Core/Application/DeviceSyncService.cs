@@ -26,11 +26,15 @@ public sealed record DeviceSyncResult(int Added, int Updated, int Deactivated)
 /// - Devices previously synced from the provider but no longer reported by it are
 ///   marked IsActive = false (never deleted), so their historical events/commands
 ///   remain valid and they naturally disappear from active device resolution.
+///   Callers that cannot be sure a missing device is a real removal (rather than a
+///   transient API hiccup dropping it from one response) may pass
+///   <paramref name="deactivateMissing"/> = false to skip this step entirely -- see
+///   SwitchBotPollingBackgroundService's periodic auto-discovery for exactly that case.
 /// Running this twice in a row with an unchanged provider device list is a no-op.
 /// </summary>
 public sealed class DeviceSyncService(IAppDbContext db, IDeviceProvider provider, TimeProvider clock)
 {
-    public async Task<DeviceSyncResult> SyncAsync(Guid householdId, CancellationToken ct = default)
+    public async Task<DeviceSyncResult> SyncAsync(Guid householdId, bool deactivateMissing = true, CancellationToken ct = default)
     {
         var providerDevices = await provider.GetDevicesAsync(ct);
 
@@ -106,12 +110,15 @@ public sealed class DeviceSyncService(IAppDbContext db, IDeviceProvider provider
         }
 
         var deactivated = 0;
-        foreach (var device in existing)
+        if (deactivateMissing)
         {
-            if (device.IsActive && !seenExternalIds.Contains(device.ExternalDeviceId))
+            foreach (var device in existing)
             {
-                device.IsActive = false;
-                deactivated++;
+                if (device.IsActive && !seenExternalIds.Contains(device.ExternalDeviceId))
+                {
+                    device.IsActive = false;
+                    deactivated++;
+                }
             }
         }
 

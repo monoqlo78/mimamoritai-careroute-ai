@@ -95,9 +95,9 @@ function SnapshotId([string]$householdId) {
 
 # Activity buckets have no natural key in the source, so derive one from the
 # grain (household + device + hour). Re-syncing an hour overwrites it in place.
-function BucketId([string]$householdId, [string]$deviceName, [datetime]$bucketStart) {
+function BucketId([string]$householdId, [string]$deviceId, [datetime]$bucketStart) {
     $md5 = [System.Security.Cryptography.MD5]::Create()
-    $key = "activity-bucket:$householdId|$deviceName|$($bucketStart.ToString('o'))"
+    $key = "activity-bucket:$householdId|$deviceId|$($bucketStart.ToString('o'))"
     $bytes = $md5.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($key))
     return ([guid]::new($bytes)).ToString()
 }
@@ -193,7 +193,54 @@ VALUES
     }
     Write-Host "Synced $($snapshot.alerts.Count) alert records"
 
-    $activityMerge = @'
+    function HasColumn([string]$table, [string]$column) {
+        $cmd = $conn.CreateCommand()
+        $cmd.CommandText = "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='dbo' AND TABLE_NAME=@table AND COLUMN_NAME=@column"
+        $null = $cmd.Parameters.AddWithValue('@table', $table)
+        $null = $cmd.Parameters.AddWithValue('@column', $column)
+        return ([int]$cmd.ExecuteScalar()) -gt 0
+    }
+
+    $hasDeviceId = HasColumn 'ActivityBuckets' 'deviceId'
+    $hasEnergy = HasColumn 'ActivityBuckets' 'energyWh'
+
+    $activityMerge = if ($hasDeviceId -and $hasEnergy) { @'
+MERGE dbo.ActivityBuckets AS t
+USING (SELECT @id AS id) AS s ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET
+    householdId = @householdId, householdName = @householdName, deviceId = @deviceId,
+    deviceName = @deviceName, deviceType = @deviceType, bucketStart = @bucketStart,
+    eventCount = @eventCount, onCount = @onCount, source = @source, energyWh = @energyWh
+WHEN NOT MATCHED THEN INSERT
+    (id, householdId, householdName, deviceId, deviceName, deviceType, bucketStart, eventCount, onCount, source, energyWh)
+VALUES
+    (@id, @householdId, @householdName, @deviceId, @deviceName, @deviceType, @bucketStart, @eventCount, @onCount, @source, @energyWh);
+'@
+    } elseif ($hasDeviceId) { @'
+MERGE dbo.ActivityBuckets AS t
+USING (SELECT @id AS id) AS s ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET
+    householdId = @householdId, householdName = @householdName, deviceId = @deviceId,
+    deviceName = @deviceName, deviceType = @deviceType, bucketStart = @bucketStart,
+    eventCount = @eventCount, onCount = @onCount, source = @source
+WHEN NOT MATCHED THEN INSERT
+    (id, householdId, householdName, deviceId, deviceName, deviceType, bucketStart, eventCount, onCount, source)
+VALUES
+    (@id, @householdId, @householdName, @deviceId, @deviceName, @deviceType, @bucketStart, @eventCount, @onCount, @source);
+'@
+    } elseif ($hasEnergy) { @'
+MERGE dbo.ActivityBuckets AS t
+USING (SELECT @id AS id) AS s ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET
+    householdId = @householdId, householdName = @householdName, deviceName = @deviceName,
+    deviceType = @deviceType, bucketStart = @bucketStart, eventCount = @eventCount,
+    onCount = @onCount, source = @source, energyWh = @energyWh
+WHEN NOT MATCHED THEN INSERT
+    (id, householdId, householdName, deviceName, deviceType, bucketStart, eventCount, onCount, source, energyWh)
+VALUES
+    (@id, @householdId, @householdName, @deviceName, @deviceType, @bucketStart, @eventCount, @onCount, @source, @energyWh);
+'@
+    } else { @'
 MERGE dbo.ActivityBuckets AS t
 USING (SELECT @id AS id) AS s ON t.id = s.id
 WHEN MATCHED THEN UPDATE SET
@@ -205,20 +252,30 @@ WHEN NOT MATCHED THEN INSERT
 VALUES
     (@id, @householdId, @householdName, @deviceName, @deviceType, @bucketStart, @eventCount, @onCount, @source);
 '@
+    }
 
     foreach ($b in $snapshot.activity) {
         $bucketStart = [datetime]::Parse($b.BucketStart).ToUniversalTime()
-        Invoke-NonQuery $activityMerge @{
-            id            = [guid](BucketId $b.HouseholdId $b.DeviceName $bucketStart)
+        $deviceId = Text $b.DeviceId
+        $params = @{
+            id            = [guid](BucketId $b.HouseholdId $deviceId $bucketStart)
             householdId   = Text $b.HouseholdId
             householdName = Text $b.HouseholdName
+            deviceId      = $deviceId
             deviceName    = Text $b.DeviceName
             deviceType    = Text $b.DeviceType
             bucketStart   = $bucketStart
             eventCount    = [string]$b.EventCount
             onCount       = [string]$b.OnCount
             source        = Text $b.Source
-        } | Out-Null
+            energyWh      = Text $b.EnergyWh
+        }
+        if (-not $hasDeviceId) { $params.Remove('deviceId') }
+        if (-not $hasEnergy) { $params.Remove('energyWh') }
+        Invoke-NonQuery $activityMerge $params | Out-Null
+    }
+    if ($hasDeviceId) {
+        Invoke-NonQuery "DELETE FROM dbo.ActivityBuckets WHERE deviceId = '';" @{} | Out-Null
     }
     Write-Host "Synced $($snapshot.activity.Count) activity buckets"
 

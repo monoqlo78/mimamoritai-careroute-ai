@@ -25,6 +25,17 @@ public sealed class SwitchBotOptions
     public double PollIntervalMinutes { get; set; } = 5;
 
     /// <summary>
+    /// Minutes between background re-fetches of the household's full device list
+    /// (GET /v1.1/devices), so a device added on the SwitchBot side (e.g. a second
+    /// Plug Mini) is picked up without anyone pressing "今すぐ同期する". Deliberately
+    /// much coarser than <see cref="PollIntervalMinutes"/>: SwitchBot's OpenAPI has a
+    /// daily call-count limit per token, and the device list rarely changes, whereas
+    /// per-device status needs to stay fine-grained for timely activity detection.
+    /// Only used by SwitchBotPollingBackgroundService.
+    /// </summary>
+    public double DeviceDiscoveryIntervalMinutes { get; set; } = 60;
+
+    /// <summary>
     /// When true, a Production household with no per-household
     /// <c>SwitchBotConnection</c> row may fall back to these global bootstrap
     /// Token/Secret. This exists only for local/dev bring-up before the Settings UI

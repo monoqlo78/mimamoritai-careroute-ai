@@ -40,6 +40,9 @@ const households = snapshot.households
     latestRiskLevel: ${str(h.LatestRiskLevel)},
     needsAttention: ${needsAttention(h)},
     capturedAt: new Date(${str(capturedAt)}),
+    powerTodayWh: ${num(h.PowerTodayWh)},
+    powerBaselineWh: ${h.PowerBaselineWh == null ? str('') : num(h.PowerBaselineWh)},
+    powerTrend: ${str(h.PowerTrend || 'Unknown')},
   },`
   )
   .join('\n');
@@ -65,9 +68,9 @@ const activity = snapshot.activity
     (b, index) =>
       `  { id: ${str(`snap-${index}`)}, householdId: ${str(b.HouseholdId)}, householdName: ${str(
         b.HouseholdName
-      )}, deviceName: ${str(b.DeviceName)}, deviceType: ${str(b.DeviceType)}, bucketStart: new Date(${str(
+      )}, deviceId: ${str(b.DeviceId)}, deviceName: ${str(b.DeviceName)}, deviceType: ${str(b.DeviceType)}, bucketStart: new Date(${str(
         iso(b.BucketStart)
-      )}), eventCount: ${num(b.EventCount)}, onCount: ${num(b.OnCount)}, source: ${str(b.Source)} },`
+      )}), eventCount: ${num(b.EventCount)}, onCount: ${num(b.OnCount)}, source: ${str(b.Source)}, energyWh: ${str(b.EnergyWh ?? '')} },`
   )
   .join('\n');
 

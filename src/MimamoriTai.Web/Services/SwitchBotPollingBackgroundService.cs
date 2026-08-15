@@ -29,13 +29,32 @@ namespace MimamoriTai.Web.Services;
 /// explicitly allowed legacy global-option fallback: the demo path
 /// (MockDeviceProvider) and every existing test are unaffected. Every exception is
 /// caught and logged: this must never crash the app.
+///
+/// Also re-fetches the household's device list (reusing
+/// <see cref="DeviceSyncService"/>, the same class the "今すぐ同期する" button calls) once
+/// <see cref="SwitchBotOptions.DeviceDiscoveryIntervalMinutes"/> has elapsed since the
+/// last successful discovery, so a device added on the SwitchBot side (e.g. a second
+/// Plug Mini) shows up without anyone pressing that button. This is intentionally a
+/// coarser cadence than the per-device status poll -- see that option's own doc
+/// comment for why. It is also intentionally add-only
+/// (<c>deactivateMissing: false</c>): a device silently disappearing from one
+/// GET /v1.1/devices response could just as easily be a transient SwitchBot API
+/// hiccup as a real removal, and wrongly flipping IsActive=false would hide a
+/// device from the dashboard/alerts on nothing more than one bad response. Real
+/// removal stays a deliberate, operator-driven action via manual sync.
 /// </summary>
 public sealed class SwitchBotPollingBackgroundService(
     IServiceScopeFactory scopeFactory,
     IOptions<SwitchBotOptions> switchBotOptions,
+    TimeProvider clock,
     ILogger<SwitchBotPollingBackgroundService> logger) : BackgroundService
 {
     private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(20);
+
+    // In-memory only: a restart simply re-runs discovery on the next cycle, which is
+    // harmless (SyncAsync is idempotent) and far simpler than persisting a per-household
+    // "last discovered" timestamp for what is, at worst, one extra device-list call.
+    private readonly Dictionary<Guid, DateTimeOffset> _lastDeviceDiscoveryAtUtc = [];
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -129,6 +148,11 @@ public sealed class SwitchBotPollingBackgroundService(
                 return;
             }
 
+            // Runs before the status poll so a device discovered just now is already
+            // included in this same cycle's status pass, not left waiting one more
+            // interval.
+            await DiscoverNewDevicesAsync(householdId, provider, scope.ServiceProvider, ct);
+
             var pollingService = scope.ServiceProvider.GetRequiredService<SwitchBotPollingCycleService>();
             var result = await pollingService.PollHouseholdAsync(householdId, provider, ct);
 
@@ -149,6 +173,53 @@ public sealed class SwitchBotPollingBackgroundService(
         catch (Exception ex)
         {
             logger.LogWarning(ex, "SwitchBot polling failed for household {HouseholdId}; will retry next interval.", householdId);
+        }
+    }
+
+    /// <summary>
+    /// Re-fetches this household's device list and upserts new devices only, but no
+    /// more often than <see cref="SwitchBotOptions.DeviceDiscoveryIntervalMinutes"/> --
+    /// this is the fix for "SwitchBot側で追加したデバイスが同期を押すまで増えない": without
+    /// it, only already-known devices (loaded from the Devices table) ever get polled,
+    /// so a newly-added device is invisible until someone presses "今すぐ同期する".
+    /// A discovery failure (e.g. a transient API error) leaves the last-discovered
+    /// timestamp untouched, so the next cycle retries immediately rather than waiting
+    /// out a full interval on top of the failure.
+    /// </summary>
+    private async Task DiscoverNewDevicesAsync(
+        Guid householdId, IDeviceProvider provider, IServiceProvider scopedProvider, CancellationToken ct)
+    {
+        var interval = TimeSpan.FromMinutes(Math.Max(switchBotOptions.Value.DeviceDiscoveryIntervalMinutes, 1));
+        var now = clock.GetUtcNow();
+
+        if (_lastDeviceDiscoveryAtUtc.TryGetValue(householdId, out var lastRun) && now - lastRun < interval)
+        {
+            return;
+        }
+
+        try
+        {
+            var db = scopedProvider.GetRequiredService<IAppDbContext>();
+            var syncService = new DeviceSyncService(db, provider, clock);
+            // deactivateMissing: false -- see this class's own doc comment for why
+            // auto-discovery only ever adds/updates, never deactivates.
+            var result = await syncService.SyncAsync(householdId, deactivateMissing: false, ct: ct);
+            _lastDeviceDiscoveryAtUtc[householdId] = now;
+
+            if (result.Added > 0)
+            {
+                logger.LogInformation(
+                    "SwitchBot auto-discovery added {Added} new device(s) for household {HouseholdId}.",
+                    result.Added, householdId);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "SwitchBot device auto-discovery failed for household {HouseholdId}; will retry next cycle.", householdId);
         }
     }
 

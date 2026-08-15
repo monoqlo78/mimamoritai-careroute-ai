@@ -14,9 +14,18 @@
             <img src="/images/mimamo-avatar.png" alt="" />
             <span><strong>見守り隊</strong><small>家族をつなぐ安心サービス</small></span>
         </a>
-        <a class="line-return" href="https://line.me/R/ti/p/%40755ykcrx">
-            LINEへ戻る
-        </a>
+        @if (_openedFromLine)
+        {
+            <a class="line-return" href="https://line.me/R/ti/p/%40755ykcrx">
+                LINEへ戻る
+            </a>
+        }
+        else
+        {
+            <a class="line-return" href="/">
+                見守り画面へ
+            </a>
+        }
     </nav>
 
     <section class="mascot-hero">
@@ -105,6 +114,7 @@
 @code {
     private bool _busy;
     private bool _error;
+    private bool _openedFromLine;
     private string? _notice;
     private string MascotHeading => _busy ? "いま届けています" : _error ? "もう一度ためしてね" : _notice is null ? "そばで見守っています" : "受け付けました";
     private string MascotMessage => _busy ? "少しだけ待ってください。" : _notice ?? "気になることがあれば、ボタンを押してください。";
@@ -114,6 +124,17 @@
         if (firstRender)
         {
             await JS.InvokeVoidAsync("mimamoriUi.initMascot");
+
+            // 「LINEへ戻る」は、LINEアプリの中で開いているときしか意味を持ちません。
+            // PCのブラウザから開いた人にとって戻り先は存在せず、押すとLINEの
+            // ダウンロード案内に飛ばされてしまうため、そこでは見守り画面への
+            // 導線に差し替えます。判定はブラウザ側でしかできないので、初回描画後に行います。
+            var fromLine = await JS.InvokeAsync<bool>("mimamoriUi.isInLineApp");
+            if (fromLine != _openedFromLine)
+            {
+                _openedFromLine = fromLine;
+                StateHasChanged();
+            }
         }
     }
 

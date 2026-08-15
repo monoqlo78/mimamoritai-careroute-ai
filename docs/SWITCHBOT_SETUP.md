@@ -65,7 +65,7 @@ SwitchBot OpenAPI v1.1 は、リクエストごとに以下の値を計算して
 ## 4. 実機データをアプリへ反映する
 1. `SwitchBot:Enabled=true` とToken/Secretを設定して起動すると、`IDeviceProvider` が `SwitchBotDeviceProvider` に切り替わります。
 2. ダッシュボードの「実機を同期」ボタン（または `POST /api/devices/sync`）を押すと、`DeviceSyncService` が実機の機器一覧を取得し、`Devices` テーブルへ反映します（新規は追加、既存は名前/種別/部屋を更新、実機側から消えた機器は削除せず無効化）。同期は冪等で、変化が無ければ2回目の実行は何も変更しません。
-3. 同期後は `SwitchBotPollingBackgroundService` が既定5分間隔（`SwitchBot:PollIntervalMinutes`）で各機器のステータスをポーリングし、ON/OFF・人感・開閉の変化を検知したときだけ `DeviceEvent`（`Source=SwitchBotPoll`）を記録します。状態が変わらない限り重複イベントは作成されません。
+3. 同期後は `SwitchBotPollingBackgroundService` が既定5分間隔（`SwitchBot:PollIntervalMinutes`）で各機器のステータスをポーリングし、ON/OFF・人感・開閉の変化を検知したときだけ `DeviceEvent`（`Source=SwitchBotPoll`）を記録します。状態が変わらない限り重複イベントは作成されません。加えて、既定60分間隔（`SwitchBot:DeviceDiscoveryIntervalMinutes`）で機器一覧（`GET /v1.1/devices`）も自動で再取得し、SwitchBot側で追加された新しい機器（例: プラグミニの2台目）を自動でDevicesテーブルへ追加します。手動の「今すぐ同期する」と同じ`DeviceSyncService`を再利用しますが、消えた機器を無効化（`IsActive=false`）する処理は行いません（一時的なAPI障害で機器が一覧から欠落しただけかもしれないため）。実機側で本当に機器を削除した場合は、引き続き手動同期（「今すぐ同期する」）で反映してください。
 4. 同期は機器を発見するだけで、遠隔操作の許可（`RemoteControlAllowed`）は自動では付与されません。安全のため、AIチャット/LINEからの操作を許可する機器は運用者が個別に設定してください。
 5. `/webhooks/switchbot`（`src/MimamoriTai.Web/Endpoints/WebhookEndpoints.cs`）はSwitchBot Webhookのコールバックを受信し、`SwitchBotWebhookIngestService` が `DeviceEvent`（`Source=SwitchBotWebhook`）と `PlugMiniReading` を記録します。ポーリングは**そのまま併存**します（後述の理由）。登録は下記「6.」を参照してください。
 

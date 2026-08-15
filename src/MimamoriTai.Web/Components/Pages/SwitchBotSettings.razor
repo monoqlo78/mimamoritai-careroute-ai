@@ -6,7 +6,6 @@
 @inject HouseholdAccessService HouseholdAccess
 @inject SwitchBotConnectionService ConnectionService
 @inject IHouseholdSwitchBotClientFactory ClientFactory
-@inject LineLinkCodeService LineLinkCodeService
 @inject ICurrentUserAccessor CurrentUserAccessor
 @inject IAppDbContext Db
 @inject TimeProvider Clock
@@ -19,11 +18,12 @@
         <span class="brand-mark" aria-hidden="true">み</span>
         <div>
             <h1>SwitchBot 設定</h1>
-            <p>ご家族の追加と、ご家庭のSwitchBotの接続をここで行います</p>
+            <p>ご家庭のSwitchBotとの接続をここで行います</p>
         </div>
     </div>
     <div class="topbar-actions">
         <a class="ghost small" href="/">← ダッシュボードに戻る</a>
+        <a class="ghost small" href="/settings/family">家族の追加</a>
     </div>
 </header>
 
@@ -56,36 +56,6 @@ else
     {
         <div class="busy-bar" role="status" aria-live="polite">処理中…</div>
     }
-
-    <article class="card" id="family">
-        <p class="eyebrow">ご家族の追加</p>
-        <h2>LINEでお知らせを受け取る</h2>
-        <p class="muted">
-            ご家族を追加するには、ここで発行したコードを、ご本人のLINEから送っていただきます。
-            見守り隊の公式LINEアカウントを友だち追加したあと、下のボタンでコードを発行し、
-            LINEのトーク画面で「連携 123456」のように送信してください（123456の部分は発行されたコードに置き換えます）。
-            コードは発行から10分間・1回のみ有効です。
-        </p>
-
-        @if (_lineNotice is not null)
-        {
-            <p class="notice-@_lineNoticeKind">@_lineNotice</p>
-        }
-
-        @if (_lineCode is not null)
-        {
-            <div class="line-code-display">
-                <span class="line-code-value">連携 @_lineCode</span>
-                <span class="muted">有効期限: @FormatLocal(_lineCodeExpiresAtUtc) まで</span>
-            </div>
-        }
-
-        <div class="device-actions">
-            <button class="secondary-button" @onclick="GenerateLineCodeAsync" disabled="@_lineBusy">
-                連携コードを発行する
-            </button>
-        </div>
-    </article>
 
     <article class="card">
         <p class="eyebrow">接続状況</p>
@@ -305,46 +275,4 @@ else
 
     private static string FormatLocal(DateTimeOffset? utc) =>
         utc is null ? "—" : HouseholdTime.ToLocal(utc.Value).ToString("M/d HH:mm");
-
-    private string? _lineCode;
-    private DateTimeOffset? _lineCodeExpiresAtUtc;
-    private bool _lineBusy;
-    private string? _lineNotice;
-    private string _lineNoticeKind = "ok";
-
-    private async Task GenerateLineCodeAsync()
-    {
-        if (_lineBusy)
-        {
-            return;
-        }
-
-        _lineBusy = true;
-        StateHasChanged();
-
-        try
-        {
-            var generated = await LineLinkCodeService.GenerateCodeAsync(_householdId);
-            _lineCode = generated.Code;
-            _lineCodeExpiresAtUtc = generated.ExpiresAtUtc;
-            _lineNotice = "コードを発行しました。LINEのトーク画面で送信してください。";
-            _lineNoticeKind = "ok";
-        }
-        catch (Exception ex)
-        {
-            // Without this the exception tears down the Blazor circuit and the button
-            // simply appears dead -- the user gets no feedback at all. Surface the
-            // failure in place and keep the page usable.
-            Logger.LogError(ex, "LINE link code generation failed for household {HouseholdId}.", _householdId);
-            _lineCode = null;
-            _lineCodeExpiresAtUtc = null;
-            _lineNotice = $"コードを発行できませんでした（{ex.GetType().Name}）。時間をおいて再度お試しください。";
-            _lineNoticeKind = "warn";
-        }
-        finally
-        {
-            _lineBusy = false;
-            StateHasChanged();
-        }
-    }
 }

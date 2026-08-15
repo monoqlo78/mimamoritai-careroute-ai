@@ -87,6 +87,17 @@ public class Device
     /// </summary>
     public bool IsActive { get; set; } = true;
 
+    /// <summary>
+    /// Hours of unchanging draw after which the family wants to be told, or null while
+    /// they have not asked to be told about this appliance.
+    ///
+    /// Opt-in on purpose. A fridge or a router draws the same watts forever and would
+    /// raise an alert every single day; the appliances worth watching are the ones
+    /// whose stillness is unusual -- the kettle normally used by mid-morning, the
+    /// heater that normally comes on in the evening.
+    /// </summary>
+    public int? FlatPowerAlertHours { get; set; }
+
     public DateTimeOffset CreatedAtUtc { get; set; } = DateTimeOffset.UtcNow;
 
     public Household? Household { get; set; }

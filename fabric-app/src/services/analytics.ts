@@ -242,19 +242,48 @@ export function dailyActivity(buckets: ActivityRow[], maxDays = 30): ActivityPoi
 
 export interface HeatmapCell {
   hour: number;
+  /** Event count in fallback mode, or mean Wh in energy mode. */
   events: number;
+  mode: 'energy' | 'events';
 }
 
 /**
- * 24-slot histogram of when devices actually report, in the household's local
- * time (JST). This is the "living rhythm" view -- the shape is the point, so it
- * aggregates every day rather than showing one row per date.
+ * 24-slot histogram of living rhythm in the household's local time (JST).
+ * Metered homes use hourly watt-hours because plugs stay energised; demo/legacy
+ * rows with no energy fall back to event counts.
  */
 export function hourlyRhythm(buckets: ActivityRow[], utcOffsetHours = 9): HeatmapCell[] {
+  const hasEnergy = buckets.some((bucket) => toEnergy(bucket.energyWh) !== null);
   const cells: HeatmapCell[] = Array.from({ length: 24 }, (_, hour) => ({
     hour,
     events: 0,
+    mode: hasEnergy ? 'energy' : 'events',
   }));
+
+  if (hasEnergy) {
+    const offsetMs = utcOffsetHours * 3_600_000;
+    const days = Array.from({ length: 24 }, () => new Set<number>());
+
+    for (const bucket of buckets) {
+      const wh = toEnergy(bucket.energyWh);
+      if (wh === null) continue;
+
+      const start = toDate(bucket.bucketStart);
+      if (Number.isNaN(start.getTime())) continue;
+
+      const local = new Date(start.getTime() + offsetMs);
+      const hour = local.getUTCHours();
+      cells[hour].events += wh;
+      days[hour].add(
+        Date.UTC(local.getUTCFullYear(), local.getUTCMonth(), local.getUTCDate())
+      );
+    }
+
+    return cells.map((cell) => ({
+      ...cell,
+      events: days[cell.hour].size === 0 ? 0 : cell.events / days[cell.hour].size,
+    }));
+  }
 
   for (const bucket of buckets) {
     const start = toDate(bucket.bucketStart);
@@ -384,9 +413,11 @@ function toEnergy(value: string | undefined): number | null {
 }
 
 export interface DeviceSlice {
+  id: string;
   name: string;
   type: string;
   events: number;
+  latest: Date | null;
 }
 
 /** Per-device event totals, busiest first, for the contribution bars. */
@@ -395,14 +426,24 @@ export function deviceBreakdown(buckets: ActivityRow[], limit = 8): DeviceSlice[
 
   for (const bucket of buckets) {
     const name = bucket.deviceName || '(不明な機器)';
-    const slice = byDevice.get(name);
+    const key = bucket.deviceId?.trim() || `name:${name}`;
+    const start = toDate(bucket.bucketStart);
+    const latest = Number.isNaN(start.getTime()) ? null : start;
+    const slice = byDevice.get(key);
     if (slice) {
       slice.events += toInt(bucket.eventCount);
+      if (latest && (!slice.latest || latest > slice.latest)) {
+        slice.name = name;
+        slice.type = bucket.deviceType || '-';
+        slice.latest = latest;
+      }
     } else {
-      byDevice.set(name, {
+      byDevice.set(key, {
+        id: key,
         name,
         type: bucket.deviceType || '-',
         events: toInt(bucket.eventCount),
+        latest,
       });
     }
   }
@@ -433,7 +474,8 @@ export function activitySummary(buckets: ActivityRow[]): ActivitySummary {
 
   for (const bucket of buckets) {
     events += toInt(bucket.eventCount);
-    if (bucket.deviceName) devices.add(bucket.deviceName);
+    const deviceKey = bucket.deviceId?.trim() || bucket.deviceName;
+    if (deviceKey) devices.add(deviceKey);
     if (bucket.source) sources.add(bucket.source);
 
     const start = toDate(bucket.bucketStart);

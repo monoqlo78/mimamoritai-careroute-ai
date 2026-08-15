@@ -495,11 +495,14 @@ public class SwitchBotPollingCycleServiceTests
         var done = await service.PollHouseholdAsync(db.HouseholdId, provider);
         Assert.Equal("decreased", Assert.Single(done.CreatedEvents).Event.State);
 
-        // Two changes in draw, but the appliance was only switched on once.
+        // The socket was switched on once, and a second load started behind it while it
+        // stayed on. Both are somebody using an appliance, and with a plug left in the
+        // wall the second kind is the only kind that ever happens again -- so both count.
+        // The kettle finishing does not: that is the end of a use, not the start of one.
         var summary = ActivityService.Summarize(
             DateOnly.FromDateTime(clock.GetUtcNow().UtcDateTime),
             await db.Context.DeviceEvents.OrderBy(e => e.OccurredAtUtc).ToListAsync());
-        Assert.Equal(1, summary.DeviceUsageCount);
+        Assert.Equal(2, summary.DeviceUsageCount);
     }
 
     /// <summary>

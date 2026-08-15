@@ -326,7 +326,18 @@ describe('hourlyRhythm', () => {
     expect(cells).toHaveLength(24);
     // 22:00 UTC is 07:00 the next day in JST.
     expect(cells[7].events).toBe(4);
+    expect(cells[7].mode).toBe('events');
     expect(cells[22].events).toBe(0);
+  });
+
+  it('uses hourly energy when metered data is present', () => {
+    const cells = hourlyRhythm([
+      bucket({ bucketStart: new Date('2026-08-10T22:00:00.000Z'), eventCount: '4', energyWh: '12' }),
+      bucket({ bucketStart: new Date('2026-08-11T22:00:00.000Z'), eventCount: '2', energyWh: '8' }),
+    ]);
+
+    expect(cells[7].mode).toBe('energy');
+    expect(cells[7].events).toBe(10);
   });
 });
 
@@ -342,6 +353,27 @@ describe('deviceBreakdown', () => {
       ['扇風機', 8],
       ['リビング照明', 5],
     ]);
+  });
+
+  it('groups renamed buckets by device id and keeps the latest name', () => {
+    const slices = deviceBreakdown([
+      bucket({
+        deviceId: 'dev-1',
+        deviceName: 'リビングの電気',
+        bucketStart: new Date('2026-08-10T00:00:00.000Z'),
+        eventCount: '11',
+      }),
+      bucket({
+        deviceId: 'dev-1',
+        deviceName: 'プラグミニ 92',
+        bucketStart: new Date('2026-08-11T00:00:00.000Z'),
+        eventCount: '12',
+      }),
+    ]);
+
+    expect(slices).toHaveLength(1);
+    expect(slices[0].name).toBe('プラグミニ 92');
+    expect(slices[0].events).toBe(23);
   });
 });
 
@@ -363,6 +395,15 @@ describe('activitySummary', () => {
     expect(summary.days).toBe(2);
     expect(summary.sources).toEqual(['AppCommand', 'SwitchBotPoll']);
     expect(summary.from?.toISOString()).toBe('2026-08-10T00:00:00.000Z');
+  });
+
+  it('counts distinct devices by stable device id when present', () => {
+    const summary = activitySummary([
+      bucket({ deviceId: 'dev-1', deviceName: 'リビングの電気' }),
+      bucket({ deviceId: 'dev-1', deviceName: 'プラグミニ 92' }),
+    ]);
+
+    expect(summary.devices).toBe(1);
   });
 });
 

@@ -1,0 +1,139 @@
+@page "/settings/family"
+@rendermode InteractiveServer
+@using MimamoriTai.Core.Abstractions
+@using MimamoriTai.Core.Application
+@inject HouseholdAccessService HouseholdAccess
+@inject SwitchBotConnectionService ConnectionService
+@inject LineLinkCodeService LineLinkCodeService
+@inject ICurrentUserAccessor CurrentUserAccessor
+@inject ILogger<FamilySettings> Logger
+
+<PageTitle>家族の追加 / 見守り隊</PageTitle>
+
+<header class="topbar">
+    <div class="brand">
+        <span class="brand-mark" aria-hidden="true">み</span>
+        <div>
+            <h1>家族の追加</h1>
+            <p>見守りの様子をLINEで受け取るご家族を追加します</p>
+        </div>
+    </div>
+    <div class="topbar-actions">
+        <a class="ghost small" href="/">← ダッシュボードに戻る</a>
+        <a class="ghost small" href="/settings/switchbot">SwitchBot設定</a>
+    </div>
+</header>
+
+@if (_anonymous)
+{
+    <div class="notice notice-warn" role="status" aria-live="polite">
+        <span class="notice-icon">⚠</span>
+        <span>この画面を利用するにはサインインが必要です。</span>
+    </div>
+}
+else if (!_isOwner)
+{
+    <div class="notice notice-warn" role="status" aria-live="polite">
+        <span class="notice-icon">⚠</span>
+        <span>この設定を変更できるのは、ご家庭のオーナーのみです。</span>
+    </div>
+}
+else
+{
+    <article class="card" id="family">
+        <p class="eyebrow">ご家族の追加</p>
+        <h2>LINEでお知らせを受け取る</h2>
+        <p class="muted">
+            ご家族を追加するには、ここで発行したコードを、ご本人のLINEから送っていただきます。
+            見守り隊の公式LINEアカウントを友だち追加したあと、下のボタンでコードを発行し、
+            LINEのトーク画面で「連携 123456」のように送信してください（123456の部分は発行されたコードに置き換えます）。
+            コードは発行から10分間・1回のみ有効です。
+        </p>
+
+        @if (_lineNotice is not null)
+        {
+            <p class="notice-@_lineNoticeKind">@_lineNotice</p>
+        }
+
+        @if (_lineCode is not null)
+        {
+            <div class="line-code-display">
+                <span class="line-code-value">連携 @_lineCode</span>
+                <span class="muted">有効期限: @FormatLocal(_lineCodeExpiresAtUtc) まで</span>
+            </div>
+        }
+
+        <div class="device-actions">
+            <button class="secondary-button" @onclick="GenerateLineCodeAsync" disabled="@_lineBusy">
+                連携コードを発行する
+            </button>
+        </div>
+    </article>
+}
+
+@code {
+    private Guid _householdId;
+    private bool _anonymous;
+    private bool _isOwner;
+
+    private string? _lineCode;
+    private DateTimeOffset? _lineCodeExpiresAtUtc;
+    private bool _lineBusy;
+    private string? _lineNotice;
+    private string _lineNoticeKind = "ok";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var user = CurrentUserAccessor.Current;
+        if (user is null)
+        {
+            _anonymous = true;
+            return;
+        }
+
+        // Same resolution as the SwitchBot screen: the household a link code belongs to
+        // must be the caller's own Production household, never a demo one, or the code
+        // would connect a relative's LINE to seeded data.
+        _householdId = await HouseholdAccess.EnsureProductionHouseholdAsync("わが家");
+        _isOwner = await ConnectionService.IsOwnerAsync(_householdId, user.AppUserId);
+    }
+
+    private static string FormatLocal(DateTimeOffset? utc) =>
+        utc is null ? "—" : HouseholdTime.ToLocal(utc.Value).ToString("M/d HH:mm");
+
+    private async Task GenerateLineCodeAsync()
+    {
+        if (_lineBusy)
+        {
+            return;
+        }
+
+        _lineBusy = true;
+        StateHasChanged();
+
+        try
+        {
+            var generated = await LineLinkCodeService.GenerateCodeAsync(_householdId);
+            _lineCode = generated.Code;
+            _lineCodeExpiresAtUtc = generated.ExpiresAtUtc;
+            _lineNotice = "コードを発行しました。LINEのトーク画面で送信してください。";
+            _lineNoticeKind = "ok";
+        }
+        catch (Exception ex)
+        {
+            // Without this the exception tears down the Blazor circuit and the button
+            // simply appears dead -- the user gets no feedback at all. Surface the
+            // failure in place and keep the page usable.
+            Logger.LogError(ex, "LINE link code generation failed for household {HouseholdId}.", _householdId);
+            _lineCode = null;
+            _lineCodeExpiresAtUtc = null;
+            _lineNotice = $"コードを発行できませんでした（{ex.GetType().Name}）。時間をおいて再度お試しください。";
+            _lineNoticeKind = "warn";
+        }
+        finally
+        {
+            _lineBusy = false;
+            StateHasChanged();
+        }
+    }
+}

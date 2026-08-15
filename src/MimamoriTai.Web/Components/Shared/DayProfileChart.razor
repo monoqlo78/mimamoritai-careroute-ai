@@ -1,0 +1,154 @@
+@using MimamoriTai.Web.Charts
+@using G = MimamoriTai.Web.Charts.BarChartGeometry
+
+@* One day laid out across the clock: 24 bars for today, with the household's ordinary
+   day drawn over them as a line. A single figure per day says how much electricity was
+   used but not whether the day had its usual shape, and the shape is the part that
+   notices somebody who did not get up.
+
+   Same inline-SVG approach as BarChart - no charting library, no interop, prints fine -
+   and the maths stays in BarChartGeometry where it can be tested on its own. *@
+
+<figure class="bar-chart day-profile @Class">
+    @if (!string.IsNullOrWhiteSpace(Caption))
+    {
+        <figcaption>
+            <span>@Caption</span>
+            @if (!string.IsNullOrWhiteSpace(Badge))
+            {
+                <span class="bar-chart-badge @BadgeClass">@Badge</span>
+            }
+        </figcaption>
+    }
+
+    @{
+        var max = Math.Max(Hours.Count == 0 ? 0 : Hours.Max(), Usual.Count == 0 ? 0 : Usual.Max());
+        var points = Points(max);
+        var width = G.BarWidth(24);
+    }
+
+    <div class="bar-chart-plot">
+        <p class="bar-chart-scale" aria-hidden="true">
+            <span>0@(Unit)</span>
+            <span>@G.F(max)@(Unit)</span>
+        </p>
+
+        <svg viewBox="0 0 @G.F(G.ViewWidth) @G.F(G.ViewHeight)" role="img" aria-label="@AriaLabel"
+             preserveAspectRatio="none">
+            <defs>
+                <linearGradient id="@($"{_id}-bar")" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" class="bar-chart-stop-top" />
+                    <stop offset="100%" class="bar-chart-stop-bottom" />
+                </linearGradient>
+            </defs>
+
+            @foreach (var fraction in _guides)
+            {
+                var y = G.F(G.PlotBottom - ((G.PlotBottom - 2) * fraction));
+                <line x1="0" y1="@y" x2="@G.F(G.ViewWidth)" y2="@y" class="bar-chart-guide" />
+            }
+
+            @* Night is shaded rather than labelled: the family reads "that block should be
+               empty" at a glance, without having to count hours along the axis. The window
+               rolls, so the night blocks are found per bar instead of assumed to be on the left. *@
+            @for (var i = 0; i < 24; i++)
+            {
+                var clock = (StartHour + i) % 24;
+                if (clock < 6)
+                {
+                    <rect x="@G.F(G.Slot(24) * i)" y="0" width="@G.F(G.Slot(24))"
+                          height="@G.F(G.PlotBottom)" class="day-profile-night" />
+                }
+            }
+
+            <line x1="0" y1="@G.F(G.PlotBottom)" x2="@G.F(G.ViewWidth)" y2="@G.F(G.PlotBottom)"
+                  class="bar-chart-axis" />
+
+            @for (var i = 0; i < points.Count; i++)
+            {
+                var point = points[i];
+                <rect x="@G.F(G.BarX(i, 24))" y="@G.F(G.BarTop(point.Value, max))"
+                      width="@G.F(width)" height="@G.F(G.BarHeight(point.Value, max))"
+                      rx="0.6" class="@G.BarClass(point)" fill="url(#@($"{_id}-bar"))"
+                      style="--bar-index: @i">
+                    <title>@point.Label：@G.Describe(point, Unit)</title>
+                </rect>
+            }
+
+            @if (Usual.Count == 24 && Usual.Any(v => v > 0))
+            {
+                <polyline points="@G.ComparisonLine(Usual, max)" class="day-profile-usual" />
+            }
+        </svg>
+    </div>
+
+    <ul class="hour-labels" aria-hidden="true">
+        @foreach (var label in AxisLabels())
+        {
+            <li>@label</li>
+        }
+    </ul>
+
+    @if (ShowLegend)
+    {
+        <p class="day-profile-legend">
+            <span class="legend-bar" aria-hidden="true"></span>今日
+            <span class="legend-line" aria-hidden="true"></span>@UsualLabel
+        </p>
+    }
+</figure>
+
+@code {
+    /// <summary>Watt-hours per local hour today. Anything other than 24 entries is padded.</summary>
+    [Parameter, EditorRequired] public IReadOnlyList<double> Hours { get; set; } = [];
+
+    /// <summary>The ordinary day drawn over the bars. Empty hides the line.</summary>
+    [Parameter] public IReadOnlyList<double> Usual { get; set; } = [];
+
+    [Parameter] public string? Caption { get; set; }
+
+    [Parameter] public string? Badge { get; set; }
+
+    [Parameter] public string? BadgeClass { get; set; }
+
+    [Parameter] public string Unit { get; set; } = "Wh";
+
+    [Parameter] public string AriaLabel { get; set; } = "今日の電気の使いかた";
+
+    [Parameter] public string UsualLabel { get; set; } = "いつもの平均";
+
+    [Parameter] public bool ShowLegend { get; set; } = true;
+
+    /// <summary>Local hour to mark as "now", so today's unfinished bars are not read as a drop.</summary>
+    [Parameter] public int? CurrentHour { get; set; }
+
+    /// <summary>Local clock hour the leftmost bar covers. The window ends at the newest reading.</summary>
+    [Parameter] public int StartHour { get; set; }
+
+    [Parameter] public string? Class { get; set; }
+
+    private static readonly double[] _guides = [0.5, 1.0];
+
+    private readonly string _id = $"day-{Guid.NewGuid():N}";
+
+    private IReadOnlyList<string> AxisLabels() =>
+        [.. new[] { 0, 6, 12, 18, 24 }.Select(offset => $"{(StartHour + offset) % 24}時")];
+
+    private IReadOnlyList<BarChartPoint> Points(double max)
+    {
+        var points = new List<BarChartPoint>(24);
+
+        for (var i = 0; i < 24; i++)
+        {
+            var value = i < Hours.Count ? Hours[i] : 0;
+            var clock = (StartHour + i) % 24;
+            points.Add(new BarChartPoint(
+                $"{clock}時台",
+                value,
+                CurrentHour == clock,
+                $"{G.F(Math.Round(value, 2))}{Unit}"));
+        }
+
+        return points;
+    }
+}

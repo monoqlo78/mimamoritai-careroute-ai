@@ -42,6 +42,7 @@ public sealed record DashboardModel(
     IReadOnlyList<FeedItem> Feed,
     DailyActivity Today,
     IReadOnlyList<DailyActivity> Recent,
+    HourlyEnergyProfile HourlyEnergy,
     string? LastResolvedModel,
     IntegrationStatus Integrations);
 
@@ -85,6 +86,7 @@ public sealed class DashboardService(
 
         var activity = new ActivityService(db);
         var recent = await activity.GetRecentAsync(householdId, 14, ct);
+        var hourly = await activity.GetHourlyEnergyAsync(householdId, 14, ct);
         var todayDate = HouseholdTime.LocalDate(clock.GetUtcNow());
         var today = recent.LastOrDefault(d => d.Date == todayDate) ?? new DailyActivity(todayDate, null, null, 0, 0, 0);
         var risk = RiskAssessmentService.Evaluate(today, recent, HouseholdTime.LocalTime(clock.GetUtcNow()));
@@ -190,6 +192,7 @@ public sealed class DashboardService(
             feed,
             today,
             recent,
+            hourly,
             lastModel,
             integrations);
     }

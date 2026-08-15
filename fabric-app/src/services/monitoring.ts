@@ -55,6 +55,7 @@ export interface ActivityRow {
   id: string;
   householdId: string;
   householdName: string;
+  deviceId?: string;
   deviceName: string;
   deviceType: string;
   bucketStart: Date;
@@ -126,6 +127,7 @@ const ACTIVITY_FIELDS = [
   'id',
   'householdId',
   'householdName',
+  'deviceId',
   'deviceName',
   'deviceType',
   'bucketStart',
@@ -228,9 +230,9 @@ const SAMPLE_ALERTS: AlertRow[] = [
 const SAMPLE_ACTIVITY: ActivityRow[] = (() => {
   const rows: ActivityRow[] = [];
   const devices = [
-    { name: 'リビング照明', type: 'Light' },
-    { name: '寝室照明', type: 'Light' },
-    { name: '扇風機', type: 'Fan' },
+    { id: 'sample-living-light', name: 'リビング照明', type: 'Light' },
+    { id: 'sample-bedroom-light', name: '寝室照明', type: 'Light' },
+    { id: 'sample-fan', name: '扇風機', type: 'Fan' },
   ];
   // Rough diurnal weighting: quiet at night, busy morning / evening.
   const weights = [
@@ -250,6 +252,7 @@ const SAMPLE_ACTIVITY: ActivityRow[] = (() => {
         id: `sample-${day}-${hour}`,
         householdId: '22222222-2222-2222-2222-222222222222',
         householdName: '田中家',
+        deviceId: device.id,
         deviceName: device.name,
         deviceType: device.type,
         bucketStart: bucket,

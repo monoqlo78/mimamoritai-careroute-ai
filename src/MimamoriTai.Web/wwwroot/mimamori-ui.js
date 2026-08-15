@@ -11,6 +11,24 @@ window.mimamoriUi = {
         const expires = new Date(Date.now() + maxAgeDays * 86400000).toUTCString();
         document.cookie = name + '=' + encodeURIComponent(value) + '; expires=' + expires + '; path=/; SameSite=Lax';
     },
+    isInLineApp: function () {
+        // 「LINEへ戻る」はLINEアプリ内ブラウザ(LIFF)から開いたときだけ意味があります。
+        // PCのブラウザで押しても戻り先は無く、LINEの案内ページに飛ぶだけなので、
+        // ここで判定して導線を出し分けます。LINEのUAは "Line/" を含みます。
+        try {
+            const ua = navigator.userAgent || '';
+            if (/\bLine\//i.test(ua)) {
+                return true;
+            }
+            // LIFFのSDKが読み込まれている場合はそちらを信用します。
+            if (window.liff && typeof window.liff.isInClient === 'function') {
+                return window.liff.isInClient();
+            }
+            return false;
+        } catch (e) {
+            return false;
+        }
+    },
     initMascot: async function () {
         // 3Dは装飾なので、失敗しても画面は止めない。ただし黙って静止画に
         // 落ちると「アニメーションが壊れている」と見分けがつかず、原因を

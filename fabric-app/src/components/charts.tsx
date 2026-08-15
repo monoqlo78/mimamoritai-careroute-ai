@@ -427,6 +427,10 @@ export function ActivityArea({ points }: { points: ActivityPoint[] }) {
 /** 24-slot bar histogram of when the home is active, in JST. */
 export function RhythmHeatmap({ cells }: { cells: HeatmapCell[] }) {
   const max = Math.max(1, ...cells.map((cell) => cell.events));
+  const formatValue = (cell: HeatmapCell) =>
+    cell.mode === 'energy'
+      ? `${cell.events.toFixed(cell.events >= 10 ? 0 : 1)} Wh/日`
+      : `${cell.events} 件`;
 
   return (
     <div>
@@ -444,7 +448,7 @@ export function RhythmHeatmap({ cells }: { cells: HeatmapCell[] }) {
                       ? '#f1f5f9'
                       : `linear-gradient(180deg, hsl(${210 - ratio * 170} 90% ${72 - ratio * 26}%), hsl(${210 - ratio * 170} 85% ${58 - ratio * 18}%))`,
                 }}
-                title={`${cell.hour}時台: ${cell.events} 件`}
+                title={`${cell.hour}時台: ${formatValue(cell)}`}
               />
             </div>
           );
@@ -473,7 +477,7 @@ export function DeviceBreakdown({ slices }: { slices: DeviceSlice[] }) {
   return (
     <div className="space-y-2.5">
       {slices.map((slice) => (
-        <div key={slice.name} className="space-y-1">
+        <div key={slice.id} className="space-y-1">
           <div className="flex items-baseline justify-between text-sm">
             <span className="font-medium text-gray-800">{slice.name}</span>
             <span className="text-xs text-gray-500">

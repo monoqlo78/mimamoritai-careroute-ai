@@ -365,8 +365,8 @@ public class AssistantKnowledgeTests
     [Theory]
     [InlineData("SwitchBot設定", "src/MimamoriTai.Web/Components/Pages/Home.razor")]
     [InlineData("家族の追加", "src/MimamoriTai.Web/Components/Pages/Home.razor")]
-    [InlineData("ご家族の追加", "src/MimamoriTai.Web/Components/Pages/SwitchBotSettings.razor")]
-    [InlineData("連携コードを発行する", "src/MimamoriTai.Web/Components/Pages/SwitchBotSettings.razor")]
+    [InlineData("ご家族の追加", "src/MimamoriTai.Web/Components/Pages/FamilySettings.razor")]
+    [InlineData("連携コードを発行する", "src/MimamoriTai.Web/Components/Pages/FamilySettings.razor")]
     public void Screen_Labels_Quoted_By_The_Knowledge_Base_Still_Exist_On_The_Screen(
         string label, string uiPath)
     {

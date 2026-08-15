@@ -48,7 +48,7 @@ public static class DeviceSyncEndpoints
             dataSourceContext.Mode = household.DataSourceMode;
             dataSourceContext.HouseholdId = household.Id;
 
-            var result = await sync.SyncAsync(householdId.Value, ct);
+            var result = await sync.SyncAsync(householdId.Value, ct: ct);
 
             return Results.Ok(new
             {

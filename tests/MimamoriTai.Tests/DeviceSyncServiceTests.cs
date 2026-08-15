@@ -180,4 +180,58 @@ public class DeviceSyncServiceTests
         Assert.Equal(1, result.Updated);
         Assert.True(db.Context.Devices.Single().IsActive);
     }
+
+    [Fact]
+    public async Task SyncAsync_With_DeactivateMissing_False_Still_Adds_New_Devices()
+    {
+        // This is the mode SwitchBotPollingBackgroundService's periodic auto-discovery
+        // uses: a second Plug Mini added on the SwitchBot side must still show up as a
+        // new Devices row without anyone pressing "今すぐ同期する".
+        using var db = await new TestDb().SeedAsync();
+        var provider = new FakeDeviceProvider
+        {
+            Devices = [new ProviderDevice("sb-plug-1", "プラグミニ", DeviceType.Fan, "リビング")]
+        };
+        var sync = Create(db, provider);
+        await sync.SyncAsync(db.HouseholdId, deactivateMissing: false);
+
+        provider.Devices =
+        [
+            new ProviderDevice("sb-plug-1", "プラグミニ", DeviceType.Fan, "リビング"),
+            new ProviderDevice("sb-plug-2", "プラグミニ76", DeviceType.Fan, "リビング")
+        ];
+        var result = await sync.SyncAsync(db.HouseholdId, deactivateMissing: false);
+
+        Assert.Equal(1, result.Added);
+        Assert.Equal(2, db.Context.Devices.Count());
+        Assert.All(db.Context.Devices, d => Assert.True(d.IsActive));
+    }
+
+    [Fact]
+    public async Task SyncAsync_With_DeactivateMissing_False_Never_Deactivates_A_Vanished_Device()
+    {
+        // Auto-discovery must not flip IsActive=false on its own: one bad/incomplete
+        // GET /v1.1/devices response could otherwise hide a real device from the
+        // dashboard/alerts until an operator investigates. Real removal stays manual
+        // (the "今すぐ同期する" button, which keeps deactivateMissing at its true default).
+        using var db = await new TestDb().SeedAsync();
+        var provider = new FakeDeviceProvider
+        {
+            Devices =
+            [
+                new ProviderDevice("sb-light-1", "リビング照明", DeviceType.Light, "リビング"),
+                new ProviderDevice("sb-fan-1", "扇風機", DeviceType.Fan, "リビング")
+            ]
+        };
+        var sync = Create(db, provider);
+        await sync.SyncAsync(db.HouseholdId, deactivateMissing: false);
+
+        // The fan is momentarily missing from this response (e.g. a transient API hiccup).
+        provider.Devices = [new ProviderDevice("sb-light-1", "リビング照明", DeviceType.Light, "リビング")];
+        var result = await sync.SyncAsync(db.HouseholdId, deactivateMissing: false);
+
+        Assert.Equal(0, result.Deactivated);
+        var fan = db.Context.Devices.Single(d => d.ExternalDeviceId == "sb-fan-1");
+        Assert.True(fan.IsActive);
+    }
 }

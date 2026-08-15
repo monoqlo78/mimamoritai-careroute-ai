@@ -1,17 +1,13 @@
-# 離れて暮らす高齢の家族を見守るサービスを作った ― 本人は「エアコンつけて」、家族は LINE で様子がわかる（Azure + Microsoft Fabric + OrcaRouter）
-
 > ハッカソン提出作品「**CareRoute AI / 見守り隊**」の開発記録です。
 > 足腰が弱ってくると、リモコンを取りに行くこと自体が一仕事になります。本人は**移動せずに話しかけるだけ**で家電を操作でき、離れて暮らす家族はその様子から**カメラなしで**生活リズムを把握できる、というサービスを作りました。
->
-> Qiita 公開版: https://qiita.com/monoqlo78/items/27ea5bfa760bd8e3c3b7
 
 **まず、動いているところから。**
 
-![運用コンソール ― 家の中の「いま」が流れていく](./images/dataflow.gif)
+![運用コンソール ― 家の中の「いま」が流れていく](https://raw.githubusercontent.com/monoqlo78/mimamoritai-careroute-ai/main/docs/images/dataflow.gif)
 
 家じゅうのデバイスから届いたイベントが、Azure SQL と Microsoft Fabric へ流れていく様子です。WebGL で描いていて、**映っている数字はダミーではなく、その時点の実データ**です。下段に「同期ジョブ 停止中」と出ているのも演出ではなく、本当に止まっている状態です（3章）。
 
-![マスコット「ミマモ」](./images/mascot.gif)
+![マスコット「ミマモ」](https://raw.githubusercontent.com/monoqlo78/mimamoritai-careroute-ai/main/docs/images/mascot.gif)
 
 ダッシュボードに住んでいる3Dマスコットの「ミマモ」です。**話しかけると反応します**。これも既製の素材ではなく、**自作の MCP サーバー**で Blender を動かして自分でモデリングしました（6章）。
 
@@ -21,7 +17,7 @@
 
 LLM は今回のハッカソンで提供された **[OrcaRouter](https://www.orcarouter.ai/)** を使いました。OpenAI 互換のエンドポイントに投げるだけで、その時いちばん都合のいいモデルへ自動で振り分けてくれます。**モデルを選ばなくていいのは本当に楽でした**。ただ、楽なぶんだけ「自動で選ばれるからこそ壊れる」場面にも当たりました。そこをどう畳んだかは 3-1 に書いています。
 
-![トップ画面](./images/01-top.png)
+![トップ画面](https://raw.githubusercontent.com/monoqlo78/mimamoritai-careroute-ai/main/docs/images/01-top.png)
 
 ---
 
@@ -37,7 +33,7 @@ LLM は今回のハッカソンで提供された **[OrcaRouter](https://www.orc
 
 文字とボタンを大きくした専用画面（`/one-touch`）も用意しました。見守る側と見守られる側では、必要な情報も操作量もまったく違うためです。
 
-![かんたん操作画面](./images/06-one-touch.png)
+![かんたん操作画面](https://raw.githubusercontent.com/monoqlo78/mimamoritai-careroute-ai/main/docs/images/06-one-touch.png)
 
 ### 家族側：カメラを付けずに様子がわかる
 
@@ -76,7 +72,7 @@ Bot：今朝6時40分に寝室の照明が点いています。
 
 実際の LINE 画面がこれです。
 
-![LINE 今日の様子](images/evidence/line-04-today.png)
+![LINE 今日の様子](https://raw.githubusercontent.com/monoqlo78/mimamoritai-careroute-ai/main/docs/images/evidence/line-04-today.png)
 
 「今日の様子」を押すと、その日の家電の使われ方をまとめて返します。
 このスクリーンショットでは、まだその日の記録がないので
@@ -84,7 +80,7 @@ Bot：今朝6時40分に寝室の照明が点いています。
 
 ボタンを押すだけでも使えるようにしてあります。
 
-![LINE 助けて](images/evidence/line-01-help.png)
+![LINE 助けて](https://raw.githubusercontent.com/monoqlo78/mimamoritai-careroute-ai/main/docs/images/evidence/line-01-help.png)
 
 「助けて」には必ず **119番の案内**が付きます。
 このサービスは緊急通報の代わりにはならない、という立場を最初に示しています。
@@ -144,14 +140,14 @@ flowchart LR
 
 実際に本番環境で「ストーブつけて」と入力した結果がこれです。
 
-![危険機器のON操作にガードがかかる](./images/02-guardrail.png)
+![危険機器のON操作にガードがかかる](https://raw.githubusercontent.com/monoqlo78/mimamoritai-careroute-ai/main/docs/images/02-guardrail.png)
 
 **(4) ON と OFF を非対称にする。**
 `Guarded` でも `Restricted` でも、**OFF は常に通します**。「消す」は安全性を高める方向の操作だからです。ここを対称にすると「危ないから何も操作できない」になって使い物になりません。
 
 同じストーブに「消して」と言うと、確認なしで受理されます。
 
-![OFFは受理される](./images/04-turn-off-allowed.png)
+![OFFは受理される](https://raw.githubusercontent.com/monoqlo78/mimamoritai-careroute-ai/main/docs/images/04-turn-off-allowed.png)
 
 機器カードにも「遠隔でONにするときは、周囲の安全を確認します」と出しています。**ガードの理由が使う人に見えないと、ただの故障に見える**ためです。
 
@@ -163,7 +159,7 @@ flowchart LR
 LINE 上でも同じです。自由文の「リビングの電気を付けれる？」に対して、
 **必ず「よろしいですか？」を1回挟みます**。
 
-![LINE 操作の確認](images/evidence/line-10-confirm.png)
+![LINE 操作の確認](https://raw.githubusercontent.com/monoqlo78/mimamoritai-careroute-ai/main/docs/images/evidence/line-10-confirm.png)
 
 「はい」を受け取ってはじめて実行し、実行後に結果を返します。
 この確認は AI の確信度が高くても省略されません。
@@ -172,7 +168,7 @@ LINE 上でも同じです。自由文の「リビングの電気を付けれる
 **(4) 権限がないときは、枠ごと出さない。**
 同じ考え方を管理画面にも通しました。全世帯の状況を見る `/admin` は、サインインが構成されている環境では、許可リストに識別子が載っている利用者だけが中身を見られます。リストが空なら誰も一致しません。未許可のときは、画面の枠だけ出してデータを空にするのではなく、**そもそも読み込み処理を走らせずに `null` を返して拒否**します。同じ画面を出すAPIも、存在自体を答えないよう 404 を返します。
 
-![運用コンソールの拒否画面](./images/evidence/prod-03-admin-denied.png)
+![運用コンソールの拒否画面](https://raw.githubusercontent.com/monoqlo78/mimamoritai-careroute-ai/main/docs/images/evidence/prod-03-admin-denied.png)
 
 ---
 
@@ -208,7 +204,7 @@ flowchart TB
 
 図にするとこうですが、この流れは運用コンソールの中でそのまま動いています。数字はダミーではなく、その時点の実データです。
 
-![データフロー（運用コンソール）](./images/dataflow.gif)
+![データフロー（運用コンソール）](https://raw.githubusercontent.com/monoqlo78/mimamoritai-careroute-ai/main/docs/images/dataflow.gif)
 
 冒頭にも貼ったキャプチャですが、下段の「同期ジョブ 停止中」「Fabric SQL Database 接続不可」は演出ではありません。**止まっていることが一目で見える**という点だけは、今回いちばん役に立った画面かもしれません（なぜ止まるのかは4章で書きます）。
 
@@ -275,7 +271,7 @@ if (fabric.IsConfigured && plan.Scope == QueryScope.Analysis)
 
 蓄積したデータは「いつもと比べてどうか」に変換して見せています。絶対値ではなく**平常時との差**にしたのは、そもそも「普通」が人によって違うからです。
 
-![直近14日間の推移](./images/05-trends.png)
+![直近14日間の推移](https://raw.githubusercontent.com/monoqlo78/mimamoritai-careroute-ai/main/docs/images/05-trends.png)
 
 ### 3-1. OrcaRouter ― 自動ルーティングと「締め切り」をどう両立させたか
 
@@ -522,7 +518,7 @@ Event Hub は受け取っています。でも Eventhouse に着きません。F
 
 フォールバックで着いた分は「送信済み」として扱います。実際に Eventhouse に届いているので、再送の対象にする理由がないからです。両方失敗したときだけ、両方の理由を残して未送信のままにし、次の周期で再試行します。
 
-![Eventstream の宛先](images/evidence/fabric-06-eventstream.png)
+![Eventstream の宛先](https://raw.githubusercontent.com/monoqlo78/mimamoritai-careroute-ai/main/docs/images/evidence/fabric-06-eventstream.png)
 
 裏を返すと、**この経路が止まっている間も見守り自体は動いていました**。
 主経路を Azure SQL に置き、Fabric は分析用の副経路にしていたためです。
@@ -619,7 +615,7 @@ else { <div data-mascot-model="..."><canvas></canvas></div> }
 
 画面の中では、こんなふうに動いています。首をかしげて、まばたきして、頭の上のハートが少し遅れて揺れます。
 
-![マスコット「ミマモ」](./images/mascot.gif)
+![マスコット「ミマモ」](https://raw.githubusercontent.com/monoqlo78/mimamoritai-careroute-ai/main/docs/images/mascot.gif)
 
 「いつもどおり」と文字で書くだけより、この子が普通にしているほうが安心する、というのが作ってみての実感でした。逆に異常時は表情も変わります。
 

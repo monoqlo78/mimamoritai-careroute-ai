@@ -16,12 +16,17 @@ Fabric ポータルの **Data Agent → セットアップ** に貼り付ける�
 
 | 観測された誤答 | 原因 | ここでの対策 |
 | --- | --- | --- |
-| 「最新のデータは 2026 年 8 月 8 日 23 時 54 分（JST）まで」と答えた。実際には同時刻の 3 分前まで届いていた | `occurredAtUtc` は UTC。それを JST と読み替えずに答えた。さらに `MAX()` を取らず、たまたま拾った行を最新と断定した | 手順に「全時刻は UTC」「最新は必ず `MAX(occurredAtUtc)` を実行して求める」を明記し、クエリ例の 1 本目をそれにした |
-| 「リビングの照明」「寝室の照明」「リビングの扇風機」を実機として説明した | これらはデモ用シードデータ。本番の実機は SwitchBot プラグミニ 2 台だけ。両者が同じテーブルに同居している | `source` 列でデモと本番を切り分ける規則を手順に書き、クエリ例をすべて `source <> 'Seed'` にした |
-| 「クエリの例」欄に警告が出ていた | 手順の文中で列名を `OccurredAtUtc` / `HouseholdId` と PascalCase で書いていたが、Lakehouse 側の実際の列は camelCase | 手順に実際の列名を型つきで列挙した |
+| 「最新のデータは 2026 年 8 月 8 日 23 時 54 分（JST）まで」と答えた。実際には同時刻の 3 分前まで届いていた | `occurredAtUtc` は UTC。それを JST と読み替えずに答えた。さらに `MAX()` を取らず、たまたま拾った行を最新と断定した | 手順に「全時刻は UTC」「最新は必ず `MAX()` を実行して求める」を明記し、クエリ例の 1 本目をそれにした |
+| 「リビングの照明」「寝室の照明」「リビングの扇風機」を実機として説明した | これらはデモ用シードデータ。本番の実機は SwitchBot プラグミニ 2 台だけ。両者が同じテーブルに同居している | `householdId` でデモと本番を切り分ける規則を手順に書き、クエリ例をすべて世帯で絞る形にした |
+| 「クエリの例」欄に警告が出ていた | 登録済みの例が `OccurredAtUtc` / `DeviceName` と PascalCase で書かれていたが、Lakehouse の実列は camelCase。実行すると `Invalid column name 'OccurredAtUtc'` で落ちる | 手順に実際の列名を型つきで列挙し、クエリ例を実列名で書き直した |
+
+さらに、調べて分かった落とし穴が 2 つある。どちらも手順に明記しないと誤答する。
+
+- **`occurredAtUtc` は `varchar(8000)` であって日付型ではない。** Eventstream 経由で JSON 文字列のまま着地するため。日付として扱うには `CAST(occurredAtUtc AS datetime2)` が要る。`powerWatts` も同じく varchar なので、数値として使うなら `TRY_CAST(... AS float)`。
+- **`source` 列だけではデモと本番を分けられない。** `AppCommand` は両方の世帯に出現する（デモ世帯でも画面から操作すれば `AppCommand` になる）。切り分けは `householdId` で行う。
 
 列名が camelCase なのは、アプリが Eventstream へ送る JSON のプロパティ名がそのまま Lakehouse の列になるため
-（`src/MimamoriTai.Infrastructure/Fabric/EventHubEventStreamPublisher.cs` L135-149）。
+（`src/MimamoriTai.Infrastructure/Fabric/EventHubEventStreamPublisher.cs` L135-149）。Eventhouse 側は PascalCase かつ `OccurredAtUtc` が `datetime` 型なので、**2 つを混同しないこと**。Data Agent が読むのは Lakehouse のほう。
 
 ---
 
@@ -51,74 +56,72 @@ Rules you must follow:
 
 ```text
 Smart-home telemetry from the 見守り隊 elder-care service, landed in OneLake from Eventstream.
-DeviceEvents has one row per appliance power state change (on/off) for every monitored household.
-SwitchBotPlugReadings has periodic electrical readings (voltage, current, energy) from SwitchBot Plug Mini devices.
-Both tables mix a seeded demo household with the real production household; they must be separated
-before answering. All timestamps are UTC.
+dbo.DeviceEvents is the only table here, and it has one row per appliance power state change.
+It mixes seeded demo households with the real production household; they must be separated by
+householdId before answering. All timestamps are UTC and are stored as text, not as dates.
 ```
 
 ## 3. データ ソースの手順
 
 ```text
 TIME ZONE
-All timestamp columns are UTC. The users are in Japan. Always add 9 hours before showing a time or a
-date, and label it JST. DATEADD(hour, 9, occurredAtUtc) converts to JST. A row stamped
-2026-08-14T22:23:59Z happened at 2026-08-15 07:23:59 JST, which is the next calendar day in Japan.
-Never present a UTC value as if it were local time, and never decide "the data stops on day X" from a
-raw UTC date.
+All timestamp values are UTC. The users are in Japan. Always add 9 hours before showing a time or a
+date, and label it JST. A row stamped 2026-08-14T22:23:59Z happened at 2026-08-15 07:23:59 JST, which
+is the next calendar day in Japan. Never present a UTC value as if it were local time, and never decide
+"the data stops on day X" from a raw UTC date.
+
+occurredAtUtc is stored as varchar, not as a date type, because it lands from Eventstream as an ISO
+8601 string. Cast it before doing any date arithmetic or comparison:
+  CAST(occurredAtUtc AS datetime2)                        -- as UTC
+  DATEADD(hour, 9, CAST(occurredAtUtc AS datetime2))      -- as JST
+Sorting or comparing occurredAtUtc as text happens to work because ISO 8601 sorts correctly, but
+DATEADD and DATEDIFF do not, so always cast.
 
 FRESHNESS
 When asked what the newest data is, or whether data is still arriving, run
-SELECT MAX(occurredAtUtc) and convert the result to JST. Do not infer freshness from rows you happened
-to read for another question, and do not reuse a date from earlier in the conversation. Telemetry
-arrives in batches roughly every 5 minutes, so the newest row is normally a few minutes old.
-If a time-filtered query returns no rows, say that no data matched, then report the actual MAX so the
-user can see how far behind it is.
+SELECT MAX(CAST(occurredAtUtc AS datetime2)) and convert the result to JST. Do not infer freshness from
+rows you happened to read for another question, and do not reuse a date from earlier in the
+conversation. Telemetry arrives in batches roughly every 5 minutes, so the newest row is normally a few
+minutes old. If a time-filtered query returns no rows, say that no data matched, then report the actual
+MAX so the user can see how far behind it is.
 
 DEMO VS PRODUCTION
-Both households live in the same tables. Tell them apart with the source column, never by household name.
-  source = 'Seed'                                        -> seeded demo data, not a real home
-  source IN ('SwitchBotPoll','SwitchBotWebhook','AppCommand') -> the real production household
-  source IN ('Mock','Simulator')                         -> test fixtures, not a real home
-Unless the user explicitly asks about the demo, filter with source <> 'Seed' and answer only about the
-real household. If a question would mix the two, answer for production and say you excluded demo data.
-The real household currently has two SwitchBot Plug Mini devices. The demo household has lights and a
-fan; if you find yourself describing a "リビングの照明" or "リビングの扇風機", you are reading demo rows.
+Two households share these tables and they must not be mixed.
+  householdId = '18bab55f-27d9-4288-8ea2-5f94af97f5bc'  -> "わが家", the real production home.
+                Two SwitchBot Plug Mini devices, named プラグミニ76 and プラグミニ92.
+  householdId = 'd6236dd2-c706-4fb6-8384-3fb74af31df2'  -> "見守り隊デモ世帯", seeded demo data.
+                Lights and a fan. Not a real home.
+Do NOT try to tell them apart using the source column. source='Seed' is demo-only, but 'AppCommand'
+appears in both households, so filtering on source alone leaks demo rows into production answers.
+Unless the user explicitly asks about the demo, filter on the production householdId and say that you
+answered for the real household only. If you find yourself describing a "リビングの照明" or a
+"リビングの扇風機", you are reading demo rows and must re-filter.
 
-TABLE DeviceEvents (one row per power state change)
-  eventId      string   unique id of the event
-  householdId  string   GUID of the household
-  deviceId     string   GUID of the appliance
-  deviceName   string   display name, e.g. プラグミニ76
-  room         string   room label
-  deviceType   string   appliance category
-  eventType    string   'PowerState' (observed state) or 'PowerChange' (a change was detected)
-  state        string   'on', 'off', or 'unknown'
-  powerWatts   double   instantaneous watts, may be null
-  source       string   see DEMO VS PRODUCTION above
-  occurredAtUtc timestamp  when it happened, UTC
+TABLE dbo.DeviceEvents (one row per power state change)
+  eventId       varchar   unique id of the event
+  householdId   varchar   GUID of the household, see DEMO VS PRODUCTION above
+  deviceId      varchar   GUID of the appliance -- group by this, never by deviceName,
+                          because an appliance can be renamed and would then split into two groups
+  deviceName    varchar   current display name, e.g. プラグミニ76
+  room          varchar   room label
+  deviceType    varchar   appliance category, e.g. Plug, Light, Fan
+  eventType     varchar   'PowerState' for real activity. 'connection_verify' is a plumbing
+                          health check, not activity -- always exclude it.
+  state         varchar   'on' or 'off'. 'active' appears only on connection_verify rows.
+  powerWatts    varchar   instantaneous watts as text; use TRY_CAST(powerWatts AS float)
+  source        varchar   'SwitchBotPoll', 'SwitchBotWebhook', 'AppCommand', 'Seed', 'Simulator', 'Test'
+  occurredAtUtc varchar   ISO 8601 UTC timestamp as text; cast before use, see TIME ZONE above
 
-TABLE SwitchBotPlugReadings (periodic electrical readings, only for Plug Mini devices)
-  readingId         string  unique id of the reading
-  householdId       string  GUID of the household
-  deviceId          string  GUID of the appliance
-  deviceName        string  display name
-  room              string  room label
-  voltageV          double  volts
-  currentMa         double  milliamps
-  dailyEnergyWh     double  cumulative watt-hours so far today, resets each day
-  usageMinutesToday int     minutes powered so far today
-  approxWatts       double  approximate watts
-  occurredAtUtc     timestamp  when it was read, UTC
+Columns named EventEnqueuedUtcTime, EventProcessedUtcTime and PartitionId are added by Eventstream and
+describe pipeline plumbing, not the home. Ignore them and never present them as activity times.
 
-Column names are camelCase exactly as written above. Columns named EventEnqueuedUtcTime,
-EventProcessedUtcTime and PartitionId are added by Eventstream and describe pipeline plumbing, not the
-home; ignore them and never present them to the user as activity times.
+Column names are camelCase exactly as written above. There is a separate Eventhouse copy of this data
+that uses PascalCase (OccurredAtUtc, DeviceName, ...) -- those names do not exist here and will fail
+with "Invalid column name".
 
 COUNTING USAGE
-"How many times was it used today" means the number of PowerState rows with state='on' on that JST
-calendar day. Do not count 'off' rows, and do not count PowerChange rows, or you will double count.
-dailyEnergyWh is cumulative within a day, so take MAX per device per JST day, never SUM.
+"How many times was it used today" means the number of rows with eventType='PowerState' and state='on'
+on that JST calendar day. Do not count 'off' rows, or you will double count.
 ```
 
 ## 4. クエリの例
@@ -129,12 +132,14 @@ dailyEnergyWh is cumulative within a day, so take MAX per device per JST day, ne
 
 ```sql
 SELECT
-    MAX(occurredAtUtc)                  AS latestUtc,
-    DATEADD(hour, 9, MAX(occurredAtUtc)) AS latestJst,
-    COUNT(*)                            AS rowCount
-FROM DeviceEvents
-WHERE source <> 'Seed';
+    MAX(CAST(occurredAtUtc AS datetime2))                   AS latestUtc,
+    DATEADD(hour, 9, MAX(CAST(occurredAtUtc AS datetime2))) AS latestJst,
+    COUNT(*)                                                AS [rowCount]
+FROM dbo.DeviceEvents
+WHERE householdId = '18bab55f-27d9-4288-8ea2-5f94af97f5bc';
 ```
+
+`rowCount` は予約語なので `[]` で囲まないと `Incorrect syntax near the keyword 'rowCount'` になる。
 
 ### 今日は何回機器を使いましたか
 
@@ -142,11 +147,11 @@ WHERE source <> 'Seed';
 SELECT
     deviceName,
     COUNT(*) AS turnedOnCount
-FROM DeviceEvents
+FROM dbo.DeviceEvents
 WHERE eventType = 'PowerState'
   AND state = 'on'
-  AND source <> 'Seed'
-  AND CAST(DATEADD(hour, 9, occurredAtUtc) AS date)
+  AND householdId = '18bab55f-27d9-4288-8ea2-5f94af97f5bc'
+  AND CAST(DATEADD(hour, 9, CAST(occurredAtUtc AS datetime2)) AS date)
       = CAST(DATEADD(hour, 9, SYSUTCDATETIME()) AS date)
 GROUP BY deviceName
 ORDER BY turnedOnCount DESC;
@@ -156,12 +161,12 @@ ORDER BY turnedOnCount DESC;
 
 ```sql
 SELECT
-    MIN(DATEADD(hour, 9, occurredAtUtc)) AS firstActivityJst
-FROM DeviceEvents
+    MIN(DATEADD(hour, 9, CAST(occurredAtUtc AS datetime2))) AS firstActivityJst
+FROM dbo.DeviceEvents
 WHERE eventType = 'PowerState'
   AND state = 'on'
-  AND source <> 'Seed'
-  AND CAST(DATEADD(hour, 9, occurredAtUtc) AS date)
+  AND householdId = '18bab55f-27d9-4288-8ea2-5f94af97f5bc'
+  AND CAST(DATEADD(hour, 9, CAST(occurredAtUtc AS datetime2)) AS date)
       = CAST(DATEADD(hour, 9, SYSUTCDATETIME()) AS date);
 ```
 
@@ -169,46 +174,48 @@ WHERE eventType = 'PowerState'
 
 ```sql
 SELECT
-    DATEADD(hour, 9, occurredAtUtc) AS occurredAtJst,
+    DATEADD(hour, 9, CAST(occurredAtUtc AS datetime2)) AS occurredAtJst,
     deviceName,
     room,
     state,
-    powerWatts
-FROM DeviceEvents
+    TRY_CAST(powerWatts AS float) AS watts
+FROM dbo.DeviceEvents
 WHERE eventType = 'PowerState'
-  AND source <> 'Seed'
-  AND occurredAtUtc >= DATEADD(hour, -24, SYSUTCDATETIME())
-ORDER BY occurredAtUtc DESC;
+  AND householdId = '18bab55f-27d9-4288-8ea2-5f94af97f5bc'
+  AND CAST(occurredAtUtc AS datetime2) >= DATEADD(hour, -24, SYSUTCDATETIME())
+ORDER BY CAST(occurredAtUtc AS datetime2) DESC;
 ```
 
-### 直近 7 日間の使用電力量の推移を教えてください
+### 使用電力量について聞かれたら
+
+このデータソースには**電力量のテーブルが無い**。`dbo.DeviceEvents` の `powerWatts` はイベントが起きた瞬間の値であって積算ではないので、これを足し合わせて Wh を名乗ってはいけない。
+
+そのときどきの消費電力（W）なら答えられる：
 
 ```sql
 SELECT
-    CAST(DATEADD(hour, 9, occurredAtUtc) AS date) AS dayJst,
     deviceName,
-    MAX(dailyEnergyWh)     AS energyWh,
-    MAX(usageMinutesToday) AS usageMinutes
-FROM SwitchBotPlugReadings
-WHERE occurredAtUtc >= DATEADD(day, -7, SYSUTCDATETIME())
-GROUP BY CAST(DATEADD(hour, 9, occurredAtUtc) AS date), deviceName
-ORDER BY dayJst DESC, deviceName;
+    MAX(TRY_CAST(powerWatts AS float)) AS peakWatts,
+    AVG(TRY_CAST(powerWatts AS float)) AS avgWatts
+FROM dbo.DeviceEvents
+WHERE householdId = '18bab55f-27d9-4288-8ea2-5f94af97f5bc'
+  AND powerWatts IS NOT NULL
+  AND CAST(occurredAtUtc AS datetime2) >= DATEADD(day, -7, SYSUTCDATETIME())
+GROUP BY deviceName;
 ```
-
-`dailyEnergyWh` はその日の累計なので、日ごとに `MAX` を取る。`SUM` にすると読み取り回数だけ多重計上される。
 
 ### いつもと違うところはありますか（時間帯別の傾向）
 
 ```sql
 SELECT
-    DATEPART(hour, DATEADD(hour, 9, occurredAtUtc)) AS hourJst,
-    COUNT(*)                                        AS turnedOnCount
-FROM DeviceEvents
+    DATEPART(hour, DATEADD(hour, 9, CAST(occurredAtUtc AS datetime2))) AS hourJst,
+    COUNT(*)                                                           AS turnedOnCount
+FROM dbo.DeviceEvents
 WHERE eventType = 'PowerState'
   AND state = 'on'
-  AND source <> 'Seed'
-  AND occurredAtUtc >= DATEADD(day, -14, SYSUTCDATETIME())
-GROUP BY DATEPART(hour, DATEADD(hour, 9, occurredAtUtc))
+  AND householdId = '18bab55f-27d9-4288-8ea2-5f94af97f5bc'
+  AND CAST(occurredAtUtc AS datetime2) >= DATEADD(day, -14, SYSUTCDATETIME())
+GROUP BY DATEPART(hour, DATEADD(hour, 9, CAST(occurredAtUtc AS datetime2)))
 ORDER BY hourJst;
 ```
 
@@ -221,21 +228,25 @@ WITH latest AS (
         deviceName,
         room,
         state,
-        occurredAtUtc,
-        ROW_NUMBER() OVER (PARTITION BY deviceId ORDER BY occurredAtUtc DESC) AS rn
-    FROM DeviceEvents
+        CAST(occurredAtUtc AS datetime2) AS occurredAt,
+        ROW_NUMBER() OVER (
+            PARTITION BY deviceId
+            ORDER BY CAST(occurredAtUtc AS datetime2) DESC) AS rn
+    FROM dbo.DeviceEvents
     WHERE eventType = 'PowerState'
-      AND source <> 'Seed'
+      AND householdId = '18bab55f-27d9-4288-8ea2-5f94af97f5bc'
 )
 SELECT
     deviceName,
     room,
     state,
-    DATEADD(hour, 9, occurredAtUtc) AS asOfJst
+    DATEADD(hour, 9, occurredAt) AS asOfJst
 FROM latest
 WHERE rn = 1
 ORDER BY deviceName;
 ```
+
+機器は `deviceId` で束ねている。`deviceName` は改名できるので、名前で `GROUP BY` すると同じプラグが旧名と新名の2台に割れる（実際に「プラグミニ 92」が過去に「リビングの電気」だった）。
 
 ---
 

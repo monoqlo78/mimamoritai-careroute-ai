@@ -194,6 +194,11 @@ public static class ServiceCollectionExtensions
             client.Timeout = TimeSpan.FromSeconds(10);
         });
 
+        // Also unconditional: with the mock client it reports NotConfigured, which is
+        // what lets the dashboard say "この画面の中だけのやり取りです" instead of
+        // pretending a message left the building.
+        services.AddScoped<LineConversationRelay>();
+
         // --- Fabric Eventstream / Eventhouse (real-time streaming ingestion) --
         // Preference order: EventStream (Event Hubs-protocol custom endpoint,
         // the primary ingestion path) > Eventhouse (direct KQL REST ingestion)
@@ -270,6 +275,9 @@ public static class ServiceCollectionExtensions
         if (fabricConsoleSync.IsConfigured)
         {
             services.TryAddSingleton<TokenCredential>(new DefaultAzureCredential());
+
+            // Deliberately not the shared TokenCredential: see FabricConsoleSyncCredential.
+            services.TryAddSingleton(new FabricConsoleSyncCredential(new DefaultAzureCredential()));
             services.AddScoped<IFabricConsoleSync, FabricSqlConsoleSync>();
         }
         else

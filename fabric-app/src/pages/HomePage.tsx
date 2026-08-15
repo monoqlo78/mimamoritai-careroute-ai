@@ -121,6 +121,7 @@ export function HomePage() {
   const bars = householdBars(scoped.households);
   const activityDaily = dailyActivity(scoped.activity);
   const rhythm = hourlyRhythm(scoped.activity);
+  const rhythmUsesEnergy = rhythm.some((cell) => cell.mode === 'energy');
   const devices = deviceBreakdown(scoped.activity);
   const activityTotals = activitySummary(scoped.activity);
   const energyDaily = dailyEnergy(scoped.activity, energyDays);
@@ -362,7 +363,9 @@ export function HomePage() {
                     生活リズム（時間帯別・JST）
                   </h3>
                   <p className="mb-3 text-xs text-gray-500">
-                    全期間の合計。暖色ほど活動が多い時間帯です。
+                    {rhythmUsesEnergy
+                      ? '計測できた日の時間帯別平均電力量。暖色ほど使用が多い時間帯です。'
+                      : '電力データがないためイベント数で表示しています。暖色ほど活動が多い時間帯です。'}
                   </p>
                   <RhythmHeatmap cells={rhythm} />
                 </div>

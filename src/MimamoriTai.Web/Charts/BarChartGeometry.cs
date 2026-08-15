@@ -134,6 +134,23 @@ public static class BarChartGeometry
     }
 
     /// <summary>
+    /// A second line over the same plot, from raw values rather than bars, so "today" and
+    /// "an ordinary day" can be judged against one shared scale. Passing the max in is what
+    /// keeps them comparable: scaling each to its own maximum would make every day look
+    /// identical to the average.
+    /// </summary>
+    public static string ComparisonLine(IReadOnlyList<double> values, double max)
+    {
+        if (values.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        return string.Join(' ', values.Select((v, i) =>
+            $"{F(CenterX(i, values.Count))},{F(PlotBottom - BarHeight(v, max))}"));
+    }
+
+    /// <summary>
     /// SVG attributes must use a dot decimal separator regardless of the request culture:
     /// a ja-JP or de-DE thread would otherwise emit "1,5" and the browser would drop the bar.
     /// </summary>

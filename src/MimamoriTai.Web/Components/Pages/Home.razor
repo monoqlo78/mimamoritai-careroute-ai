@@ -17,6 +17,7 @@
 @inject DeviceSyncService DeviceSync
 @inject DeviceSettingsService DeviceSettings
 @inject HouseholdAccessService HouseholdAccess
+@inject LineConversationRelay LineRelay
 @inject IDataSourceContext DataSourceContext
 @inject MimamoriTai.Core.Abstractions.IEventStreamPublisher StreamPublisher
 @inject ICurrentUserAccessor CurrentUserAccessor
@@ -37,7 +38,7 @@
     </div>
     <div class="topbar-actions">
         <a class="primary-link" href="/one-touch">かんたん操作</a>
-        <a class="ghost small" href="/settings/switchbot#family">家族の追加</a>
+        <a class="ghost small" href="/settings/family">家族の追加</a>
         <a class="ghost small" href="/settings/switchbot">SwitchBot設定</a>
         @if (AdminAccess.IsAdmin)
         {
@@ -132,16 +133,16 @@ else
 
     <section class="today-summary" aria-label="今日の活動">
         <div class="summary-item">
-            <span>最初の活動</span>
-            <strong>@(_model.Today.FirstActivityTime?.ToString("HH\\:mm") ?? "まだありません")</strong>
+            <span>電気が動きはじめた</span>
+            <strong>@(_model.Today.FirstPowerMoveTime?.ToString("HH\\:mm") ?? "まだありません")</strong>
         </div>
         <div class="summary-item">
-            <span>最後の活動</span>
-            <strong>@(_model.Today.LastActivityTime?.ToString("HH\\:mm") ?? "まだありません")</strong>
+            <span>最後に電気が動いた</span>
+            <strong>@(_model.Today.SettledTime?.ToString("HH\\:mm") ?? "まだありません")</strong>
         </div>
         <div class="summary-item">
-            <span>家電の利用</span>
-            <strong>@_model.Today.DeviceUsageCount 回</strong>
+            <span>今日の電気</span>
+            <strong>@_model.Today.EnergyWh.ToString("0.#") Wh</strong>
         </div>
     </section>
 
@@ -151,7 +152,7 @@ else
                 <p class="eyebrow">最近の推移</p>
                 <h2>いつもと比べてどうか</h2>
             </div>
-            <span class="summary-meta">直近@(TrendDays().Count)日間</span>
+            <span class="summary-meta">下の2つは直近@(TrendDays().Count)日間</span>
         </div>
 
         @if (!HasTrendData())
@@ -163,26 +164,72 @@ else
         }
         else
         {
-            <div class="trend-grid">
+            @* The day laid out on the clock. A daily total says how much electricity was
+               used but not whether the day had its usual shape, and the shape is what
+               notices somebody who never got up. *@
+            <button type="button" class="day-profile-open" @onclick="OpenEnergyBreakdown"
+                    aria-haspopup="dialog"
+                    title="家電ごとの内わけを見る">
+                <DayProfileChart Hours="_model.HourlyEnergy.Today" Usual="_model.HourlyEnergy.Usual"
+                                 Caption="この24時間の電気の使いかた"
+                                 StartHour="_model.HourlyEnergy.StartHour"
+                                 Badge="@EnergyVerdict().Text" BadgeClass="@EnergyVerdict().Class"
+                                 CurrentHour="CurrentHour()"
+                                 UsualLabel="@UsualLabel()"
+                                 AriaLabel="@HourlyAriaLabel()" />
+                <span class="day-profile-hint">家電ごとの内わけを見る</span>
+            </button>
+
+            <div class="trend-grid two">
                 <div class="trend-item">
-                    <BarChart Points="UsageTrend()" Caption="家電の利用回数" Unit="回"
-                              Badge="@UsageVerdict().Text" BadgeClass="@UsageVerdict().Class"
-                              AriaLabel="@TrendAriaLabel("家電の利用回数", d => d.DeviceUsageCount, "回")" />
+                    <BarChart Points="FirstMoveTrend()" Caption="電気が動きはじめた時間" ScaleBottom="0:00"
+                              Badge="@FirstMoveVerdict().Text" BadgeClass="@FirstMoveVerdict().Class"
+                              AriaLabel="@ClockAriaLabel("電気が動きはじめた時間", d => d.FirstPowerMoveTime)" />
                 </div>
                 <div class="trend-item">
-                    <BarChart Points="WakeUpTrend()" Caption="起きた時間" ScaleBottom="0:00"
-                              Badge="@WakeUpVerdict().Text" BadgeClass="@WakeUpVerdict().Class"
-                              AriaLabel="@WakeUpAriaLabel()" />
-                </div>
-                <div class="trend-item">
-                    <BarChart Points="NightTrend()" Caption="夜間の動き" Unit="回"
-                              Badge="@NightVerdict().Text" BadgeClass="@NightVerdict().Class"
-                              AriaLabel="@TrendAriaLabel("夜間の動き", d => d.NightActivityCount, "回")" />
+                    <BarChart Points="SettledTrend()" Caption="電気が静かになった時間" ScaleBottom="0:00"
+                              Badge="@SettledVerdict().Text" BadgeClass="@SettledVerdict().Class"
+                              AriaLabel="@ClockAriaLabel("電気が静かになった時間", d => d.SettledTime)" />
                 </div>
             </div>
-            <p class="trend-note">濃い色が今日です。棒にふれると日付と回数が出ます。</p>
+            <p class="trend-note">上のグラフは、いちばん新しい記録を右はしにして、そこから24時間さかのぼって時間ごとに並べたものです。線はいつもの平均で、棒が線から離れているほど、いつもと違う1日です。下の2つは、その日はじめて電気が動いた時間と、最後に動いた時間です。</p>
         }
     </section>
+
+@if (_energyBreakdownOpen && _model is not null)
+{
+    @* Which appliance moved is the next question a family asks after "today looks
+       different", and answering it inside the same card would bury the day itself. *@
+    <div class="modal-backdrop" @onclick="CloseEnergyBreakdown">
+        <div class="modal-panel" role="dialog" aria-modal="true" aria-label="家電ごとの電気の使いかた"
+             @onclick:stopPropagation="true">
+            <div class="modal-head">
+                <h2>家電ごとの電気の使いかた</h2>
+                <button type="button" class="modal-close" @onclick="CloseEnergyBreakdown"
+                        aria-label="閉じる">×</button>
+            </div>
+            @if (_model.HourlyEnergy.TodayByDevice.Count == 0)
+            {
+                <p class="muted">今日はまだ、電気の量が記録されていません。</p>
+            }
+            else
+            {
+                <div class="modal-body">
+                    @foreach (var device in _model.HourlyEnergy.TodayByDevice)
+                    {
+                        <DayProfileChart Hours="device.Hours"
+                                         StartHour="_model.HourlyEnergy.StartHour"
+                                         Caption="@($"{DeviceLabel(device.DeviceId)}（{device.TotalWh:0.#}Wh）")"
+                                         CurrentHour="CurrentHour()"
+                                         ShowLegend="false"
+                                         Class="compact"
+                                         AriaLabel="@($"{DeviceLabel(device.DeviceId)}の今日の電気の使いかた")" />
+                    }
+                </div>
+            }
+        </div>
+    </div>
+}
 
     <section class="primary-grid">
         <article class="card assistant-card">
@@ -373,7 +420,8 @@ else
                         <span class="line-basic-id">ID: @@755ykcrx</span>
                     </div>
                 </div>
-                <h3>LINEで質問する</h3>
+                <h3>家族にLINEで送る</h3>
+                <p class="line-send-note">入力した文章を、そのままご家族のLINEにお送りします。AIは返事をしません。</p>
                 <div class="line-controls">
                     <select @bind="_lineSpeaker" disabled="@_busy">
                         @foreach (var person in _model.People)
@@ -382,9 +430,13 @@ else
                         }
                     </select>
                     <input @bind="_lineInput" @bind:event="oninput" @onkeydown="OnLineKeyDown"
-                           placeholder="今日の様子は？" disabled="@_busy" />
+                           placeholder="そろそろ電話するね" disabled="@_busy" />
                     <button @onclick="SendLineAsync" disabled="@(_busy || string.IsNullOrWhiteSpace(_lineInput))">送る</button>
                 </div>
+                @if (!string.IsNullOrEmpty(_lineNotice))
+                {
+                    <p class="line-send-notice @_lineNoticeKind">@_lineNotice</p>
+                }
             </div>
             <div>
                 <h3>共有メッセージ</h3>
@@ -484,6 +536,8 @@ else
     private readonly List<FeedItem> _chatLog = [];
     private string _input = string.Empty;
     private string _lineInput = string.Empty;
+    private string? _lineNotice;
+    private string _lineNoticeKind = string.Empty;
     private Guid? _lineSpeaker;
     private bool _busy;
 
@@ -512,6 +566,7 @@ else
     // as the single-device detail page to stay well inside SwitchBot's daily API allowance.
     private static readonly TimeSpan LiveRefreshInterval = TimeSpan.FromSeconds(30);
     private readonly CancellationTokenSource _refreshCts = new();
+    private readonly SemaphoreSlim _reloadGate = new(1, 1);
     private PeriodicTimer? _refreshTimer;
 
     protected override async Task OnInitializedAsync() => await ReloadAsync();
@@ -669,10 +724,32 @@ else
         _refreshCts.Cancel();
         _refreshTimer?.Dispose();
         _refreshCts.Dispose();
+        _reloadGate.Dispose();
         return ValueTask.CompletedTask;
     }
 
+    /// <summary>
+    /// Blazor renders - and therefore fires <see cref="OnAfterRenderAsync"/> - before the task
+    /// returned by <see cref="OnInitializedAsync"/> has completed, and the 30 second refresh loop
+    /// ticks on its own thread on top of that. Every one of those paths reaches the same scoped
+    /// DbContext, which throws "a second operation was started on this context instance" the moment
+    /// two of them overlap and takes the whole circuit down with it, leaving the family staring at
+    /// "読み込み中...". Queueing the loads here is what keeps the page alive.
+    /// </summary>
     private async Task ReloadAsync(Guid? householdId = null)
+    {
+        await _reloadGate.WaitAsync();
+        try
+        {
+            await ReloadCoreAsync(householdId);
+        }
+        finally
+        {
+            _reloadGate.Release();
+        }
+    }
+
+    private async Task ReloadCoreAsync(Guid? householdId)
     {
         _households = await HouseholdAccess.ListAccessibleAsync();
 
@@ -904,7 +981,64 @@ else
 
     private Task SendAsync() => SendCoreAsync(_input, CommandSource.Web, null, () => _input = string.Empty);
 
-    private Task SendLineAsync() => SendCoreAsync(_lineInput, CommandSource.Line, _lineSpeaker, () => _lineInput = string.Empty);
+    /// <summary>
+    /// Pushes what the family typed straight to the household's LINE.
+    ///
+    /// This panel used to hand the text to the assistant and print the answer on the page,
+    /// which made it an exact duplicate of the 見守りAI card above it and, more seriously,
+    /// meant "家族にLINEで送る" sent nothing to anybody's phone. The message is also written
+    /// to the shared feed so the sender can see it left, rather than having to trust it.
+    /// </summary>
+    private async Task SendLineAsync()
+    {
+        if (_model is null || string.IsNullOrWhiteSpace(_lineInput) || _busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        var text = _lineInput.Trim();
+        _lineInput = string.Empty;
+        _lineNotice = null;
+        _lineNoticeKind = string.Empty;
+        StateHasChanged();
+
+        try
+        {
+            var sender = _model.People.FirstOrDefault(p => p.Id == _lineSpeaker)?.DisplayName ?? "ご家族";
+            var result = await LineRelay.SendAsync(_model.HouseholdId, sender, text);
+
+            if (result.Outcome == LineRelayOutcome.Sent)
+            {
+                _lineNotice = $"LINEにお送りしました（{result.Delivered}件）";
+                _lineNoticeKind = "ok";
+            }
+            else
+            {
+                _lineNotice = result.Explanation;
+                _lineNoticeKind = "warn";
+            }
+
+            // Recorded even when the push failed: the family still said it, and a message
+            // that vanishes without trace is worse than one that is marked undelivered.
+            Db.FamilyMessages.Add(new FamilyMessage
+            {
+                HouseholdId = _model.HouseholdId,
+                PersonId = _lineSpeaker,
+                Source = CommandSource.Line,
+                MessageType = MessageType.Text,
+                Content = text,
+                OccurredAtUtc = DateTimeOffset.UtcNow
+            });
+            await Db.SaveChangesAsync();
+
+            await ReloadAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
 
     private async Task SendCoreAsync(string message, CommandSource source, Guid? personId, Action clearInput)
     {
@@ -1200,11 +1334,52 @@ else
     // costs no extra query. Today is highlighted so the family can see at a glance
     // whether today stands out from the fortnight behind it.
 
-    private IReadOnlyList<BarChartPoint> UsageTrend() =>
-        TrendPoints(d => d.DeviceUsageCount);
+    /// <summary>
+    /// The headline chart. A plug left in the wall barely ever switches, so a chart of
+    /// on/off events sits flat through a day of real cooking and heating; the draw behind
+    /// the socket is what actually moves. See <see cref="ActivityService.EnergyWh"/>.
+    /// </summary>
+    private IReadOnlyList<BarChartPoint> EnergyTrend() =>
+        TrendPoints(d => d.EnergyWh);
 
-    private IReadOnlyList<BarChartPoint> NightTrend() =>
-        TrendPoints(d => d.NightActivityCount);
+    private bool _energyBreakdownOpen;
+
+    private void OpenEnergyBreakdown() => _energyBreakdownOpen = true;
+
+    private void CloseEnergyBreakdown() => _energyBreakdownOpen = false;
+
+    /// <summary>
+    /// Marks the hour in progress. Today's last bar is always half-finished, and without
+    /// this it reads as the moment the house went quiet rather than as the clock catching up.
+    /// </summary>
+    private static int CurrentHour() => HouseholdTime.LocalTime(DateTimeOffset.UtcNow).Hour;
+
+    private string UsualLabel() =>
+        _model is null || _model.HourlyEnergy.UsualDayCount == 0
+            ? "いつもの平均"
+            : $"いつもの平均（{_model.HourlyEnergy.UsualDayCount}日）";
+
+    private string DeviceLabel(Guid deviceId) =>
+        _model?.Devices.FirstOrDefault(d => d.Id == deviceId)?.Name ?? "家電";
+
+    private string HourlyAriaLabel()
+    {
+        if (_model is null)
+        {
+            return "今日の電気の使いかた：まだ記録がありません";
+        }
+
+        var parts = _model.HourlyEnergy.Today
+            .Select((wh, hour) => (wh, hour))
+            .Where(x => x.wh > 0)
+            // The window starts at the newest reading's hour, not at midnight, so the bar
+            // at index 0 is not 0時 -- reading the index out loud names the wrong hour.
+            .Select(x => $"{(_model.HourlyEnergy.StartHour + x.hour) % 24}時台 {x.wh:0.#}ワットアワー");
+
+        return parts.Any()
+            ? $"今日の電気の使いかた：{string.Join("、", parts)}"
+            : "今日の電気の使いかた：まだ記録がありません";
+    }
 
     /// <summary>
     /// One recorded day is enough to draw. A single bar is honest about how little there is
@@ -1214,18 +1389,18 @@ else
     private bool HasTrendData() =>
         _model is not null && _model.Recent.Any(d => d.FirstActivityTime is not null);
 
-    private TrendVerdict UsageVerdict() =>
+    private TrendVerdict EnergyVerdict() =>
         TrendVerdicts.ForUsage(
-            TodayValue(d => d.DeviceUsageCount), Baseline(d => d.DeviceUsageCount), HoursIntoToday())
+            TodayValue(d => d.EnergyWh), Baseline(d => d.EnergyWh), HoursIntoToday())
         ?? EmptyVerdict;
 
-    private TrendVerdict NightVerdict() =>
-        TrendVerdicts.ForNight(
-            TodayValue(d => d.NightActivityCount), Baseline(d => d.NightActivityCount), HoursIntoToday())
-        ?? EmptyVerdict;
+    private TrendVerdict FirstMoveVerdict() =>
+        TrendVerdicts.ForWakeUp(TodayClockHours(d => d.FirstPowerMoveTime),
+            ClockBaseline(d => d.FirstPowerMoveTime)) ?? EmptyVerdict;
 
-    private TrendVerdict WakeUpVerdict() =>
-        TrendVerdicts.ForWakeUp(TodayWakeUpHours(), WakeUpBaseline()) ?? EmptyVerdict;
+    private TrendVerdict SettledVerdict() =>
+        TrendVerdicts.ForWakeUp(TodayClockHours(d => d.SettledTime),
+            ClockBaseline(d => d.SettledTime)) ?? EmptyVerdict;
 
     /// <summary>How much of today has happened, so a quiet morning is not called a quiet day.</summary>
     private static double HoursIntoToday() =>
@@ -1260,15 +1435,15 @@ else
             .Select(value)];
     }
 
-    private double? TodayWakeUpHours()
+    private double? TodayClockHours(Func<DailyActivity, TimeOnly?> pick)
     {
         var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
         var match = _model?.Recent.LastOrDefault(d => d.Date == today);
 
-        return match?.FirstActivityTime is { } t ? t.ToTimeSpan().TotalHours : null;
+        return match is not null && pick(match) is { } t ? t.ToTimeSpan().TotalHours : null;
     }
 
-    private IReadOnlyList<double> WakeUpBaseline()
+    private IReadOnlyList<double> ClockBaseline(Func<DailyActivity, TimeOnly?> pick)
     {
         if (_model is null)
         {
@@ -1278,17 +1453,17 @@ else
         var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
 
         return [.. _model.Recent
-            .Where(d => d.Date < today && d.FirstActivityTime is not null)
-            .Select(d => d.FirstActivityTime!.Value.ToTimeSpan().TotalHours)];
+            .Where(d => d.Date < today && pick(d) is not null)
+            .Select(d => pick(d)!.Value.ToTimeSpan().TotalHours)];
     }
 
     /// <summary>
-    /// Getting-up time as hours past midnight, so a later start makes a taller bar.
-    /// Days with no activity at all stay at zero rather than being dropped: a missing
-    /// morning is the single most important thing on this screen. The tooltip shows a
-    /// real clock time, because "6.5時" is not how anyone reads a wake-up time.
+    /// A time of day as hours past midnight, so a later one makes a taller bar. Days with
+    /// nothing recorded stay at zero rather than being dropped: a missing morning is the
+    /// single most important thing on this screen. The tooltip shows a real clock time,
+    /// because "6.5時" is not how anyone reads one.
     /// </summary>
-    private IReadOnlyList<BarChartPoint> WakeUpTrend()
+    private IReadOnlyList<BarChartPoint> ClockTrend(Func<DailyActivity, TimeOnly?> pick)
     {
         var days = TrendDays();
         if (days.Count == 0)
@@ -1300,10 +1475,14 @@ else
 
         return [.. days.Select(d => new BarChartPoint(
             d.Date.ToString("M/d"),
-            d.FirstActivityTime is { } t ? Math.Round(t.ToTimeSpan().TotalHours, 2) : 0,
+            pick(d) is { } t ? Math.Round(t.ToTimeSpan().TotalHours, 2) : 0,
             d.Date == today,
-            d.FirstActivityTime?.ToString("H\\:mm") ?? "記録なし"))];
+            pick(d)?.ToString("H\\:mm") ?? "記録なし"))];
     }
+
+    private IReadOnlyList<BarChartPoint> FirstMoveTrend() => ClockTrend(d => d.FirstPowerMoveTime);
+
+    private IReadOnlyList<BarChartPoint> SettledTrend() => ClockTrend(d => d.SettledTime);
 
     private IReadOnlyList<BarChartPoint> TrendPoints(Func<DailyActivity, double> value)
     {
@@ -1351,16 +1530,27 @@ else
         return $"{title}：{string.Join("、", parts)}";
     }
 
-    private string WakeUpAriaLabel()
+    private string EnergyAriaLabel()
     {
         if (_model is null || _model.Recent.Count == 0)
         {
-            return "起きた時間：まだ記録がありません";
+            return "電気の使いかた：まだ記録がありません";
+        }
+
+        var parts = _model.Recent.Select(d => $"{d.Date:M月d日} {d.EnergyWh:0.#}ワットアワー");
+        return $"電気の使いかた：{string.Join("、", parts)}";
+    }
+
+    private string ClockAriaLabel(string title, Func<DailyActivity, TimeOnly?> pick)
+    {
+        if (_model is null || _model.Recent.Count == 0)
+        {
+            return $"{title}：まだ記録がありません";
         }
 
         var parts = _model.Recent.Select(d =>
-            $"{d.Date:M月d日} {d.FirstActivityTime?.ToString("H\\:mm") ?? "記録なし"}");
-        return $"起きた時間：{string.Join("、", parts)}";
+            $"{d.Date:M月d日} {pick(d)?.ToString("H\\:mm") ?? "記録なし"}");
+        return $"{title}：{string.Join("、", parts)}";
     }
 
     private static string RiskIcon(RiskLevel level) => level switch

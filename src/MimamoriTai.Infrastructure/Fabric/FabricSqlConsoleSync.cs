@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using Azure.Core;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
@@ -34,7 +35,7 @@ namespace MimamoriTai.Infrastructure.Fabric;
 /// </summary>
 public sealed class FabricSqlConsoleSync(
     IAppDbContext db,
-    TokenCredential credential,
+    FabricConsoleSyncCredential credential,
     IOptions<FabricConsoleSyncOptions> options,
     TimeProvider clock,
     ILogger<FabricSqlConsoleSync> logger) : IFabricConsoleSync
@@ -65,7 +66,7 @@ public sealed class FabricSqlConsoleSync(
         {
             var snapshot = await BuildSnapshotAsync(ct);
 
-            var token = await credential.GetTokenAsync(new TokenRequestContext(SqlScopes), ct);
+            var token = await credential.Credential.GetTokenAsync(new TokenRequestContext(SqlScopes), ct);
 
             var connectionString = new SqlConnectionStringBuilder
             {
@@ -78,7 +79,23 @@ public sealed class FabricSqlConsoleSync(
             }.ConnectionString;
 
             await using var connection = new SqlConnection(connectionString) { AccessToken = token.Token };
-            await connection.OpenAsync(ct);
+
+            try
+            {
+                await connection.OpenAsync(ct);
+            }
+            catch (SqlException ex) when (ex.Number is 18456 or 18470)
+            {
+                // "Login failed for user '<token-identified principal>'" hides which identity
+                // was actually presented, and the sync has already been sent down the wrong
+                // one once (it inherited the Data Agent's service principal from the shared
+                // TokenCredential registration). The object id and app id are identifiers,
+                // not secrets, so logging them turns a guessing game into a lookup.
+                logger.LogWarning(
+                    "Fabric console sync could not sign in as {Principal}. Grant that identity Read on the Fabric SQL database item.",
+                    DescribeToken(token.Token));
+                throw;
+            }
 
             var households = await WriteHouseholdsAsync(connection, snapshot, ct);
             var alerts = await WriteAlertsAsync(connection, snapshot, ct);
@@ -109,6 +126,48 @@ public sealed class FabricSqlConsoleSync(
 
     private static long ElapsedMs(long started) =>
         (long)Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+
+    /// <summary>
+    /// Names the identity inside an access token using only its non-secret claims, so a
+    /// login failure can be traced to a principal without the token itself reaching a log.
+    /// The signature is deliberately not verified: this is a diagnostic, not a check.
+    /// </summary>
+    internal static string DescribeToken(string jwt)
+    {
+        try
+        {
+            var parts = jwt.Split('.');
+            if (parts.Length < 2)
+            {
+                return "an unrecognised token";
+            }
+
+            var payload = parts[1].Replace('-', '+').Replace('_', '/');
+            var json = JsonDocument.Parse(Convert.FromBase64String(payload.PadRight(
+                payload.Length + ((4 - (payload.Length % 4)) % 4), '=')));
+
+            var claims = json.RootElement;
+            var oid = Claim(claims, "oid");
+            var appId = Claim(claims, "appid") ?? Claim(claims, "azp");
+            var name = Claim(claims, "app_displayname") ?? Claim(claims, "upn") ?? Claim(claims, "unique_name");
+
+            return string.Join(", ", new[]
+            {
+                name is null ? null : $"name={name}",
+                oid is null ? null : $"oid={oid}",
+                appId is null ? null : $"appid={appId}",
+            }.Where(p => p is not null));
+        }
+        catch (Exception ex) when (ex is FormatException or JsonException)
+        {
+            return "an unreadable token";
+        }
+    }
+
+    private static string? Claim(JsonElement claims, string name) =>
+        claims.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
 
     // ---------------------------------------------------------------- read side
 
@@ -146,6 +205,7 @@ public sealed class FabricSqlConsoleSync(
     internal sealed record ActivityRow(
         Guid HouseholdId,
         string HouseholdName,
+        Guid DeviceId,
         string DeviceName,
         string DeviceType,
         DateTime BucketStart,
@@ -353,6 +413,7 @@ public sealed class FabricSqlConsoleSync(
                     Row: new ActivityRow(
                         g.Key.HouseholdId,
                         householdNames.GetValueOrDefault(g.Key.HouseholdId, "(削除済み)"),
+                        g.Key.DeviceId,
                         deviceNames.TryGetValue(g.Key.DeviceId, out var d) ? d.Name : "(unknown)",
                         deviceNames.TryGetValue(g.Key.DeviceId, out var dt) ? dt.DeviceType.ToString() : string.Empty,
                         g.Key.BucketStart,
@@ -482,6 +543,7 @@ public sealed class FabricSqlConsoleSync(
             rows.Add(new ActivityRow(
                 key.Household,
                 householdNames.GetValueOrDefault(key.Household, "(削除済み)"),
+                key.Device,
                 device.Item1,
                 device.Item2,
                 key.Hour,
@@ -729,6 +791,19 @@ public sealed class FabricSqlConsoleSync(
                 (@id, @householdId, @householdName, @deviceName, @deviceType, @bucketStart, @eventCount, @onCount, @source);
             """;
 
+        const string SqlWithDeviceId = """
+            MERGE dbo.ActivityBuckets AS t
+            USING (SELECT @id AS id) AS s ON t.id = s.id
+            WHEN MATCHED THEN UPDATE SET
+                householdId = @householdId, householdName = @householdName, deviceId = @deviceId,
+                deviceName = @deviceName, deviceType = @deviceType, bucketStart = @bucketStart,
+                eventCount = @eventCount, onCount = @onCount, source = @source
+            WHEN NOT MATCHED THEN INSERT
+                (id, householdId, householdName, deviceId, deviceName, deviceType, bucketStart, eventCount, onCount, source)
+            VALUES
+                (@id, @householdId, @householdName, @deviceId, @deviceName, @deviceType, @bucketStart, @eventCount, @onCount, @source);
+            """;
+
         const string SqlWithEnergy = """
             MERGE dbo.ActivityBuckets AS t
             USING (SELECT @id AS id) AS s ON t.id = s.id
@@ -742,6 +817,19 @@ public sealed class FabricSqlConsoleSync(
                 (@id, @householdId, @householdName, @deviceName, @deviceType, @bucketStart, @eventCount, @onCount, @source, @energyWh);
             """;
 
+        const string SqlWithDeviceIdAndEnergy = """
+            MERGE dbo.ActivityBuckets AS t
+            USING (SELECT @id AS id) AS s ON t.id = s.id
+            WHEN MATCHED THEN UPDATE SET
+                householdId = @householdId, householdName = @householdName, deviceId = @deviceId,
+                deviceName = @deviceName, deviceType = @deviceType, bucketStart = @bucketStart,
+                eventCount = @eventCount, onCount = @onCount, source = @source, energyWh = @energyWh
+            WHEN NOT MATCHED THEN INSERT
+                (id, householdId, householdName, deviceId, deviceName, deviceType, bucketStart, eventCount, onCount, source, energyWh)
+            VALUES
+                (@id, @householdId, @householdName, @deviceId, @deviceName, @deviceType, @bucketStart, @eventCount, @onCount, @source, @energyWh);
+            """;
+
         // Same reasoning as the household power columns: a workspace still on the older
         // Rayfin model keeps receiving activity instead of failing the whole write.
         var hasEnergy = await HasColumnsAsync(connection, "ActivityBuckets", ["energyWh"], ct);
@@ -750,18 +838,36 @@ public sealed class FabricSqlConsoleSync(
             logger.LogWarning(
                 "Fabric console table dbo.ActivityBuckets has no energyWh column, so hourly electricity will not appear in the console. Run 'npm run rayfin:db' in fabric-app to apply the current model.");
         }
+        var hasDeviceId = await HasColumnsAsync(connection, "ActivityBuckets", ["deviceId"], ct);
+        if (!hasDeviceId)
+        {
+            logger.LogWarning(
+                "Fabric console table dbo.ActivityBuckets has no deviceId column, so renamed devices may be split in the console. Run 'npm run rayfin:db' in fabric-app to apply the current model.");
+        }
+
+        var sql = (hasDeviceId, hasEnergy) switch
+        {
+            (true, true) => SqlWithDeviceIdAndEnergy,
+            (true, false) => SqlWithDeviceId,
+            (false, true) => SqlWithEnergy,
+            _ => Sql,
+        };
 
         var written = 0;
 
         foreach (var b in snapshot.Activity)
         {
-            var key = $"activity-bucket:{b.HouseholdId}|{b.DeviceName}|{b.BucketStart:o}";
+            var key = $"activity-bucket:{b.HouseholdId}|{b.DeviceId}|{b.BucketStart:o}";
 
-            await ExecuteAsync(connection, hasEnergy ? SqlWithEnergy : Sql, p =>
+            await ExecuteAsync(connection, sql, p =>
             {
                 p.AddWithValue("@id", DeterministicId(key));
                 p.AddWithValue("@householdId", b.HouseholdId.ToString());
                 p.AddWithValue("@householdName", Text(b.HouseholdName));
+                if (hasDeviceId)
+                {
+                    p.AddWithValue("@deviceId", b.DeviceId.ToString());
+                }
                 p.AddWithValue("@deviceName", Text(b.DeviceName));
                 p.AddWithValue("@deviceType", Text(b.DeviceType));
                 p.AddWithValue("@bucketStart", b.BucketStart);
@@ -780,6 +886,15 @@ public sealed class FabricSqlConsoleSync(
             }, ct);
 
             written++;
+        }
+
+        if (hasDeviceId)
+        {
+            await ExecuteAsync(
+                connection,
+                "DELETE FROM dbo.ActivityBuckets WHERE deviceId = '';",
+                _ => { },
+                ct);
         }
 
         return written;

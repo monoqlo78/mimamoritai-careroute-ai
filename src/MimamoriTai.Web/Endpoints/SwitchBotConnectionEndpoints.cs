@@ -136,7 +136,7 @@ public static class SwitchBotConnectionEndpoints
             }
 
             var syncService = new DeviceSyncService(db, provider, clock);
-            var result = await syncService.SyncAsync(householdId, ct);
+            var result = await syncService.SyncAsync(householdId, ct: ct);
             await connectionService.MarkSyncedAsync(householdId, ct);
 
             return Results.Ok(new

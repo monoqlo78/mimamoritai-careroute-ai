@@ -555,6 +555,10 @@ a.ghost.small { min-height: 32px; padding: 4px 10px; font-size: 12px; }
 .line-controls { display: flex; flex-wrap: wrap; gap: 8px; }
 .line-controls input { flex: 1; min-width: 180px; }
 .line-controls select { width: 120px; }
+.line-send-note { margin: 0 0 10px; color: var(--cp-text-muted); font-size: 13px; }
+.line-send-notice { margin: 10px 0 0; font-size: 13px; }
+.line-send-notice.ok { color: var(--cp-accent, #7a1f3d); }
+.line-send-notice.warn { color: #a8480f; }
 .line-add { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; }
 .line-add img { width: 112px; height: 112px; border: 1px solid var(--cp-border); border-radius: 0.625rem; }
 .line-add p { margin: 0 0 12px; color: var(--cp-text-muted); font-size: 13px; }
@@ -812,6 +816,110 @@ a.ghost.small { min-height: 32px; padding: 4px 10px; font-size: 12px; }
     background: linear-gradient(180deg, var(--cp-panel-strong), var(--cp-surface-soft));
 }
 .trend-note { margin: 12px 0 0; color: var(--cp-text-muted); font-size: 12px; }
+
+/* The 24-hour day profile, and the appliance breakdown behind it. */
+.day-profile-open {
+    display: block;
+    width: 100%;
+    margin-top: 12px;
+    padding: 12px 14px 10px;
+    border: 1px solid var(--cp-border);
+    border-radius: 14px;
+    background: linear-gradient(180deg, var(--cp-panel-strong), var(--cp-surface-soft));
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    color: inherit;
+}
+/* The global button:hover paints the whole surface accent-red. That is right for a
+   control but wrong for a card that contains a chart, so the background is restated. */
+.day-profile-open:hover {
+    border-color: var(--cp-accent);
+    background: linear-gradient(180deg, var(--cp-panel-strong), var(--cp-surface-soft));
+}
+.day-profile-open:focus-visible { outline: 2px solid var(--cp-accent); outline-offset: 2px; }
+.day-profile-hint {
+    display: block;
+    margin-top: 6px;
+    color: var(--cp-accent);
+    font-size: 12px;
+    font-weight: 600;
+}
+.day-profile-night { fill: var(--cp-text); opacity: 0.045; }
+.day-profile-usual {
+    fill: none;
+    stroke: var(--cp-text-muted);
+    stroke-width: 1.6;
+    stroke-dasharray: 3 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    opacity: 0.85;
+    vector-effect: non-scaling-stroke;
+}
+.hour-labels {
+    display: flex;
+    justify-content: space-between;
+    margin: 6px 0 0;
+    padding: 0;
+    list-style: none;
+    color: var(--cp-text-muted);
+    font-size: 11px;
+}
+.day-profile-legend {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 8px 0 0;
+    color: var(--cp-text-muted);
+    font-size: 12px;
+}
+.day-profile-legend .legend-bar {
+    width: 10px; height: 10px; border-radius: 2px;
+    background: var(--cp-accent);
+}
+.day-profile-legend .legend-line {
+    width: 16px; height: 0;
+    margin-left: 10px;
+    border-top: 2px dashed var(--cp-text-muted);
+}
+.day-profile.compact { margin: 0 0 18px; }
+
+.modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    background: rgba(15, 12, 20, 0.55);
+}
+.modal-panel {
+    width: min(640px, 100%);
+    max-height: 82vh;
+    overflow: auto;
+    padding: 20px 22px 24px;
+    border-radius: 18px;
+    background: var(--cp-surface);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.28);
+}
+.modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
+}
+.modal-head h2 { margin: 0; font-size: 18px; }
+.modal-close {
+    border: none;
+    background: none;
+    font-size: 24px;
+    line-height: 1;
+    cursor: pointer;
+    color: var(--cp-text-muted);
+}
+.modal-close:hover { color: var(--cp-text); }
 .trend-empty {
     margin: 12px 0 0;
     padding: 18px 16px;

@@ -67,26 +67,103 @@ WHERE a.SentAtUtc >= @since
 ORDER BY a.SentAtUtc DESC;
 
 -- Hourly activity rollup. Counts only: no raw payload, no resident identifier.
+-- PlugMiniReadings.DailyEnergyWh carries SwitchBot's instantaneous real watts
+-- despite the legacy column name, so it is integrated into hourly Wh.
 -- 30 days so the console has a usable time series even when alerting is quiet.
+WITH DeviceEventBuckets AS (
+    SELECT
+        e.HouseholdId                                  AS HouseholdId,
+        e.DeviceId                                     AS DeviceId,
+        DATEADD(hour, DATEDIFF(hour, 0, CAST(e.OccurredAtUtc AS DATETIME2)), 0) AS BucketStart,
+        COUNT(*)                                       AS EventCount,
+        SUM(CASE WHEN e.State IN ('on', 'active') THEN 1 ELSE 0 END) AS OnCount,
+        MAX(e.Source)                                  AS Source,
+        CAST(NULL AS FLOAT)                            AS EnergyWh
+    FROM mimamori.DeviceEvents e
+    WHERE e.OccurredAtUtc >= DATEADD(day, -30, SYSUTCDATETIME())
+    GROUP BY
+        e.HouseholdId,
+        e.DeviceId,
+        DATEADD(hour, DATEDIFF(hour, 0, CAST(e.OccurredAtUtc AS DATETIME2)), 0)
+),
+PlugOrdered AS (
+    SELECT
+        r.HouseholdId,
+        r.DeviceId,
+        CAST(r.OccurredAtUtc AS DATETIME2) AS StartAt,
+        CAST(
+            CASE
+                WHEN LEAD(r.OccurredAtUtc) OVER (PARTITION BY r.HouseholdId, r.DeviceId ORDER BY r.OccurredAtUtc) IS NULL
+                    THEN NULL
+                WHEN DATEDIFF(minute, r.OccurredAtUtc, LEAD(r.OccurredAtUtc) OVER (PARTITION BY r.HouseholdId, r.DeviceId ORDER BY r.OccurredAtUtc)) > 10
+                    THEN DATEADD(minute, 10, r.OccurredAtUtc)
+                ELSE LEAD(r.OccurredAtUtc) OVER (PARTITION BY r.HouseholdId, r.DeviceId ORDER BY r.OccurredAtUtc)
+            END AS DATETIME2) AS EndAt,
+        r.DailyEnergyWh AS Watts
+    FROM mimamori.PlugMiniReadings r
+    WHERE r.OccurredAtUtc >= DATEADD(day, -30, SYSUTCDATETIME())
+        AND r.DailyEnergyWh IS NOT NULL
+        AND r.DailyEnergyWh > 0
+),
+PlugSlices AS (
+    SELECT
+        p.HouseholdId,
+        p.DeviceId,
+        DATEADD(hour, DATEDIFF(hour, 0, p.StartAt), 0) AS BucketStart,
+        p.Watts * DATEDIFF(second, p.StartAt, CASE WHEN p.EndAt < b.NextHour THEN p.EndAt ELSE b.NextHour END) / 3600.0 AS EnergyWh
+    FROM PlugOrdered p
+    CROSS APPLY (SELECT DATEADD(hour, DATEDIFF(hour, 0, p.StartAt) + 1, 0) AS NextHour) b
+    WHERE p.EndAt IS NOT NULL AND p.EndAt > p.StartAt
+
+    UNION ALL
+
+    SELECT
+        p.HouseholdId,
+        p.DeviceId,
+        DATEADD(hour, DATEDIFF(hour, 0, p.EndAt), 0) AS BucketStart,
+        p.Watts * DATEDIFF(second, b.NextHour, p.EndAt) / 3600.0 AS EnergyWh
+    FROM PlugOrdered p
+    CROSS APPLY (SELECT DATEADD(hour, DATEDIFF(hour, 0, p.StartAt) + 1, 0) AS NextHour) b
+    WHERE p.EndAt IS NOT NULL AND p.EndAt > b.NextHour
+),
+PlugBuckets AS (
+    SELECT
+        HouseholdId,
+        DeviceId,
+        BucketStart,
+        0 AS EventCount,
+        0 AS OnCount,
+        N'SwitchBotPoll' AS Source,
+        SUM(EnergyWh) AS EnergyWh
+    FROM PlugSlices
+    GROUP BY HouseholdId, DeviceId, BucketStart
+),
+Activity AS (
+    SELECT * FROM DeviceEventBuckets
+    UNION ALL
+    SELECT * FROM PlugBuckets
+)
 SELECT
-    e.HouseholdId                                  AS HouseholdId,
+    a.HouseholdId                                  AS HouseholdId,
     ISNULL(h.Name, N'(deleted)')                   AS HouseholdName,
+    a.DeviceId                                     AS DeviceId,
     ISNULL(d.Name, N'(unknown)')                   AS DeviceName,
     ISNULL(d.DeviceType, N'')                      AS DeviceType,
-    DATEADD(hour, DATEDIFF(hour, 0, CAST(e.OccurredAtUtc AS DATETIME2)), 0) AS BucketStart,
-    COUNT(*)                                       AS EventCount,
-    SUM(CASE WHEN e.State IN ('on', 'active') THEN 1 ELSE 0 END) AS OnCount,
-    MAX(e.Source)                                  AS Source
-FROM mimamori.DeviceEvents e
-LEFT JOIN mimamori.Households h ON h.Id = e.HouseholdId
-LEFT JOIN mimamori.Devices d ON d.Id = e.DeviceId
-WHERE e.OccurredAtUtc >= DATEADD(day, -30, SYSUTCDATETIME())
+    a.BucketStart                                  AS BucketStart,
+    SUM(a.EventCount)                              AS EventCount,
+    SUM(a.OnCount)                                 AS OnCount,
+    MAX(a.Source)                                  AS Source,
+    SUM(a.EnergyWh)                                AS EnergyWh
+FROM Activity a
+LEFT JOIN mimamori.Households h ON h.Id = a.HouseholdId
+LEFT JOIN mimamori.Devices d ON d.Id = a.DeviceId
 GROUP BY
-    e.HouseholdId,
+    a.HouseholdId,
+    a.DeviceId,
     h.Name,
     d.Name,
     d.DeviceType,
-    DATEADD(hour, DATEDIFF(hour, 0, CAST(e.OccurredAtUtc AS DATETIME2)), 0)
+    a.BucketStart
 ORDER BY BucketStart;
 
 -- AI router rollup. Counts only: AiRequestLogs stores no prompt or completion

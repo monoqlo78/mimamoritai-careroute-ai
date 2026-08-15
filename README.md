@@ -358,6 +358,7 @@ az webapp config appsettings set -g <resource-group> -n <app-name> `
 | `SwitchBot__Token` | (空) | SwitchBotアプリの開発者向けオプションで取得したToken。 |
 | `SwitchBot__Secret` | (空) | 同じくSecret。 |
 | `SwitchBot__PollIntervalMinutes` | `5` | 実機ポーリング間隔（分）。`SwitchBotPollingBackgroundService` が使用し、SwitchBot未設定時は完全に無効化される。 |
+| `SwitchBot__DeviceDiscoveryIntervalMinutes` | `60` | 機器一覧（`GET /v1.1/devices`）の自動再取得間隔（分）。新規追加された機器のみを検出・追加する（削除されたように見える機器の無効化は行わない）。 |
 
 Fabric Eventhouse（KQL）へのリアルタイムストリーミングを有効化するために必要な環境変数は以下のとおりです。認証は秘密情報不要の **マネージドID（`DefaultAzureCredential`）** です。
 
