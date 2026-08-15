@@ -1,0 +1,100 @@
+@using MimamoriTai.Web.Charts
+@using G = MimamoriTai.Web.Charts.BarChartGeometry
+@using C = MimamoriTai.Web.Charts.ClockTrendGeometry
+
+@* "What time did the day start" is a point on the clock, not an amount, so each day is a
+   mark at its own time rather than a bar standing on midnight. Days with no record are
+   left blank on purpose: an empty bar would read as "up at midnight".
+
+   Same inline-SVG approach as BarChart - no charting library, no interop, prints fine -
+   with the maths in ClockTrendGeometry where it can be tested on its own. *@
+
+<figure class="bar-chart clock-trend @Class">
+    @if (!string.IsNullOrWhiteSpace(Caption))
+    {
+        <figcaption>
+            <span>@Caption</span>
+            @if (!string.IsNullOrWhiteSpace(Badge))
+            {
+                <span class="bar-chart-badge @BadgeClass">@Badge</span>
+            }
+        </figcaption>
+    }
+
+    @if (Points.Count == 0 || Points.All(p => p.At is null))
+    {
+        <p class="empty-state">まだ記録がありません</p>
+    }
+    else
+    {
+        var (floor, ceiling) = C.Window(Points);
+        var width = G.BarWidth(Points.Count);
+
+        <div class="bar-chart-plot">
+            <p class="bar-chart-scale" aria-hidden="true">
+                <span>@C.Clock(floor)</span>
+                <span>@C.Clock(ceiling)</span>
+            </p>
+
+            <svg viewBox="0 0 @G.F(G.ViewWidth) @G.F(G.ViewHeight)" role="img" aria-label="@AriaLabel"
+                 preserveAspectRatio="none">
+                @foreach (var fraction in _guides)
+                {
+                    var y = G.F(C.Y(floor + ((ceiling - floor) * fraction), floor, ceiling));
+                    <line x1="0" y1="@y" x2="@G.F(G.ViewWidth)" y2="@y" class="bar-chart-guide" />
+                }
+
+                <line x1="0" y1="@G.F(G.PlotBottom)" x2="@G.F(G.ViewWidth)" y2="@G.F(G.PlotBottom)"
+                      class="bar-chart-axis" />
+
+                @foreach (var segment in C.Segments(Points, floor, ceiling))
+                {
+                    <polyline points="@segment" class="clock-trend-line" />
+                }
+
+                @for (var i = 0; i < Points.Count; i++)
+                {
+                    var point = Points[i];
+                    if (point.At is not { } at)
+                    {
+                        continue;
+                    }
+
+                    @* A flat mark rather than a circle: the plot is stretched to the card
+                       width, which would squash any circle into an ellipse. *@
+                    <rect x="@G.F(G.BarX(i, Points.Count))"
+                          y="@G.F(C.Y(at, floor, ceiling) - (C.MarkHeight / 2))"
+                          width="@G.F(width)" height="@G.F(C.MarkHeight)" rx="@G.F(C.MarkHeight / 2)"
+                          class="@(point.IsHighlighted ? "clock-trend-mark is-highlighted" : "clock-trend-mark")"
+                          style="--bar-index: @i">
+                        <title>@point.Label：@at.ToString("H\\:mm")</title>
+                    </rect>
+                }
+            </svg>
+        </div>
+
+        <ul class="bar-chart-labels" aria-hidden="true">
+            @foreach (var point in Points)
+            {
+                <li class="@(point.IsHighlighted ? "is-highlighted" : null)">@point.Label</li>
+            }
+        </ul>
+    }
+</figure>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<ClockTrendPoint> Points { get; set; } = [];
+
+    /// <summary>Read out to screen readers, which cannot see the marks.</summary>
+    [Parameter] public string AriaLabel { get; set; } = "時刻の推移";
+
+    [Parameter] public string? Caption { get; set; }
+
+    [Parameter] public string? Badge { get; set; }
+
+    [Parameter] public string? BadgeClass { get; set; }
+
+    [Parameter] public string? Class { get; set; }
+
+    private static readonly double[] _guides = [0.5];
+}

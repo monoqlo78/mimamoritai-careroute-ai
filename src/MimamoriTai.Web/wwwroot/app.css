@@ -361,7 +361,19 @@ main { max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; position: rel
 .section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 
 .chat-log {
-    min-height: 96px;
+    display: flex;
+    /* Reversed so the newest line is the first child: a column-reverse box anchors its
+       scroll to that child, which is what keeps the last exchange in view when the
+       conversation grows past the box, with no scroll-to-bottom script to re-run on
+       every render.
+
+       Do not add `justify-content: flex-end` to push a short conversation to the top:
+       it flips which edge the overflow spills over, and content that overflows the
+       start edge of a scroll box cannot be scrolled to at all -- the log silently
+       becomes a window onto the newest line with the rest unreachable. Letting a short
+       conversation rest at the bottom is the cost of a log that scrolls. */
+    flex-direction: column-reverse;
+    gap: 10px;
     max-height: 240px;
     overflow-y: auto;
     margin-bottom: 12px;
@@ -370,8 +382,9 @@ main { max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; position: rel
     background: var(--cp-surface-soft);
 }
 .chat-log .empty { margin: 0; }
-.chat-line { margin-bottom: 10px; }
-.chat-line:last-child { margin-bottom: 0; }
+/* Flex children shrink to fit their box by default, which silently squashes a long
+   conversation into the container instead of producing the scrollbar it needs. */
+.chat-line, .chat-log .empty { flex: 0 0 auto; }
 .chat-line .author { display: block; color: var(--cp-text-muted); font-size: 11px; }
 .chat-line.ai .text { color: var(--cp-text); }
 
@@ -575,8 +588,12 @@ a.ghost.small { min-height: 32px; padding: 4px 10px; font-size: 12px; }
 }
 .primary-link:hover { background: var(--cp-accent-hover); color: var(--cp-accent-fg); }
 .line-basic-id { display: block; margin-top: 8px; color: var(--cp-text-muted); font-size: 12px; }
-.feed { max-height: 260px; overflow-y: auto; }
-.feed-item { padding: 8px 0; border-bottom: 1px solid var(--cp-border); }
+/* Newest message first in the DOM, flipped by column-reverse so it lands at the bottom
+   and the box opens already scrolled to it. See .chat-log for why there is no
+   justify-content here. */
+.feed { display: flex; flex-direction: column-reverse; max-height: 260px; overflow-y: auto; }
+.feed-item { flex: 0 0 auto; padding: 8px 0; border-bottom: 1px solid var(--cp-border); }
+.feed-item:first-child { border-bottom: none; }
 .feed-item .author { margin-right: 8px; color: var(--cp-accent); font-size: 12px; }
 .feed-item p { margin: 2px 0 0; }
 .integrations { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -692,6 +709,30 @@ a.ghost.small { min-height: 32px; padding: 4px 10px; font-size: 12px; }
     animation: chart-fade 600ms ease-out 900ms backwards;
 }
 
+/* Wake-up / settled charts: a clock time is a place on the day, not a quantity, so each
+   day is a mark at its own time. A day with no record simply has no mark - drawing it as
+   a zero-height bar would have said "up at midnight". */
+.clock-trend-mark {
+    fill: var(--cp-accent);
+    fill-opacity: 0.55;
+    animation: chart-fade 420ms ease-out backwards;
+    animation-delay: calc(var(--bar-index, 0) * 35ms);
+}
+.clock-trend-mark.is-highlighted {
+    fill-opacity: 1;
+    filter: drop-shadow(0 0 1.4px var(--cp-highlight));
+}
+.clock-trend-line {
+    fill: none;
+    stroke: var(--cp-accent);
+    stroke-width: 1.2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    opacity: 0.4;
+    vector-effect: non-scaling-stroke;
+    animation: chart-fade 700ms ease-out 200ms backwards;
+}
+
 @keyframes bar-grow {
     from { transform: scaleY(0); opacity: 0; }
     to { transform: scaleY(1); opacity: 1; }
@@ -708,6 +749,8 @@ a.ghost.small { min-height: 32px; padding: 4px 10px; font-size: 12px; }
     .bar-chart-bar,
     .bar-chart-area,
     .bar-chart-line,
+    .clock-trend-mark,
+    .clock-trend-line,
     .bar-chart-today-marker { animation: none; }
     .bar-chart-line { stroke-dashoffset: 0 !important; }
 }

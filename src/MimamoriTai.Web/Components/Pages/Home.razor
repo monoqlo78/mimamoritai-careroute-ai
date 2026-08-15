@@ -182,17 +182,17 @@ else
 
             <div class="trend-grid two">
                 <div class="trend-item">
-                    <BarChart Points="FirstMoveTrend()" Caption="電気が動きはじめた時間" ScaleBottom="0:00"
-                              Badge="@FirstMoveVerdict().Text" BadgeClass="@FirstMoveVerdict().Class"
-                              AriaLabel="@ClockAriaLabel("電気が動きはじめた時間", d => d.FirstPowerMoveTime)" />
+                    <ClockTrendChart Points="FirstMoveTrend()" Caption="電気が動きはじめた時間"
+                                     Badge="@FirstMoveVerdict().Text" BadgeClass="@FirstMoveVerdict().Class"
+                                     AriaLabel="@ClockAriaLabel("電気が動きはじめた時間", d => d.FirstPowerMoveTime)" />
                 </div>
                 <div class="trend-item">
-                    <BarChart Points="SettledTrend()" Caption="電気が静かになった時間" ScaleBottom="0:00"
-                              Badge="@SettledVerdict().Text" BadgeClass="@SettledVerdict().Class"
-                              AriaLabel="@ClockAriaLabel("電気が静かになった時間", d => d.SettledTime)" />
+                    <ClockTrendChart Points="SettledTrend()" Caption="電気が静かになった時間"
+                                     Badge="@SettledVerdict().Text" BadgeClass="@SettledVerdict().Class"
+                                     AriaLabel="@ClockAriaLabel("電気が静かになった時間", d => d.SettledTime)" />
                 </div>
             </div>
-            <p class="trend-note">上のグラフは、いちばん新しい記録を右はしにして、そこから24時間さかのぼって時間ごとに並べたものです。線はいつもの平均で、棒が線から離れているほど、いつもと違う1日です。下の2つは、その日はじめて電気が動いた時間と、最後に動いた時間です。</p>
+            <p class="trend-note">上のグラフは、いちばん新しい記録を右はしにして、そこから24時間さかのぼって時間ごとに並べたものです。線はいつもの平均で、棒が線から離れているほど、いつもと違う1日です。その下の2つは、その日はじめて電気が動いた時間と、最後に動いた時間を、日ごとの点で並べたものです。記録がない日は点がありません。</p>
         }
     </section>
 
@@ -254,18 +254,12 @@ else
                     <button class="link-button" @onclick="() => _chatLog.Clear()" disabled="@_busy">会話を消す</button>
                 }
             </div>
+            @* Newest first in the DOM, flipped back by `flex-direction: column-reverse`.
+               That is what keeps the latest exchange in view: a reversed column anchors
+               its scroll to the newest child, so a long conversation opens where it
+               ended instead of at the first question, and it stays there after every
+               re-render without a scroll-to-bottom script. *@
             <div class="chat-log">
-                @if (_chatLog.Count == 0)
-                {
-                    <p class="muted empty">今日の様子や家電の状態を、いつもの言葉で聞けます。</p>
-                }
-                @foreach (var line in _chatLog)
-                {
-                    <div class="chat-line @(line.IsAi ? "ai" : "user")">
-                        <span class="author">@line.Author</span>
-                        <span class="text">@line.Content</span>
-                    </div>
-                }
                 @if (_thinking)
                 {
                     @* 答えが出るまで数秒かかることがある。無音のまま待たせると、
@@ -277,6 +271,17 @@ else
                             <span class="thinking-label">考えています…</span>
                         </span>
                     </div>
+                }
+                @foreach (var line in Enumerable.Reverse(_chatLog))
+                {
+                    <div class="chat-line @(line.IsAi ? "ai" : "user")">
+                        <span class="author">@line.Author</span>
+                        <span class="text">@line.Content</span>
+                    </div>
+                }
+                @if (_chatLog.Count == 0)
+                {
+                    <p class="muted empty">今日の様子や家電の状態を、いつもの言葉で聞けます。</p>
                 }
             </div>
             <div class="chat-input">
@@ -440,8 +445,11 @@ else
             </div>
             <div>
                 <h3>共有メッセージ</h3>
+                @* Same reversed-column trick as the chat log: newest first in the DOM so
+                   the card opens on the most recent message. A family checking in wants
+                   the last thing that was said, not the first. *@
                 <div class="feed">
-                    @foreach (var item in _model.Feed)
+                    @foreach (var item in Enumerable.Reverse(_model.Feed))
                     {
                         <div class="feed-item @(item.IsAi ? "ai" : "")">
                             <span class="author">@item.Author</span>
@@ -1463,7 +1471,7 @@ else
     /// single most important thing on this screen. The tooltip shows a real clock time,
     /// because "6.5時" is not how anyone reads one.
     /// </summary>
-    private IReadOnlyList<BarChartPoint> ClockTrend(Func<DailyActivity, TimeOnly?> pick)
+    private IReadOnlyList<ClockTrendPoint> ClockTrend(Func<DailyActivity, TimeOnly?> pick)
     {
         var days = TrendDays();
         if (days.Count == 0)
@@ -1473,16 +1481,15 @@ else
 
         var today = HouseholdTime.LocalDate(DateTimeOffset.UtcNow);
 
-        return [.. days.Select(d => new BarChartPoint(
+        return [.. days.Select(d => new ClockTrendPoint(
             d.Date.ToString("M/d"),
-            pick(d) is { } t ? Math.Round(t.ToTimeSpan().TotalHours, 2) : 0,
-            d.Date == today,
-            pick(d)?.ToString("H\\:mm") ?? "記録なし"))];
+            pick(d),
+            d.Date == today))];
     }
 
-    private IReadOnlyList<BarChartPoint> FirstMoveTrend() => ClockTrend(d => d.FirstPowerMoveTime);
+    private IReadOnlyList<ClockTrendPoint> FirstMoveTrend() => ClockTrend(d => d.FirstPowerMoveTime);
 
-    private IReadOnlyList<BarChartPoint> SettledTrend() => ClockTrend(d => d.SettledTime);
+    private IReadOnlyList<ClockTrendPoint> SettledTrend() => ClockTrend(d => d.SettledTime);
 
     private IReadOnlyList<BarChartPoint> TrendPoints(Func<DailyActivity, double> value)
     {
