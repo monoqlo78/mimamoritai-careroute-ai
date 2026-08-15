@@ -138,6 +138,30 @@ public class DeviceControlServiceTests
         Assert.Equal(CommandStatus.Succeeded, outcome.Status);
     }
 
+    /// <summary>
+    /// "つけっぱなしの家電はある？" names no device and the house has several. Answering
+    /// for the whole house is the useful reply; the same phrasing must still never be
+    /// allowed to switch anything on (see <see cref="Null_Alias_Never_Guesses_A_Device"/>).
+    /// </summary>
+    [Fact]
+    public async Task Null_Alias_Answers_Status_For_Every_Device_In_The_House()
+    {
+        using var db = await new TestDb().SeedAsync(TestDb.Light(), TestDb.Heater());
+        var service = Create(db, out _);
+
+        var outcome = await service.ExecuteAsync(
+            db.HouseholdId, null, DeviceAction.GetStatus, 0.99,
+            "つけっぱなしの家電はある？", CommandSource.Web, null, null);
+
+        Assert.Equal(CommandStatus.Succeeded, outcome.Status);
+        Assert.True(outcome.Executed);
+        Assert.Null(outcome.DeviceId);
+        foreach (var device in db.Context.Devices)
+        {
+            Assert.Contains(device.DisplayName, outcome.Message);
+        }
+    }
+
     [Fact]
     public async Task Low_Confidence_Blocks_State_Change()
     {

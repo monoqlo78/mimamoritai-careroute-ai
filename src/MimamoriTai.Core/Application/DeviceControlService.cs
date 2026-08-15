@@ -55,6 +55,33 @@ public sealed class DeviceControlService(
             matches = devices;
         }
 
+        // "つけっぱなしの家電はある？" names no device either, and with several devices
+        // there is no single one to fall back to -- but the honest answer is the whole
+        // house, not a refusal. Reading every device is safe because nothing changes
+        // state, and refusing taught the family to ask device by device, which is
+        // exactly the chore the assistant exists to remove.
+        if (matches.Count == 0 && devices.Count > 1 && action == DeviceAction.GetStatus)
+        {
+            var readings = new List<string>(devices.Count);
+            foreach (var each in devices)
+            {
+                var reading = await provider.GetStatusAsync(each.ExternalDeviceId, ct);
+                var label = reading is null ? "不明" : reading.IsOn ? "ON" : "OFF";
+                readings.Add($"{each.DisplayName} は {label}");
+            }
+
+            command.Status = CommandStatus.Succeeded;
+            command.ExecutedAtUtc = clock.GetUtcNow();
+            db.DeviceCommands.Add(command);
+            await db.SaveChangesAsync(ct);
+
+            return new DeviceControlOutcome(
+                true,
+                $"{string.Join("、", readings)} です。",
+                null,
+                CommandStatus.Succeeded);
+        }
+
         if (matches.Count == 0)
         {
             var known = devices.Count == 0
